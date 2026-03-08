@@ -17,6 +17,89 @@
 - **배포**: Phase 0은 Fly.io, Phase 1~은 Railway (Git push 자동 배포)
 - **RAG 없음**: Context Injection (시스템 프롬프트에 비즈니스 컨텍스트 직접 주입)
 
+## 아키텍처 방침
+
+**고정 파이프라인 + LLM은 특정 단계에서만 (Agent 패턴 사용 금지)**
+
+- LangChain Agent나 tool-calling agent 패턴을 사용하지 않는다
+- 각 작업(입금 대조, 출석부 생성 등)은 실행 순서가 고정된 Python 함수 파이프라인으로 구현한다
+- LLM은 비정형 텍스트 해석이 필요한 특정 단계에서만 호출한다 (예: 입금자명 파싱)
+- LangChain은 LLM 호출 래퍼(ChatAnthropic)로만 사용, 오케스트레이션 프레임워크로는 사용하지 않는다
+- 의도 분류는 Conversation Starter 버튼의 고정 메시지로 판별 (LLM 기반 intent classifier 불필요)
+
+**이유**: 대상 사용자가 55세 이상 비개발자 관리자 2~4명. 대화형 AI에 익숙하지 않음. 예측 가능하고 가이드된 UX가 필수. 자유도가 높으면 오히려 혼란.
+
+```python
+# 라우팅 패턴 — 버튼 메시지로 단순 분기
+if message.content == "입금 대조를 시작합니다.":
+    await payment_flow(message)
+elif message.content == "출석부를 생성합니다.":
+    await attendance_flow(message)
+else:
+    await qa_flow(message)  # 자유 Q&A만 LLM 자유 사용
+```
+
+## Chainlit UX 가이드
+
+대상 사용자(55세+, 비개발자)를 위한 Chainlit 기능 활용 방침.
+
+### Step — 중간 진행 상황 공유 (Phase 1)
+복잡한 작업에서 각 단계를 관리자에게 시각적으로 보여줌. "지금 뭘 하고 있는지" 피드백이 신뢰 구축에 핵심.
+```python
+@cl.step(name="📊 데이터 읽기")
+async def read_data():
+    ...  # 관리자에게 "수강생 시트를 읽고 있어요..." 표시
+
+@cl.step(name="🔍 입금 매칭 중")
+async def match_payments():
+    ...  # "85건 중 78건 매칭 완료..." 중간 결과 표시
+```
+
+### Action — 다음 작업 추천 버튼 (Phase 1)
+작업 완료 후 다음 가능한 작업을 버튼으로 제시. 자유 텍스트 입력 없이 클릭만으로 업무 진행.
+```python
+actions = [
+    cl.Action(name="create_attendance", label="📋 출석부 생성하기"),
+    cl.Action(name="redo_payment", label="🔄 입금 대조 다시하기"),
+    cl.Action(name="free_question", label="❓ 다른 질문하기"),
+]
+await cl.Message(content="입금 대조가 완료되었습니다.", actions=actions).send()
+```
+
+### AskActionMessage — 사용자 확인 대기 (Phase 1)
+파이프라인 중간에 관리자 확인이 필요한 지점에서 사용. 응답을 기다렸다가 다음 단계 진행.
+```python
+res = await cl.AskActionMessage(
+    content="매칭 결과를 시트에 반영할까요?",
+    actions=[
+        cl.Action(name="confirm", label="✅ 반영하기", value="confirm"),
+        cl.Action(name="cancel", label="❌ 취소", value="cancel"),
+    ]
+).send()
+if res and res.get("value") == "confirm":
+    await write_back_to_sheets()
+```
+
+### Authentication — Google OAuth (Phase 1 초반)
+관리자만 접근 가능하도록 Google Workspace 도메인 제한.
+```python
+@cl.oauth_callback
+def oauth_callback(provider_id, token, raw_user_data, default_user):
+    if raw_user_data.get("hd") != "wiryeschoolcomunity.com":
+        return None  # Workspace 외 계정 차단
+    return default_user
+```
+환경변수: `OAUTH_GOOGLE_CLIENT_ID`, `OAUTH_GOOGLE_CLIENT_SECRET`, `CHAINLIT_AUTH_SECRET`
+
+### Data Persistence — 채팅 기록 (Phase 2)
+세션 간 대화 기록 유지. LiteralAI 또는 커스텀 데이터 레이어 필요. 당장은 세션 내 유지로 충분.
+
+### Theme/CSS — 접근성 (Phase 2)
+- 폰트 크기: 기본보다 크게 (18~20px)
+- 색상: 눈에 편한 따뜻한 톤
+- 버튼: 크게, 터치 타겟 넓게
+- UI 전체 한국어화
+
 ## 프로젝트 구조
 
 ```
@@ -29,18 +112,25 @@ wiryeschoolcommunity/
 │   ├── DEV_DOCUMENT.md          # 상세 기획서 (비즈니스 컨텍스트, 데이터 구조, 입금 패턴 등)
 │   └── BUSINESS_CONTEXT.md      # Context Injection 소스 텍스트
 ├── app/
-│   ├── main.py                  # Chainlit 엔트리포인트 (sys.path 설정 포함)
-│   ├── config.py                # 환경 변수, 상수 (수강료, 가입비 등)
+│   ├── main.py                  # Chainlit 엔트리포인트 + 세션 상태 라우터 + 입금 대조 wizard flow
+│   ├── config.py                # 환경 변수, 상수, Google IDs, COURSE_KEYWORDS
 │   ├── context/
 │   │   ├── business.py          # 정적 비즈니스 컨텍스트 dict + 시스템 프롬프트
 │   │   └── semester.py          # 현재 학기 자동 판별
 │   ├── chains/
-│   │   └── qa.py                # 질의 응답 체인 (Phase 0 구현 완료)
+│   │   ├── qa.py                # 질의 응답 체인
+│   │   └── payment.py           # 입금 대조 파이프라인 (Drive 로드, 코드 매칭, LLM 폴백, 시트 기록)
 │   ├── services/
 │   │   ├── google_auth.py       # Google API 인증 (SA 파일 + JSON 환경변수 이중 지원)
 │   │   ├── google_drive.py      # Drive API 래퍼
-│   │   └── google_sheets.py     # Sheets API 래퍼
+│   │   ├── google_sheets.py     # Sheets API 래퍼
+│   │   └── excel.py             # Excel 파싱 (입금내역 .xls/.xlsx + 수강생 명단 .xlsx)
 │   └── utils/
+│       ├── __init__.py
+│       └── matching.py          # 이름/강좌 추출, 규칙 기반 입금 매칭
+├── scripts/
+│   ├── populate_members.py      # 회원관리 시트 초기 데이터 생성 (출석부 XLSX → 시트)
+│   └── populate_students.py     # 수강생 시트 초기 데이터 생성 (출석부 XLSX → 시트)
 ├── Dockerfile                   # Docker 빌드 (Fly.io 배포용)
 ├── Procfile                     # PaaS 실행 명령
 ├── fly.toml                     # Fly.io 배포 설정 (nrt 리전)
@@ -50,9 +140,7 @@ wiryeschoolcommunity/
 ```
 
 **Phase 1에서 추가 예정**:
-- `app/chains/`: router.py, payment.py, attendance.py
-- `app/services/excel.py`: openpyxl 유틸리티
-- `app/utils/`: matching.py, formatting.py
+- `app/chains/attendance.py`: 출석부 생성 파이프라인
 
 ## 환경 변수
 
@@ -214,29 +302,48 @@ SEMESTERS = {1: "1~3월", 2: "4~6월", 3: "7~9월", 4: "10~12월"}
 # 비용은 변동 가능 → 설정 파일 또는 시트에서 읽어오는 구조 권장
 ```
 
+## Google Sheets/Drive IDs
+
+| Resource | Type | ID | 시트 탭명 |
+|----------|------|----|----------|
+| 수강생 | Spreadsheet | `16vRPnHWX7AEd66xsxVSYAZrKNRtTdz_5DbjSYDo5RBY` | `수강생` |
+| 회원관리 | Spreadsheet | `193r34mtLHd0-oX7MKJOWq1Ane9iBfbBZB5yYf78R3Bo` | `회원관리` |
+| 수강기록 | Spreadsheet | `1cKolq6Mr-5u65nQDeMq8z4DsFWpHTLVthkAvyt4Rb6s` | — |
+| 출석부 folder | Drive folder | `1i-sixwrwPU_XxYhOwhDvaIqfvCxICWB8` | — |
+| Root folder | Drive folder | `1N24ROJ12BEDRrSmtezXdV70Pi3Np7sRm` | — |
+
+**주의**: 시트 탭명이 "시트1"이 아님. API 호출 시 정확한 탭명 사용 필요 (예: `"수강생!A1:G500"`).
+
 ## 현재 상태
 
-- **Phase**: Phase 0 완료 (프로토타입 배포됨)
+- **Phase**: Phase 1 진행 중 (입금 대조 구현 완료)
 - **배포 URL**: https://wirye-school-assistant.fly.dev/
-- **완료된 것**:
+- **Phase 0 완료**:
   - 기획서(DEV_DOCUMENT v4.1), 데이터 구조 설계, 입금 패턴 분석
-  - 수강생 시트 생성 (Google Sheets, ID: `16vRPnHWX7AEd66xsxVSYAZrKNRtTdz_5DbjSYDo5RBY`)
-  - Python 프로젝트 초기 셋업 (프로젝트 구조, requirements.txt, venv)
-  - Chainlit 기본 앱 (채팅 UI + Conversation Starter 버튼 + 비즈니스 Q&A)
-  - Google API 인증 — Domain-wide Delegation 설정 완료, Sheets/Drive 연동 확인
+  - Python 프로젝트 초기 셋업, Chainlit 기본 앱 (채팅 UI + Starter 버튼 + Q&A)
+  - Google API 인증 — Domain-wide Delegation, Sheets/Drive 연동 확인
   - Fly.io 배포 완료 (nrt 리전, shared-cpu-1x, 512MB, auto_stop)
+- **Phase 1 완료**:
+  - 입금 대조 파이프라인 (`app/chains/payment.py`): 파일 업로드 → 파싱 → 코드 매칭(~85%) → LLM 폴백 → 시트 기록
+  - Excel 파싱 (`app/services/excel.py`): .xls(xlrd) + .xlsx(openpyxl) 입금내역/수강생 명단
+  - 규칙 기반 매칭 (`app/utils/matching.py`): 이름/강좌 추출, 카카오페이/토스, 동명이인, 특수 유형
+  - main.py 세션 상태 라우터: idle → awaiting_payment_file → awaiting_payment_confirm → idle
+  - 회원관리 시트 초기 데이터 (138명, 출석부 XLSX에서 추출, `scripts/populate_members.py`)
+  - 수강생 시트 초기 데이터 (225건, 15개 강좌, `scripts/populate_students.py`)
 - **Fly.io 시크릿**: ANTHROPIC_API_KEY, GOOGLE_SA_KEY_JSON, GOOGLE_DELEGATED_USER
 - **PaaS 인증 방식**: SA 키를 GOOGLE_SA_KEY_JSON 환경변수로 전달 (파일 마운트 불가), google_auth.py에서 from_service_account_info() 사용
-- **다음 작업 (Phase 1)**:
-  1. 입금 대조 구현 (코드 매칭 + LLM 예외 처리)
-  2. 출석부 생성 구현
-  3. 질의 응답 — Context Injection 고도화
-  4. Railway 이관 (Git push 자동 배포)
-- **백로그 (UI/인프라)**:
-  - Chainlit UI 커스터마이징 (chainlit.md 웰컴 화면, 테마/색상, 어시스턴트 이름 표시 문제)
-  - 인증 (관리자 접근 제한)
-  - 대화 기록 (Chat History)
-  - 프론트엔드 개발 (UI/Theme 설정)
+- **다음 작업 (Phase 1 잔여)**:
+  1. 출석부 생성 구현
+  2. 질의 응답 — Context Injection 고도화
+  3. Railway 이관 (Git push 자동 배포)
+- **백로그 (Phase 1)**:
+  - Google OAuth 인증 (Workspace 도메인 제한)
+  - cl.Step으로 작업 중간 진행 상황 공유
+  - cl.Action / AskActionMessage로 작업 간 연결
+- **백로그 (Phase 2)**:
+  - Data Persistence (채팅 기록 유지)
+  - Theme/CSS 커스터마이징 (폰트 크기, 색상, 접근성)
+  - Chainlit UI 커스터마이징 (chainlit.md 웰컴 화면, 어시스턴트 이름 표시)
 
 ## 코딩 규칙
 
