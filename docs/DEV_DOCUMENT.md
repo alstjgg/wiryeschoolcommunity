@@ -552,7 +552,7 @@ Phase 0: 동작하는 프로토타입   Phase 1: 핵심 기능          Phase 2:
 
 ```
 wiryeschoolcommunity/
-├── README.md
+├── CLAUDE.md                    # Claude Code 프로젝트 컨텍스트
 ├── docs/
 │   ├── DEV_DOCUMENT.md          # 이 문서
 │   └── BUSINESS_CONTEXT.md      # 비즈니스 컨텍스트 (Context Injection 소스)
@@ -576,7 +576,8 @@ wiryeschoolcommunity/
 │   └── utils/
 │       ├── matching.py          # 입금 매칭 규칙 엔진
 │       └── formatting.py        # 결과 포맷팅
-├── Procfile                     # Railway/Fly.io 실행 명령
+├── Procfile                     # PaaS 실행 명령 (예: web: chainlit run app/main.py --port $PORT)
+├── fly.toml                     # Fly.io 배포 설정 (Phase 0)
 ├── requirements.txt
 └── .gitignore
 ```

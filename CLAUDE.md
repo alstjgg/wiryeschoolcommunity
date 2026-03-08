@@ -22,33 +22,37 @@
 ```
 wiryeschoolcommunity/
 ├── CLAUDE.md                    # 이 파일
+├── chainlit.md                  # Chainlit 웰컴 화면 (커스터마이징 필요 — 백로그)
+├── .chainlit/
+│   └── config.toml              # Chainlit UI 설정 (이름, 테마 등)
 ├── docs/
 │   ├── DEV_DOCUMENT.md          # 상세 기획서 (비즈니스 컨텍스트, 데이터 구조, 입금 패턴 등)
 │   └── BUSINESS_CONTEXT.md      # Context Injection 소스 텍스트
 ├── app/
-│   ├── main.py                  # Chainlit 엔트리포인트
+│   ├── main.py                  # Chainlit 엔트리포인트 (sys.path 설정 포함)
 │   ├── config.py                # 환경 변수, 상수 (수강료, 가입비 등)
 │   ├── context/
-│   │   ├── business.py          # 정적 비즈니스 컨텍스트 dict
-│   │   └── semester.py          # 동적 학기 데이터 로더 (Sheets에서)
+│   │   ├── business.py          # 정적 비즈니스 컨텍스트 dict + 시스템 프롬프트
+│   │   └── semester.py          # 현재 학기 자동 판별
 │   ├── chains/
-│   │   ├── router.py            # 의도 분류 라우터
-│   │   ├── payment.py           # 입금 대조 체인
-│   │   ├── attendance.py        # 출석부 생성 체인
-│   │   ├── ocr.py               # 출석 체크 (Vision OCR) 체인
-│   │   ├── syllabus.py          # 계획서 검토 체인
-│   │   └── qa.py                # 질의 응답 체인
+│   │   └── qa.py                # 질의 응답 체인 (Phase 0 구현 완료)
 │   ├── services/
+│   │   ├── google_auth.py       # Google API 인증 (SA 파일 + JSON 환경변수 이중 지원)
 │   │   ├── google_drive.py      # Drive API 래퍼
-│   │   ├── google_sheets.py     # Sheets API 래퍼
-│   │   └── excel.py             # openpyxl 유틸리티
+│   │   └── google_sheets.py     # Sheets API 래퍼
 │   └── utils/
-│       ├── matching.py          # 입금 매칭 규칙 엔진
-│       └── formatting.py        # 결과 포맷팅
+├── Dockerfile                   # Docker 빌드 (Fly.io 배포용)
 ├── Procfile                     # PaaS 실행 명령
+├── fly.toml                     # Fly.io 배포 설정 (nrt 리전)
 ├── requirements.txt
+├── .env.example                 # 환경 변수 템플릿
 └── .gitignore
 ```
+
+**Phase 1에서 추가 예정**:
+- `app/chains/`: router.py, payment.py, attendance.py
+- `app/services/excel.py`: openpyxl 유틸리티
+- `app/utils/`: matching.py, formatting.py
 
 ## 환경 변수
 
@@ -212,14 +216,27 @@ SEMESTERS = {1: "1~3월", 2: "4~6월", 3: "7~9월", 4: "10~12월"}
 
 ## 현재 상태
 
-- **Phase**: Phase 0 시작 전
-- **다음 작업**:
-  1. Domain-wide Delegation 설정 (GCP + Workspace Admin)
-  2. Python 프로젝트 초기 셋업 (requirements.txt, 프로젝트 구조)
-  3. Chainlit 기본 앱 (채팅 + 비즈니스 Q&A)
-  4. Google Sheets API 연동 테스트
-  5. Fly.io 배포 → 관리자 접속 확인
-- **완료된 것**: 기획서(DEV_DOCUMENT v4.1), 데이터 구조 설계(회원관리+수강기록+수강생 3테이블), 입금 패턴 분석, 수강생 시트 생성(Google Sheets에 존재)
+- **Phase**: Phase 0 완료 (프로토타입 배포됨)
+- **배포 URL**: https://wirye-school-assistant.fly.dev/
+- **완료된 것**:
+  - 기획서(DEV_DOCUMENT v4.1), 데이터 구조 설계, 입금 패턴 분석
+  - 수강생 시트 생성 (Google Sheets, ID: `16vRPnHWX7AEd66xsxVSYAZrKNRtTdz_5DbjSYDo5RBY`)
+  - Python 프로젝트 초기 셋업 (프로젝트 구조, requirements.txt, venv)
+  - Chainlit 기본 앱 (채팅 UI + Conversation Starter 버튼 + 비즈니스 Q&A)
+  - Google API 인증 — Domain-wide Delegation 설정 완료, Sheets/Drive 연동 확인
+  - Fly.io 배포 완료 (nrt 리전, shared-cpu-1x, 512MB, auto_stop)
+- **Fly.io 시크릿**: ANTHROPIC_API_KEY, GOOGLE_SA_KEY_JSON, GOOGLE_DELEGATED_USER
+- **PaaS 인증 방식**: SA 키를 GOOGLE_SA_KEY_JSON 환경변수로 전달 (파일 마운트 불가), google_auth.py에서 from_service_account_info() 사용
+- **다음 작업 (Phase 1)**:
+  1. 입금 대조 구현 (코드 매칭 + LLM 예외 처리)
+  2. 출석부 생성 구현
+  3. 질의 응답 — Context Injection 고도화
+  4. Railway 이관 (Git push 자동 배포)
+- **백로그 (UI/인프라)**:
+  - Chainlit UI 커스터마이징 (chainlit.md 웰컴 화면, 테마/색상, 어시스턴트 이름 표시 문제)
+  - 인증 (관리자 접근 제한)
+  - 대화 기록 (Chat History)
+  - 프론트엔드 개발 (UI/Theme 설정)
 
 ## 코딩 규칙
 
