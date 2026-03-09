@@ -8,16 +8,23 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import chainlit as cl
 from app.chains.qa import answer_question
 from app.chains.payment import (
-    load_students_from_drive,
+    load_applicants_from_drive,
+    create_students_sheet,
     load_students_from_sheet,
-    populate_students_sheet,
+    load_members,
+    apply_exemptions,
     run_llm_matching,
     find_unpaid_students,
     format_results,
     write_results_to_sheet,
+    update_members_after_registration,
+    add_enrollment_records,
 )
+from app.chains.attendance import create_attendance_sheet
 from app.services.excel import parse_bank_statement
+from app.services.google_drive import find_term_folder
 from app.utils.matching import run_code_matching
+from app.context.term import get_current_term
 
 
 @cl.set_starters
@@ -51,6 +58,9 @@ async def on_message(message: cl.Message):
     session_state = cl.user_session.get("state", "idle")
 
     # 세션 상태 기반 라우팅 (진행 중인 플로우)
+    if session_state == "awaiting_term_confirm":
+        await handle_term_confirm(message)
+        return
     if session_state == "awaiting_payment_file":
         await handle_payment_file(message)
         return
@@ -62,7 +72,7 @@ async def on_message(message: cl.Message):
     if message.content == "입금 대조를 시작합니다.":
         await start_payment_flow(message)
     elif message.content == "출석부를 생성합니다.":
-        await cl.Message("출석부 생성 기능은 준비 중입니다.").send()
+        await start_attendance_flow(message)
     elif message.content == "출석 체크를 시작합니다.":
         await cl.Message("출석 체크 기능은 준비 중입니다.").send()
     elif message.content == "강의 계획서를 검토합니다.":
@@ -84,43 +94,94 @@ async def on_message(message: cl.Message):
 
 
 async def start_payment_flow(message: cl.Message):
-    """입금 대조 시작 — 수강생 로드 + 파일 업로드 요청"""
-    msg = cl.Message(content="수강생 데이터를 불러오는 중...")
+    """입금 대조 시작 — 회차 추측 → 확인 요청"""
+    term = get_current_term()
+    cl.user_session.set("term", term)
+
+    res = await cl.AskActionMessage(
+        content=f"**{term['term_name']}** 입금 대조를 시작할까요?",
+        actions=[
+            cl.Action(name="confirm_term", label="✅ 맞습니다", value="confirm"),
+            cl.Action(name="cancel_term", label="❌ 취소", value="cancel"),
+        ],
+    ).send()
+
+    if res and res.get("value") == "confirm":
+        await process_term_confirmed()
+    else:
+        await cl.Message("입금 대조가 취소되었습니다.").send()
+        cl.user_session.set("state", "idle")
+
+
+async def handle_term_confirm(message: cl.Message):
+    """회차 확인 응답 처리 (텍스트 입력 시 폴백)"""
+    text = message.content.strip()
+    if any(word in text for word in ["예", "네", "응", "확인", "맞"]):
+        await process_term_confirmed()
+    else:
+        await cl.Message("입금 대조가 취소되었습니다.").send()
+        cl.user_session.set("state", "idle")
+
+
+async def process_term_confirmed():
+    """회차 확정 후 — Drive에서 회차 폴더 탐색 → 신청자 로드 → 수강생 시트 생성"""
+    term = cl.user_session.get("term")
+
+    msg = cl.Message(content="회차 폴더를 찾는 중...")
     await msg.send()
 
     try:
-        # 수강생 시트에서 먼저 로드 시도
-        students = load_students_from_sheet()
-
-        if not students:
-            # 시트가 비어있으면 출석부 폴더에서 로드 후 시트에 기록
-            msg.content = "출석부 폴더에서 수강생 명단을 불러오는 중..."
+        # 1. Drive에서 회차 폴더 동적 탐색
+        term_folder = find_term_folder(term["term_id"])
+        if not term_folder:
+            msg.content = (
+                f"Drive에서 **{term['term_name']}** 폴더를 찾을 수 없습니다.\n"
+                f"학사운영(연도별) → {term['year']} → {term['term_id']}... 폴더가 있는지 확인해주세요."
+            )
             await msg.update()
+            cl.user_session.set("state", "idle")
+            return
 
-            students = load_students_from_drive()
-            if not students:
-                msg.content = "출석부 폴더에서 수강생 명단을 찾을 수 없습니다. 출석부 폴더를 확인해주세요."
-                await msg.update()
-                return
+        term_folder_id = term_folder["id"]
+        cl.user_session.set("term_folder_id", term_folder_id)
 
-            count = populate_students_sheet(students)
+        msg.content = f"**{term_folder['name']}** 폴더에서 신청자 목록을 불러오는 중..."
+        await msg.update()
+
+        # 2. 신청자 목록 로드
+        applicants = load_applicants_from_drive(term_folder_id)
+
+        if not applicants:
             msg.content = (
-                f"출석부에서 **{count}명**의 수강생을 불러와 수강생 시트에 등록했습니다.\n\n"
-                "입금내역 파일(.xls 또는 .xlsx)을 업로드해주세요."
+                "회차 폴더에서 신청자 목록(LEARNING_APPLY*.xls)을 찾을 수 없습니다.\n"
+                "배움숲에서 다운로드한 파일을 Drive 회차 폴더에 업로드해주세요."
             )
-        else:
-            msg.content = (
-                f"수강생 **{len(students)}명**이 로드되었습니다.\n\n"
-                "입금내역 파일(.xls 또는 .xlsx)을 업로드해주세요."
-            )
+            await msg.update()
+            cl.user_session.set("state", "idle")
+            return
+
+        # 3. 수강생 시트 생성 (회차 폴더에 동적 생성)
+        students_sheet_id, count = create_students_sheet(
+            applicants, term["term_id"], term_folder_id
+        )
+        cl.user_session.set("students_sheet_id", students_sheet_id)
+
+        # 4. 수강생 목록 로드
+        students = load_students_from_sheet(students_sheet_id)
+
+        msg.content = (
+            f"**{term['term_name']}** 수강 신청자(총 **{count}명**)를 확인했습니다.\n\n"
+            "입금내역 파일(.xls 또는 .xlsx)을 업로드해주세요."
+        )
         await msg.update()
 
         cl.user_session.set("state", "awaiting_payment_file")
         cl.user_session.set("students", students)
 
     except Exception as e:
-        msg.content = f"수강생 데이터 로드 중 오류: {str(e)}"
+        msg.content = f"신청자 데이터 로드 중 오류: {str(e)}"
         await msg.update()
+        cl.user_session.set("state", "idle")
 
 
 async def handle_payment_file(message: cl.Message):
@@ -150,13 +211,19 @@ async def handle_payment_file(message: cl.Message):
 
         # 3. 수강생 목록 가져오기
         students = cl.user_session.get("students", [])
-        if not students:
-            students = load_students_from_sheet()
+        students_sheet_id = cl.user_session.get("students_sheet_id")
+        if not students and students_sheet_id:
+            students = load_students_from_sheet(students_sheet_id)
+
+        # 4. 회원 등급 로드 (정회원 면제 처리용)
+        members = load_members()
+        exempted = apply_exemptions(students, members)
+        exempted_ids = {e["이름ID"] for e in exempted}
 
         msg.content = f"입금 거래 **{len(transactions)}건**을 수강생 **{len(students)}명**과 대조하는 중..."
         await msg.update()
 
-        # 4. 규칙 기반 매칭
+        # 5. 규칙 기반 매칭
         all_results, unmatched = run_code_matching(transactions, students)
 
         code_matched = sum(1 for r in all_results if r["상태"] == "✅정상")
@@ -166,22 +233,28 @@ async def handle_payment_file(message: cl.Message):
         )
         await msg.update()
 
-        # 5. LLM 매칭 (미매칭 건이 있을 때만)
+        # 6. LLM 매칭 (미매칭 건이 있을 때만)
         llm_unmatched = [r for r in unmatched if r["상태"] != "⏭️스킵"]
         if llm_unmatched:
             await run_llm_matching(llm_unmatched, students)
 
-        # 6. 미입금 수강생 찾기
-        unpaid = find_unpaid_students(students, all_results)
+        # 7. 미입금 수강생 찾기
+        unpaid = find_unpaid_students(students, all_results, exempted_ids)
 
-        # 7. 결과 포맷 및 표시
-        summary = format_results(all_results, unpaid)
-        msg.content = summary
-        await msg.update()
+        # 8. 결과 포맷 및 표시
+        summary = format_results(all_results, unpaid, exempted)
+
+        # Action 버튼으로 다음 단계 안내
+        actions = [
+            cl.Action(name="write_results", label="✅ 시트에 반영하기", value="write"),
+            cl.Action(name="cancel_results", label="❌ 취소", value="cancel"),
+        ]
+        await cl.Message(content=summary, actions=actions).send()
 
         # 세션에 결과 저장
         cl.user_session.set("state", "awaiting_payment_confirm")
         cl.user_session.set("matched_results", all_results)
+        cl.user_session.set("exempted", exempted)
 
     except Exception as e:
         msg.content = f"입금 대조 중 오류가 발생했습니다: {str(e)}"
@@ -190,25 +263,184 @@ async def handle_payment_file(message: cl.Message):
 
 
 async def handle_payment_confirm(message: cl.Message):
-    """사용자 확인 → 시트 반영"""
+    """사용자 확인 → 시트 반영 → 다음 단계 Action 버튼 제공"""
     text = message.content.strip()
 
     if any(word in text for word in ["예", "네", "응", "확인", "반영"]):
-        msg = cl.Message(content="수강생 시트에 결과를 반영하는 중...")
-        await msg.send()
-
-        try:
-            results = cl.user_session.get("matched_results", [])
-            updated = write_results_to_sheet(results)
-            msg.content = f"수강생 시트에 **{updated}건**의 입금 정보가 반영되었습니다."
-            await msg.update()
-        except Exception as e:
-            msg.content = f"시트 반영 중 오류: {str(e)}"
-            await msg.update()
+        await write_payment_results()
     else:
         await cl.Message("입금 대조 결과가 반영되지 않았습니다.").send()
+        _clear_payment_session()
 
-    # 상태 초기화
+
+@cl.action_callback("write_results")
+async def on_write_results(action: cl.Action):
+    """시트에 반영하기 Action 핸들러"""
+    await write_payment_results()
+
+
+@cl.action_callback("cancel_results")
+async def on_cancel_results(action: cl.Action):
+    """취소 Action 핸들러"""
+    await cl.Message("입금 대조 결과가 반영되지 않았습니다.").send()
+    _clear_payment_session()
+
+
+async def write_payment_results():
+    """매칭 결과를 시트에 반영하고 다음 단계 Action 제공"""
+    msg = cl.Message(content="수강생 시트에 결과를 반영하는 중...")
+    await msg.send()
+
+    try:
+        results = cl.user_session.get("matched_results", [])
+        exempted = cl.user_session.get("exempted", [])
+        students_sheet_id = cl.user_session.get("students_sheet_id")
+
+        if not students_sheet_id:
+            msg.content = "수강생 시트 정보를 찾을 수 없습니다. 입금 대조를 다시 시작해주세요."
+            await msg.update()
+            _clear_payment_session()
+            return
+
+        updated = write_results_to_sheet(students_sheet_id, results, exempted)
+
+        msg.content = (
+            f"수강생 시트에 **{updated}건**의 입금 정보가 반영되었습니다.\n\n"
+            "배움숲에서 결제완료 회원의 등록상태를 변경해주세요."
+        )
+        await msg.update()
+
+        # 다음 단계 Action 버튼
+        actions = [
+            cl.Action(name="create_attendance", label="📋 출석부 생성하기", value="attendance"),
+            cl.Action(name="redo_payment", label="🔄 입금대조 다시하기", value="redo"),
+            cl.Action(name="free_question", label="❓ 다른 질문하기", value="question"),
+        ]
+        await cl.Message(content="다음 작업을 선택해주세요.", actions=actions).send()
+
+    except Exception as e:
+        msg.content = f"시트 반영 중 오류: {str(e)}"
+        await msg.update()
+
+    # 매칭 결과만 초기화 (term, term_folder_id, students_sheet_id는 유지)
     cl.user_session.set("state", "idle")
     cl.user_session.set("matched_results", None)
     cl.user_session.set("students", None)
+    cl.user_session.set("exempted", None)
+
+
+@cl.action_callback("create_attendance")
+async def on_create_attendance(action: cl.Action):
+    """출석부 생성 Action 핸들러"""
+    await do_create_attendance()
+
+
+@cl.action_callback("redo_payment")
+async def on_redo_payment(action: cl.Action):
+    """입금대조 다시하기 Action 핸들러"""
+    cl.user_session.set("state", "awaiting_payment_file")
+    await cl.Message("입금내역 파일(.xls 또는 .xlsx)을 다시 업로드해주세요.").send()
+
+
+@cl.action_callback("free_question")
+async def on_free_question(action: cl.Action):
+    """다른 질문하기 Action 핸들러"""
+    cl.user_session.set("state", "idle")
+    await cl.Message("궁금한 점을 자유롭게 질문해주세요.").send()
+
+
+async def start_attendance_flow(message: cl.Message):
+    """출석부 생성 — Starter 버튼에서 독립 진입"""
+    term = cl.user_session.get("term") or get_current_term()
+    cl.user_session.set("term", term)
+
+    msg = cl.Message(content=f"**{term['term_name']}** 출석부 생성을 준비하는 중...")
+    await msg.send()
+
+    try:
+        # 회차 폴더 탐색
+        term_folder_id = cl.user_session.get("term_folder_id")
+        if not term_folder_id:
+            term_folder = find_term_folder(term["term_id"])
+            if not term_folder:
+                msg.content = (
+                    f"Drive에서 **{term['term_name']}** 폴더를 찾을 수 없습니다.\n"
+                    f"학사운영(연도별) → {term['year']} → {term['term_id']}... 폴더가 있는지 확인해주세요."
+                )
+                await msg.update()
+                return
+            term_folder_id = term_folder["id"]
+            cl.user_session.set("term_folder_id", term_folder_id)
+
+        # 수강생 시트 찾기
+        students_sheet_id = cl.user_session.get("students_sheet_id")
+        if not students_sheet_id:
+            from app.services.google_drive import find_spreadsheet_by_name
+            existing = find_spreadsheet_by_name(term_folder_id, "수강생")
+            if not existing:
+                msg.content = "수강생 시트를 찾을 수 없습니다. 입금 대조를 먼저 완료해주세요."
+                await msg.update()
+                return
+            students_sheet_id = existing["id"]
+            cl.user_session.set("students_sheet_id", students_sheet_id)
+
+        await do_create_attendance()
+
+    except Exception as e:
+        msg.content = f"출석부 생성 준비 중 오류: {str(e)}"
+        await msg.update()
+
+
+async def do_create_attendance():
+    """출석부 생성 실행"""
+    term = cl.user_session.get("term") or get_current_term()
+    term_folder_id = cl.user_session.get("term_folder_id")
+    students_sheet_id = cl.user_session.get("students_sheet_id")
+
+    if not term_folder_id or not students_sheet_id:
+        await cl.Message(
+            "회차 폴더 또는 수강생 시트 정보를 찾을 수 없습니다. 입금 대조를 먼저 완료해주세요."
+        ).send()
+        return
+
+    msg = cl.Message(content=f"**{term['term_name']}** 출석부를 생성하는 중...")
+    await msg.send()
+
+    try:
+        # 출석부 생성
+        result = create_attendance_sheet(
+            term["term_id"], term_folder_id, students_sheet_id
+        )
+
+        # 회원관리 업데이트 + 수강기록 추가
+        matched_results = cl.user_session.get("matched_results")
+        if matched_results:
+            member_count = update_members_after_registration(matched_results, term["term_id"])
+            record_count = add_enrollment_records(matched_results, term["term_id"])
+            extra = f"\n- 회원 승급: {member_count}명\n- 수강기록 추가: {record_count}건"
+        else:
+            extra = ""
+
+        msg.content = (
+            f"## 📋 출석부 생성 완료\n\n"
+            f"- 과목 수: {len(result['courses'])}개\n"
+            f"- 총 수강생: {result['total_students']}명\n"
+            f"- 과목: {', '.join(result['courses'])}"
+            f"{extra}\n\n"
+            f"[출석부 열기]({result['spreadsheet_url']})"
+        )
+        await msg.update()
+
+    except Exception as e:
+        msg.content = f"출석부 생성 중 오류: {str(e)}"
+        await msg.update()
+
+    cl.user_session.set("state", "idle")
+
+
+def _clear_payment_session():
+    """입금 대조 세션 상태 초기화"""
+    cl.user_session.set("state", "idle")
+    cl.user_session.set("matched_results", None)
+    cl.user_session.set("students", None)
+    cl.user_session.set("exempted", None)

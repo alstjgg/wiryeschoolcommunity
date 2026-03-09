@@ -104,7 +104,10 @@ def match_transaction(
     students: list[dict],
     course_names: list[str],
 ) -> dict:
-    """단일 거래를 학생과 매칭. 결과 dict 반환."""
+    """단일 거래를 학생과 매칭. 결과 dict 반환.
+
+    매칭은 적요(memo)와 의뢰인(sender) 컬럼만 사용.
+    """
     적요 = tx.get("적요", "")
     의뢰인 = tx.get("의뢰인", "")
     amount = tx.get("입금", 0)
@@ -119,29 +122,29 @@ def match_transaction(
         "매칭강좌": None,
         "매칭ID": None,
         "상태": "❌미매칭",
-        "비고": "",
+        "메모": "",
     }
 
     # 1. 특수 유형 감지
     special = detect_special_type(적요, amount)
     if special == "소액":
         result["상태"] = "⏭️스킵"
-        result["비고"] = "소액(예금이자 등)"
+        result["메모"] = "소액(예금이자 등)"
         return result
     if special == "취소":
         result["상태"] = "⏭️스킵"
-        result["비고"] = "취소/대기 건"
+        result["메모"] = "취소/대기 건"
         return result
     if special == "가입비":
-        result["비고"] = "가입비"
+        result["메모"] = "가입비"
 
-    # 2. 이름 추출
+    # 2. 이름 추출 (적요 + 의뢰인만 사용)
     student_names = list({s["이름"] for s in students})
 
     if is_third_party(의뢰인):
         # 카카오페이/토스: 적요에서 이름 추출
         name = extract_name_from_memo(적요, student_names)
-        result["비고"] = (result["비고"] + " 간편결제").strip()
+        result["메모"] = (result["메모"] + " 간편결제").strip()
     else:
         # 일반: 의뢰인에서 이름 추출, 없으면 적요에서 시도
         sender_name = extract_name_from_sender(의뢰인)
@@ -156,12 +159,12 @@ def match_transaction(
     if not name:
         # 이름 매칭 실패
         result["상태"] = "🔶확인필요"
-        result["비고"] = (result["비고"] + " 이름매칭실패").strip()
+        result["메모"] = (result["메모"] + " 이름매칭실패").strip()
         return result
 
     result["매칭이름"] = name
 
-    # 3. 강좌 추출
+    # 3. 강좌 추출 (적요에서만)
     course = extract_course_hint(적요, course_names)
     result["매칭강좌"] = course
 
@@ -170,7 +173,7 @@ def match_transaction(
 
     if not matched_students:
         result["상태"] = "🔶확인필요"
-        result["비고"] = (result["비고"] + " 수강생 미등록").strip()
+        result["메모"] = (result["메모"] + " 수강생 미등록").strip()
         return result
 
     if len(matched_students) == 1:
@@ -191,7 +194,7 @@ def match_transaction(
 
     # 동명이인 + 강좌 구분 불가
     result["상태"] = "🔶확인필요"
-    result["비고"] = (result["비고"] + f" 동명이인({len(matched_students)}명)").strip()
+    result["메모"] = (result["메모"] + f" 동명이인({len(matched_students)}명)").strip()
     return result
 
 

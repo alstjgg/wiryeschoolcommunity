@@ -11,5 +11,8 @@ google-auth==2.38.0
 openpyxl==3.1.5
 xlrd==2.0.1
 
+# HTML parsing (배움숲 신청자 목록)
+beautifulsoup4==4.12.3
+
 # Utilities
 python-dotenv==1.1.0

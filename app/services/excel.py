@@ -1,6 +1,7 @@
-"""Excel 파일 파싱 — 입금내역(.xls/.xlsx) 및 수강생 명단"""
+"""Excel 파일 파싱 — 입금내역(.xls/.xlsx) 및 신청자 목록(HTML .xls)"""
 
 import io
+import re
 from openpyxl import load_workbook
 
 
@@ -9,9 +10,11 @@ def parse_bank_statement(file_bytes: bytes) -> list[dict]:
 
     포맷:
     - Row 1~6: 메타정보 (스킵)
-    - Row 7: 헤더 (거래일시 | 적요 | 비고 | 의뢰인/수취인 | 입금 | 출금 | ...)
+    - Row 7: 헤더 (거래일시 | 적요 | 의뢰인/수취인 | 입금 | 출금 | ...)
     - Row 8+: 거래 데이터
     - 마지막 행: 합계 (스킵)
+
+    비고 컬럼 없음. 의뢰인은 index 2, 입금은 index 3.
     """
     # .xls (OLE2) → xlrd, .xlsx → openpyxl
     try:
@@ -34,15 +37,15 @@ def parse_bank_statement(file_bytes: bytes) -> list[dict]:
 
     transactions = []
     for row in data_rows:
-        if len(row) < 5:
+        if len(row) < 4:
             continue
 
         거래일시 = str(row[0]).strip() if row[0] else ""
         적요 = str(row[1]).strip() if row[1] else ""
-        의뢰인 = str(row[3]).strip() if row[3] else ""
+        의뢰인 = str(row[2]).strip() if row[2] else ""
 
-        # 입금액 파싱
-        raw_amount = row[4]
+        # 입금액 파싱 (index 3)
+        raw_amount = row[3]
         if raw_amount is None or str(raw_amount).strip() == "":
             continue
         try:
@@ -63,48 +66,83 @@ def parse_bank_statement(file_bytes: bytes) -> list[dict]:
     return transactions
 
 
-def parse_student_list(file_bytes: bytes, filename: str = "") -> list[dict]:
-    """수강생 명단 .xlsx 파싱 → 학생 리스트 반환
+def parse_applicant_list(file_bytes: bytes) -> list[dict]:
+    """배움숲 신청자 목록(LEARNING_APPLY*.xls, HTML 형식) 파싱
 
-    포맷: 번호 | 강좌명 | 이름 | 휴대전화 | 성별 | 나이 | 행정동
-    ID = 이름 + 전화번호 뒤 4자리
+    CRITICAL: HTML 테이블은 23개 헤더 컬럼이지만 데이터 행은 22개 셀.
+    '실제결제금액' 컬럼(index 5)이 헤더에만 존재하고 데이터가 없어
+    이후 컬럼이 1칸씩 밀림. 보정 필요.
+
+    헤더(23개):
+    번호(0), 회차(1), 강좌명(2), 감면정보(3), 수강료(4), 실제결제금액(5),
+    신청자(아이디)(6), 성별(7), 생년월일(8), 나이(9), 연락처(10),
+    주소(11), 행정동(12), 이메일(13), 분류(14), 교육기간(15),
+    신청상태(16), 진행상태(17), 환불신청일(18), 환불은행(19),
+    환불계좌번호(20), 환불예금주(21), 환불사유(22)
+
+    데이터(22개, 실제결제금액 누락):
+    번호(0), 회차(1), 강좌명(2), 감면정보(3), 수강료(4),
+    신청자(아이디)(5→보정후6), 성별(6→7), 생년월일(7→8), 나이(8→9),
+    연락처(9→10), 주소(10→11), 행정동(11→12), 이메일(12→13),
+    분류(13→14), 교육기간(14→15), 신청상태(15→16), 진행상태(16→17), ...
     """
-    wb = load_workbook(io.BytesIO(file_bytes), read_only=True, data_only=True)
-    ws = wb.active
-    rows = list(ws.iter_rows(values_only=True))
-    wb.close()
+    from bs4 import BeautifulSoup
 
-    if len(rows) < 2:
+    soup = BeautifulSoup(file_bytes, "html.parser")
+    table = soup.find("table")
+    if not table:
         return []
 
-    students = []
-    for row in rows[1:]:  # 헤더 스킵
-        if len(row) < 4:
+    all_rows = table.find_all("tr")
+    if len(all_rows) < 2:
+        return []
+
+    # 첫 행 = 헤더
+    header_cells = all_rows[0].find_all(["th", "td"])
+    header_count = len(header_cells)
+
+    applicants = []
+    for tr in all_rows[1:]:
+        cells = [td.get_text(strip=True) for td in tr.find_all(["th", "td"])]
+        if not cells or len(cells) < 16:
             continue
 
-        이름 = str(row[2]).strip() if row[2] else ""
-        강좌명 = str(row[1]).strip() if row[1] else ""
-        전화번호 = str(row[3]).strip() if row[3] else ""
+        # 실제결제금액(index 5) 데이터 누락 보정: 빈 값 삽입
+        if len(cells) < header_count:
+            cells.insert(5, "")
 
-        if not 이름:
-            continue
+        # 인덱스는 보정 후 헤더 기준
+        회차 = cells[1]
+        강좌명 = cells[2]
+        신청자_raw = cells[6]  # "고아라(bnmaam)" 형태
+        성별 = cells[7]
+        나이 = cells[9]
+        연락처 = cells[10]
+        주소 = cells[11]
+        행정동 = cells[12]
+        이메일 = cells[13]
+        신청상태 = cells[16]
 
-        # ID 생성: 이름 + 전화번호 뒤 4자리
-        phone_suffix = 전화번호.replace("-", "").replace(" ", "")[-4:] if 전화번호 else ""
-        student_id = f"{이름}{phone_suffix}" if phone_suffix else 이름
+        # 신청자에서 이름 추출 (괄호 앞 부분)
+        name_match = re.match(r"^([^(]+)", 신청자_raw)
+        이름 = name_match.group(1).strip() if name_match else 신청자_raw.strip()
 
-        성별 = str(row[4]).strip() if len(row) > 4 and row[4] else ""
-        나이 = str(row[5]).strip() if len(row) > 5 and row[5] else ""
-        행정동 = str(row[6]).strip() if len(row) > 6 and row[6] else ""
+        # 전화번호에서 이름ID 생성
+        phone_clean = 연락처.replace("-", "").replace(" ", "")
+        phone_suffix = phone_clean[-4:] if len(phone_clean) >= 4 else ""
+        이름ID = f"{이름}{phone_suffix}" if phone_suffix else 이름
 
-        students.append({
-            "이름ID": student_id,
+        applicants.append({
+            "이름ID": 이름ID,
             "이름": 이름,
             "강좌명": 강좌명,
-            "전화번호": 전화번호,
+            "전화번호": 연락처,
             "성별": 성별,
             "나이": 나이,
-            "주소": 행정동,
+            "주소": 주소,
+            "행정동": 행정동,
+            "이메일": 이메일,
+            "신청상태": 신청상태,
         })
 
-    return students
+    return applicants
