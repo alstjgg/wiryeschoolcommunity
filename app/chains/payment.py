@@ -11,17 +11,29 @@ from app.config import (
 )
 from app.services.google_auth import get_drive_service
 from app.services.google_drive import (
-    list_files, find_spreadsheet_by_name,
+    list_files, find_spreadsheet_by_name, find_or_create_folder,
 )
 from app.services.google_sheets import read_sheet, write_sheet, append_sheet
 
 
 def load_applicants_from_drive(term_folder_id: str) -> list[dict]:
-    """회차 폴더에서 LEARNING_APPLY*.xls 파일을 찾아 파싱 → 신청자 목록 반환"""
+    """회차 폴더에서 LEARNING_APPLY*.xls 파일을 찾아 파싱 → 신청자 목록 반환
+
+    새 구조: 회차 폴더 내 '수강생/' 서브폴더에서 먼저 탐색.
+    서브폴더가 없으면 term_folder_id 직접 탐색 (구버전 폴백).
+    """
     from app.services.excel import parse_applicant_list
+    from app.services.google_drive import find_file as _find_file
+
+    # 수강생/ 서브폴더 탐색
+    students_subfolder = _find_file("수강생", parent_id=term_folder_id)
+    if students_subfolder and "folder" in students_subfolder.get("mimeType", ""):
+        search_folder_id = students_subfolder["id"]
+    else:
+        search_folder_id = term_folder_id
 
     drive = get_drive_service()
-    files = list_files(term_folder_id)
+    files = list_files(search_folder_id)
 
     # LEARNING_APPLY*.xls 파일 찾기
     apply_files = [
@@ -37,7 +49,7 @@ def load_applicants_from_drive(term_folder_id: str) -> list[dict]:
     file_info = apply_files[0]
 
     # Drive에서 파일 다운로드
-    request = drive.files().get_media(fileId=file_info["id"])
+    request = drive.files().get_media(fileId=file_info["id"], supportsAllDrives=True)
     file_bytes = request.execute()
 
     return parse_applicant_list(file_bytes)
@@ -66,8 +78,12 @@ def create_students_sheet(applicants: list[dict], term_id: str, term_folder_id: 
             "",  # 등록상태
         ])
 
-    # 기존 "수강생" 시트 찾기
-    existing = find_spreadsheet_by_name(term_folder_id, "수강생")
+    # 수강생/ 서브폴더 확보 (없으면 생성)
+    subfolder = find_or_create_folder(term_folder_id, "수강생")
+    students_folder_id = subfolder["id"]
+
+    # 기존 "수강생" 시트 찾기 — 서브폴더 기준
+    existing = find_spreadsheet_by_name(students_folder_id, "수강생")
 
     if existing:
         spreadsheet_id = existing["id"]
@@ -79,10 +95,10 @@ def create_students_sheet(applicants: list[dict], term_id: str, term_folder_id: 
         file_metadata = {
             "name": "수강생",
             "mimeType": "application/vnd.google-apps.spreadsheet",
-            "parents": [term_folder_id],
+            "parents": [students_folder_id],
         }
         file = drive.files().create(
-            body=file_metadata, fields="id"
+            body=file_metadata, fields="id", supportsAllDrives=True
         ).execute()
         spreadsheet_id = file["id"]
 

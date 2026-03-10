@@ -13,7 +13,13 @@ def find_file(name: str, parent_id: str | None = None) -> dict | None:
 
     results = (
         service.files()
-        .list(q=query, fields="files(id, name, mimeType)", pageSize=1)
+        .list(
+            q=query,
+            fields="files(id, name, mimeType)",
+            pageSize=1,
+            supportsAllDrives=True,
+            includeItemsFromAllDrives=True,
+        )
         .execute()
     )
     files = results.get("files", [])
@@ -29,7 +35,13 @@ def list_files(parent_id: str, mime_type: str | None = None) -> list[dict]:
 
     results = (
         service.files()
-        .list(q=query, fields="files(id, name, mimeType)", pageSize=100)
+        .list(
+            q=query,
+            fields="files(id, name, mimeType)",
+            pageSize=100,
+            supportsAllDrives=True,
+            includeItemsFromAllDrives=True,
+        )
         .execute()
     )
     return results.get("files", [])
@@ -49,8 +61,9 @@ def find_folder_by_path(path_parts: list[str]) -> str | None:
 def find_term_folder(term_id: str) -> dict | None:
     """Drive에서 회차 폴더를 동적 탐색.
 
-    경로: 학사운영(연도별) → {year} → {term_id}로 시작하는 폴더
-    예: term_id="2026-1" → "2026" 폴더 내 "2026-1 겨울학기" 폴더 반환.
+    경로: 02_학사운영 → {year} → {term_id}로 시작하는 폴더
+    예: term_id="2026-1" → "2026" 폴더 내 "2026-1_겨울학기" 폴더 반환.
+    폴더명 구분자(space/underscore)는 startswith 검색에 영향 없음.
     """
     year = term_id.split("-")[0]  # "2026"
 
@@ -98,6 +111,6 @@ def find_or_create_folder(parent_id: str, name: str) -> dict:
         "parents": [parent_id],
     }
     folder = service.files().create(
-        body=file_metadata, fields="id, name, mimeType"
+        body=file_metadata, fields="id, name, mimeType", supportsAllDrives=True
     ).execute()
     return folder

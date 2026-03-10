@@ -170,20 +170,23 @@ drive_service = build('drive', 'v3', credentials=credentials)
 ### Google Drive 디렉토리
 
 ```
-위례인생학교 자료실/                          ← ROOT_FOLDER_ID
+위례인생학교 자료실/  (Shared Drive root: 0AANInBeWsB7dUk9PVA)
 ├── 회원관리 (Google Sheets)                  ← 루트, 영속
 ├── 수강기록 (Google Sheets)                  ← 루트, 영속
-└── 학사운영(연도별)/
+└── 02_학사운영/    (1WuqNFt-g5qhnY1nMk0a8dsowZHKQVRMm)
     └── {연도}/
-        └── {회차} {계절}학기/                ← 예: "2026-1 겨울학기"
-            ├── LEARNING_APPLY*.xls           ← 배움숲 신청자 목록 (SoT)
-            ├── 수강생 (Google Sheets)         ← Agent가 신청자 목록 기반으로 생성
+        └── {회차}_{계절}학기/                ← 예: "2026-1_겨울학기"
+            ├── 수강생/                        ← 서브폴더 (NEW)
+            │   ├── LEARNING_APPLY*.xls       ← 배움숲 신청자 목록 (SoT)
+            │   └── 수강생 (Google Sheets)     ← Agent가 신청자 목록 기반으로 생성
             ├── 출석부/
             │   └── 출석부 (Google Sheets)     ← 과목별 시트탭, Agent가 생성
             │   └── {회차}_{과목명}_출석부.pdf  ← A4 프린트용, Agent가 생성
-            └── 강의계획서/
-                ├── 초안/
-                └── 검토완료/
+            ├── 강의계획서/
+            │   ├── 초안/
+            │   └── 검토완료/
+            ├── 입금/
+            └── 홍보·안내/
 ```
 
 ### 회원관리 (루트, 영속) — 전체 회원 마스터
@@ -324,14 +327,14 @@ TERM_SEASONS = {1: "겨울", 2: "봄", 3: "여름", 4: "가을"}
 |----------|--------|------|----|----------|
 | 회원관리 | `MEMBERS_SHEET_ID` | Spreadsheet | `193r34mtLHd0-oX7MKJOWq1Ane9iBfbBZB5yYf78R3Bo` | `회원관리` |
 | 수강기록 | `RECORDS_SHEET_ID` | Spreadsheet | `1cKolq6Mr-5u65nQDeMq8z4DsFWpHTLVthkAvyt4Rb6s` | `수강기록` |
-| Root folder | `ROOT_FOLDER_ID` | Drive folder | `1N24ROJ12BEDRrSmtezXdV70Pi3Np7sRm` | — |
-| 학사운영 folder | `OPERATIONS_FOLDER_ID` | Drive folder | `19EazEwzYEgD2Wsocv6bU5K907vHRY6sK` | — |
+| Root folder | `ROOT_FOLDER_ID` | Shared Drive root | `0AANInBeWsB7dUk9PVA` | — |
+| 학사운영 folder | `OPERATIONS_FOLDER_ID` | Drive folder | `1WuqNFt-g5qhnY1nMk0a8dsowZHKQVRMm` | — |
 
 ### 회차별 리소스 (런타임에 동적 탐색 — config.py에 없음)
 
 | Resource | 탐색 방법 | 참고 ID (2026-1) |
 |----------|----------|-----------------|
-| 회차 폴더 | `find_term_folder(term_id)` → 학사운영 → 연도 → term_id* | `1PD-10tt7o9U8suCjwJmgZt0FCvH6BhtP` |
+| 회차 폴더 | `find_term_folder(term_id)` → 02_학사운영 → 연도 → term_id* | `1PD-10tt7o9U8suCjwJmgZt0FCvH6BhtP` |
 | 수강생 시트 | `create_students_sheet()` / `find_spreadsheet_by_name(term_folder, "수강생")` | `16vRPnHWX7AEd66xsxVSYAZrKNRtTdz_5DbjSYDo5RBY` |
 | 출석부 폴더 | `find_or_create_folder(term_folder, "출석부")` | `1i-sixwrwPU_XxYhOwhDvaIqfvCxICWB8` |
 
@@ -348,7 +351,7 @@ TERM_SEASONS = {1: "겨울", 2: "봄", 3: "여름", 4: "가을"}
 
 ## 현재 상태
 
-- **Phase**: Phase 1 구현 완료 (E2E 테스트 및 배포 필요)
+- **Phase**: Phase 1 구현 완료 + Railway 배포 완료 (E2E 기능 테스트 필요)
 - **Phase 0 완료**:
   - 기획서(DEV_DOCUMENT), 데이터 구조 설계, 입금 패턴 분석
   - Python 프로젝트 초기 셋업, Chainlit 기본 앱 (채팅 UI + Starter 버튼 + Q&A)
@@ -366,9 +369,18 @@ TERM_SEASONS = {1: "겨울", 2: "봄", 3: "여름", 4: "가을"}
   - Action 버튼으로 작업 간 연결 (출석부 생성, 입금대조 다시하기, 다른 질문)
   - AskActionMessage로 회차 확인 대기
   - 세션 상태 머신: idle → awaiting_term_confirm → awaiting_payment_file → awaiting_payment_confirm → idle
+- **Railway 배포 완료**:
+  - `nixpacks.toml` 추가 (Python 3.10 버전 고정)
+  - `cl.Action`의 `value=` → `payload={"value": ...}` 마이그레이션 (Chainlit 2.x API 변경)
+  - Railway 환경 변수: `ANTHROPIC_API_KEY`, `GOOGLE_SA_KEY_JSON`, `GOOGLE_DELEGATED_USER`
+  - **주의**: Railway Variables에서 반드시 `GOOGLE_SA_KEY_JSON`을 사용할 것 (`GOOGLE_SA_KEY_PATH`에 JSON을 넣으면 "File name too long" 에러 발생)
+- **단위 테스트 추가** (`tests/`):
+  - `test_matching.py` (32개), `test_excel.py` (12개), `test_term.py` (6개) — 총 50개 통과
+  - 실행: `source .venv/bin/activate && pytest tests/ -v`
+  - 테스트 의존성: `requirements-dev.txt` (pytest, pytest-asyncio)
 - **PaaS 인증 방식**: SA 키를 GOOGLE_SA_KEY_JSON 환경변수로 전달 (파일 마운트 불가), google_auth.py에서 from_service_account_info() 사용
 - **다음 작업**:
-  1. Railway 배포 + E2E 테스트 (실제 신청자 목록 + 입금내역으로 전체 플로우 검증)
+  1. E2E 기능 테스트 (실제 신청자 목록 + 입금내역으로 전체 플로우 검증)
   2. cl.Step으로 작업 중간 진행 상황 공유 (현재는 msg.update()로 대체)
   3. 질의 응답 — Context Injection 고도화 (docs/BUSINESS_CONTEXT.md 활용)
 - **백로그 (Phase 1)**:

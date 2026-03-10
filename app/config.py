@@ -34,8 +34,8 @@ TERMS = {
 TERM_SEASONS = {1: "겨울", 2: "봄", 3: "여름", 4: "가을"}
 
 # Google Drive/Sheets IDs (영속 리소스만 — 회차별 ID는 런타임에 동적 탐색)
-ROOT_FOLDER_ID = "1N24ROJ12BEDRrSmtezXdV70Pi3Np7sRm"
-OPERATIONS_FOLDER_ID = "19EazEwzYEgD2Wsocv6bU5K907vHRY6sK"  # 학사운영(연도별)
+ROOT_FOLDER_ID = "0AANInBeWsB7dUk9PVA"
+OPERATIONS_FOLDER_ID = "1WuqNFt-g5qhnY1nMk0a8dsowZHKQVRMm"  # 02_학사운영
 MEMBERS_SHEET_ID = "193r34mtLHd0-oX7MKJOWq1Ane9iBfbBZB5yYf78R3Bo"
 RECORDS_SHEET_ID = "1cKolq6Mr-5u65nQDeMq8z4DsFWpHTLVthkAvyt4Rb6s"
 
