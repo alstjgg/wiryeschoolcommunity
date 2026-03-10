@@ -202,3 +202,28 @@ def test_unknown_sender_flagged():
     tx = {"거래일시": "2026-01-10", "적요": "", "의뢰인": "홍길동", "입금": 20000}
     result = match_transaction(tx, STUDENTS, COURSE_NAMES)
     assert result["상태"] == "🔶확인필요"
+
+
+# ── match_transaction — 가입비 / 정회원비 ─────────────────────────────────────
+
+def test_membership_fee_only_flagged_as_review():
+    """가입비(10,000원)만 납부 시 수강료 미확인 → 🔶확인필요"""
+    tx = {"거래일시": "2026-01-10", "적요": "박민서 가입비", "의뢰인": "박민서", "입금": 10000}
+    result = match_transaction(tx, STUDENTS, COURSE_NAMES)
+    assert result["상태"] == "🔶확인필요"
+    assert result["매칭ID"] == "박민서6804"  # 이름은 매칭됨
+    assert "가입비" in result["메모"]
+
+def test_full_membership_payment_flagged_as_review():
+    """정회원비(120,000원) 납부 → 관리자 수동 처리 필요 → 🔶확인필요"""
+    tx = {"거래일시": "2026-01-10", "적요": "박민서정회원", "의뢰인": "박민서", "입금": 120000}
+    result = match_transaction(tx, STUDENTS, COURSE_NAMES)
+    assert result["상태"] == "🔶확인필요"
+    assert result["매칭ID"] == "박민서6804"
+    assert "정회원비" in result["메모"]
+
+def test_tuition_plus_membership_not_flagged():
+    """수강료+가입비(30,000원)는 정상 매칭 → ✅정상"""
+    tx = {"거래일시": "2026-01-10", "적요": "박민서 명상 가입비포함", "의뢰인": "박민서", "입금": 30000}
+    result = match_transaction(tx, STUDENTS, COURSE_NAMES)
+    assert result["상태"] == "✅정상"

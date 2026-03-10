@@ -135,8 +135,13 @@ def match_transaction(
         result["상태"] = "⏭️스킵"
         result["메모"] = "취소/대기 건"
         return result
+
+    # 가입비 또는 정회원비 → 이름 매칭은 계속하되 ✅정상 불가
+    force_review: str | None = None
     if special == "가입비":
-        result["메모"] = "가입비"
+        force_review = "가입비만 납부 — 수강료 별도 확인 필요"
+    elif special == "정회원":
+        force_review = "정회원비 납부 — 회원관리 등급 수동 업데이트 필요"
 
     # 2. 이름 추출 (적요 + 의뢰인만 사용)
     student_names = list({s["이름"] for s in students})
@@ -181,7 +186,11 @@ def match_transaction(
         student = matched_students[0]
         result["매칭ID"] = student["이름ID"]
         result["매칭강좌"] = course or student["강좌명"]
-        result["상태"] = "✅정상"
+        if force_review:
+            result["상태"] = "🔶확인필요"
+            result["메모"] = force_review
+        else:
+            result["상태"] = "✅정상"
         return result
 
     # 5. 동명이인 처리 — 강좌로 구분
@@ -189,7 +198,12 @@ def match_transaction(
         course_matched = [s for s in matched_students if s["강좌명"] == course]
         if len(course_matched) == 1:
             result["매칭ID"] = course_matched[0]["이름ID"]
-            result["상태"] = "✅정상"
+            result["매칭강좌"] = course
+            if force_review:
+                result["상태"] = "🔶확인필요"
+                result["메모"] = force_review
+            else:
+                result["상태"] = "✅정상"
             return result
 
     # 동명이인 + 강좌 구분 불가

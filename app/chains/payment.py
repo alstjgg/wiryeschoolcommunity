@@ -411,11 +411,14 @@ def write_results_to_sheet(students_sheet_id: str, matched_results: list[dict], 
 
     data_rows = rows[1:]
 
-    # 매칭 결과를 ID 기준으로 인덱싱
-    result_by_id = {}
+    # 매칭 결과를 (이름ID, 과목명) 기준으로 인덱싱 — 이름ID만 쓰면 1건 입금으로 전 과목이 ✅정상이 되는 버그 방지
+    WRITABLE_STATUSES = ("✅정상", "🔶확인필요", "⚠️이름불일치")
+    result_by_key: dict[tuple, dict] = {}
     for r in matched_results:
-        if r.get("매칭ID") and r["상태"] == "✅정상":
-            result_by_id[r["매칭ID"]] = r
+        mid = r.get("매칭ID")
+        mcourse = r.get("매칭강좌") or ""
+        if mid and r["상태"] in WRITABLE_STATUSES:
+            result_by_key[(mid, mcourse)] = r
 
     # 정회원 면제 ID
     exempted_ids = {e["이름ID"] for e in exempted}
@@ -424,19 +427,23 @@ def write_results_to_sheet(students_sheet_id: str, matched_results: list[dict], 
     updated_rows = []
     for row in data_rows:
         student_id = row[0] if len(row) > 0 else ""
+        student_course = row[1] if len(row) > 1 else ""
         # 기존 값 유지하면서 업데이트할 부분만 변경
         new_row = list(row) + [""] * (7 - len(row))  # 7컬럼 보장
+
+        key = (student_id, student_course)
 
         if student_id in exempted_ids:
             new_row[5] = "💎면제"  # 입금현황
             new_row[6] = "정상등록"  # 등록상태
             updated_count += 1
-        elif student_id in result_by_id:
-            r = result_by_id[student_id]
+        elif key in result_by_key:
+            r = result_by_key[key]
             new_row[2] = r.get("거래일시", "")  # 입금시간
             new_row[3] = r.get("적요", "")  # 입금자명(적요)
-            new_row[5] = "✅정상"  # 입금현황
-            new_row[6] = "정상등록"  # 등록상태
+            new_row[5] = r["상태"]  # ✅정상 / 🔶확인필요 / ⚠️이름불일치
+            if r["상태"] == "✅정상":
+                new_row[6] = "정상등록"  # 등록상태 (확인필요는 관리자 수동 확인)
             updated_count += 1
         else:
             # 미입금 상태 유지
