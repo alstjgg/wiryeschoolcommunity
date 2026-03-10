@@ -101,12 +101,12 @@ async def start_payment_flow(message: cl.Message):
     res = await cl.AskActionMessage(
         content=f"**{term['term_name']}** 입금 대조를 시작할까요?",
         actions=[
-            cl.Action(name="confirm_term", label="✅ 맞습니다", value="confirm"),
-            cl.Action(name="cancel_term", label="❌ 취소", value="cancel"),
+            cl.Action(name="confirm_term", label="✅ 맞습니다", payload={"value": "confirm"}),
+            cl.Action(name="cancel_term", label="❌ 취소", payload={"value": "cancel"}),
         ],
     ).send()
 
-    if res and res.get("value") == "confirm":
+    if res and res.get("payload", {}).get("value") == "confirm":
         await process_term_confirmed()
     else:
         await cl.Message("입금 대조가 취소되었습니다.").send()
@@ -246,8 +246,8 @@ async def handle_payment_file(message: cl.Message):
 
         # Action 버튼으로 다음 단계 안내
         actions = [
-            cl.Action(name="write_results", label="✅ 시트에 반영하기", value="write"),
-            cl.Action(name="cancel_results", label="❌ 취소", value="cancel"),
+            cl.Action(name="write_results", label="✅ 시트에 반영하기", payload={"value": "write"}),
+            cl.Action(name="cancel_results", label="❌ 취소", payload={"value": "cancel"}),
         ]
         await cl.Message(content=summary, actions=actions).send()
 
@@ -312,9 +312,9 @@ async def write_payment_results():
 
         # 다음 단계 Action 버튼
         actions = [
-            cl.Action(name="create_attendance", label="📋 출석부 생성하기", value="attendance"),
-            cl.Action(name="redo_payment", label="🔄 입금대조 다시하기", value="redo"),
-            cl.Action(name="free_question", label="❓ 다른 질문하기", value="question"),
+            cl.Action(name="create_attendance", label="📋 출석부 생성하기", payload={"value": "attendance"}),
+            cl.Action(name="redo_payment", label="🔄 입금대조 다시하기", payload={"value": "redo"}),
+            cl.Action(name="free_question", label="❓ 다른 질문하기", payload={"value": "question"}),
         ]
         await cl.Message(content="다음 작업을 선택해주세요.", actions=actions).send()
 
