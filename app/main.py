@@ -372,11 +372,17 @@ async def start_attendance_flow(message: cl.Message):
             term_folder_id = term_folder["id"]
             cl.user_session.set("term_folder_id", term_folder_id)
 
-        # 수강생 시트 찾기
+        # 수강생 시트 찾기 — 수강생/ 서브폴더 우선, 없으면 회차 폴더 직접 탐색
         students_sheet_id = cl.user_session.get("students_sheet_id")
         if not students_sheet_id:
-            from app.services.google_drive import find_spreadsheet_by_name
-            existing = find_spreadsheet_by_name(term_folder_id, "수강생")
+            from app.services.google_drive import find_spreadsheet_by_name, find_file as _find_file
+            students_subfolder = _find_file("수강생", parent_id=term_folder_id)
+            search_folder = (
+                students_subfolder["id"]
+                if students_subfolder and "folder" in students_subfolder.get("mimeType", "")
+                else term_folder_id
+            )
+            existing = find_spreadsheet_by_name(search_folder, "수강생")
             if not existing:
                 msg.content = "수강생 시트를 찾을 수 없습니다. 입금 대조를 먼저 완료해주세요."
                 await msg.update()

@@ -61,7 +61,9 @@ def create_attendance_sheet(term_id: str, term_folder_id: str, students_sheet_id
         "mimeType": "application/vnd.google-apps.spreadsheet",
         "parents": [attendance_folder_id],
     }
-    file = drive.files().create(body=file_metadata, fields="id, webViewLink").execute()
+    file = drive.files().create(
+        body=file_metadata, fields="id, webViewLink", supportsAllDrives=True
+    ).execute()
     spreadsheet_id = file["id"]
     spreadsheet_url = file.get("webViewLink", "")
 

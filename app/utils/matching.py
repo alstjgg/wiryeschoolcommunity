@@ -76,8 +76,8 @@ def detect_special_type(적요: str, amount: int) -> str | None:
     if "가입" in text and amount == MEMBERSHIP_FEE:
         return "가입비"
 
-    # 정회원비
-    if amount == FULL_MEMBERSHIP_FEE:
+    # 정회원비 — 금액 일치 또는 텍스트 포함
+    if amount == FULL_MEMBERSHIP_FEE or "정회원" in text:
         return "정회원"
 
     return None

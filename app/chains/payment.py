@@ -396,6 +396,17 @@ def format_results(matched: list[dict], unpaid: list[dict], exempted: list[dict]
             lines.append(f"- {u['이름']} ({u['강좌명']})")
         lines.append("")
 
+    # 미매칭 거래 (입금 내역에 있으나 수강생 미매칭)
+    unmatched_txs = [r for r in matched if r["상태"] == "❌미매칭"]
+    if unmatched_txs:
+        lines.append("### ❌ 미매칭 입금 거래 (수동 확인 필요)")
+        for r in unmatched_txs:
+            lines.append(
+                f"- 적요: \"{r['적요']}\" / 의뢰인: \"{r['의뢰인']}\" / "
+                f"{r['금액분류']} / {r.get('메모', '')}"
+            )
+        lines.append("")
+
     return "\n".join(lines)
 
 

@@ -95,7 +95,7 @@ def test_parse_bank_normal_row():
     assert len(result) == 1
     assert result[0]["입금"] == 20000
     assert result[0]["의뢰인"] == "박민서"
-    assert result[0]["적요"] == "박민서명상 나, 마음챙김 명상"
+    assert result[0]["적요"] == "박민서명상"
     assert result[0]["거래일시"] == "2026-01-10 10:00"
 
 def test_parse_bank_memo_c_question_mark_ignored():
