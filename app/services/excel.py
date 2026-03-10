@@ -10,11 +10,13 @@ def parse_bank_statement(file_bytes: bytes) -> list[dict]:
 
     포맷:
     - Row 1~6: 메타정보 (스킵)
-    - Row 7: 헤더 (거래일시 | 적요 | 의뢰인/수취인 | 입금 | 출금 | ...)
+    - Row 7: 헤더 (거래일시 | 적요(B) | 적요(C) | 의뢰인/수취인 | 입금 | 출금 | ...)
     - Row 8+: 거래 데이터
     - 마지막 행: 합계 (스킵)
 
-    비고 컬럼 없음. 의뢰인은 index 2, 입금은 index 3.
+    '적요' 헤더가 B(index 1)+C(index 2) 두 컬럼을 차지.
+    의뢰인은 index 3, 입금은 index 4.
+    적요는 B(자유입력)와 C(은행설명)를 합쳐서 사용.
     """
     # .xls (OLE2) → xlrd, .xlsx → openpyxl
     try:
@@ -37,15 +39,21 @@ def parse_bank_statement(file_bytes: bytes) -> list[dict]:
 
     transactions = []
     for row in data_rows:
-        if len(row) < 4:
+        if len(row) < 5:
             continue
 
         거래일시 = str(row[0]).strip() if row[0] else ""
-        적요 = str(row[1]).strip() if row[1] else ""
-        의뢰인 = str(row[2]).strip() if row[2] else ""
+        # 적요: B(자유입력) + C(은행설명) 합산, 중복 제거
+        적요_b = str(row[1]).strip() if row[1] else ""
+        적요_c = str(row[2]).strip() if row[2] else ""
+        # C가 "?"로만 이루어진 경우 제외
+        if 적요_c.lstrip("? ") == "":
+            적요_c = ""
+        적요 = f"{적요_b} {적요_c}".strip() if 적요_c else 적요_b
+        의뢰인 = str(row[3]).strip() if row[3] else ""
 
-        # 입금액 파싱 (index 3)
-        raw_amount = row[3]
+        # 입금액 파싱 (index 4)
+        raw_amount = row[4]
         if raw_amount is None or str(raw_amount).strip() == "":
             continue
         try:

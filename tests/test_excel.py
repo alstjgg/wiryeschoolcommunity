@@ -18,17 +18,20 @@ def make_bank_xlsx(data_rows: list[list]) -> bytes:
     """
     은행 입금내역 .xlsx 인메모리 빌드.
     구조: 메타 6행 + 헤더 1행 + 데이터 행 + 합계 1행 (마지막).
+
+    컬럼: 거래일시(0) | 적요B(1) | 적요C(2) | 의뢰인/수취인(3) | 입금(4) | 출금(5)
+    '적요' 헤더가 B+C 두 컬럼을 차지하는 실제 파일 구조 반영.
     """
     wb = openpyxl.Workbook()
     ws = wb.active
     for i in range(6):
-        ws.append([f"메타{i+1}", "", "", ""])
-    ws.append(["거래일시", "적요", "의뢰인/수취인", "입금", "출금"])
+        ws.append([f"메타{i+1}", "", "", "", "", ""])
+    ws.append(["거래일시", "적요", "", "의뢰인/수취인", "입금", "출금"])
     for row in data_rows:
         ws.append(row)
     # 합계 행 (마지막 — 파서가 제외해야 함)
-    total = sum(r[3] for r in data_rows if isinstance(r[3], (int, float)) and r[3] > 0)
-    ws.append(["합계", "", "", total, ""])
+    total = sum(r[4] for r in data_rows if isinstance(r[4], (int, float)) and r[4] > 0)
+    ws.append(["합계", "", "", "", total, ""])
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
@@ -84,20 +87,29 @@ def make_applicant_html(rows: list[dict]) -> bytes:
 # ── parse_bank_statement ──────────────────────────────────────────────────────
 
 def test_parse_bank_normal_row():
+    # 컬럼: 거래일시, 적요B, 적요C, 의뢰인, 입금, 출금
     data = make_bank_xlsx([
-        ["2026-01-10 10:00", "박민서명상", "박민서", 20000, 0],
+        ["2026-01-10 10:00", "박민서명상", "나, 마음챙김 명상", "박민서", 20000, 0],
     ])
     result = parse_bank_statement(data)
     assert len(result) == 1
     assert result[0]["입금"] == 20000
     assert result[0]["의뢰인"] == "박민서"
-    assert result[0]["적요"] == "박민서명상"
+    assert result[0]["적요"] == "박민서명상 나, 마음챙김 명상"
     assert result[0]["거래일시"] == "2026-01-10 10:00"
+
+def test_parse_bank_memo_c_question_mark_ignored():
+    """적요C가 '?' 또는 공백만이면 적요B만 사용"""
+    data = make_bank_xlsx([
+        ["2026-01-10", "최정숙", "?", "최정숙", 20000, 0],
+    ])
+    result = parse_bank_statement(data)
+    assert result[0]["적요"] == "최정숙"
 
 def test_parse_bank_skips_zero_amount():
     data = make_bank_xlsx([
-        ["2026-01-10", "수강료", "박민서", 20000, 0],
-        ["2026-01-10", "출금건", "은행", 0, 5000],  # 입금=0 → 스킵
+        ["2026-01-10", "수강료", "", "박민서", 20000, 0],
+        ["2026-01-10", "출금건", "", "은행", 0, 5000],  # 입금=0 → 스킵
     ])
     result = parse_bank_statement(data)
     assert len(result) == 1
@@ -105,8 +117,8 @@ def test_parse_bank_skips_zero_amount():
 
 def test_parse_bank_skips_negative_amount():
     data = make_bank_xlsx([
-        ["2026-01-10", "수강료", "김기춘", 20000, 0],
-        ["2026-01-10", "이자환수", "은행", -100, 0],  # 음수 → 스킵
+        ["2026-01-10", "수강료", "", "김기춘", 20000, 0],
+        ["2026-01-10", "이자환수", "", "은행", -100, 0],  # 음수 → 스킵
     ])
     result = parse_bank_statement(data)
     assert len(result) == 1
@@ -114,14 +126,14 @@ def test_parse_bank_skips_negative_amount():
 def test_parse_bank_excludes_last_totals_row():
     # 1개 데이터 행만 있어야 함 (합계 행 제외 확인)
     data = make_bank_xlsx([
-        ["2026-01-10", "수강료", "이현수", 20000, 0],
+        ["2026-01-10", "수강료", "", "이현수", 20000, 0],
     ])
     result = parse_bank_statement(data)
     assert len(result) == 1  # 합계 행이 포함됐다면 2가 됨
 
 def test_parse_bank_comma_in_amount():
     data = make_bank_xlsx([
-        ["2026-01-10", "수강료", "이현수", "20,000", 0],
+        ["2026-01-10", "수강료", "", "이현수", "20,000", 0],
     ])
     result = parse_bank_statement(data)
     assert len(result) == 1
@@ -138,9 +150,9 @@ def test_parse_bank_too_short_returns_empty():
 
 def test_parse_bank_multiple_rows():
     data = make_bank_xlsx([
-        ["2026-01-10", "수강료", "박민서", 20000, 0],
-        ["2026-01-11", "수강료", "이현수", 30000, 0],
-        ["2026-01-12", "수강료", "김기춘", 20000, 0],
+        ["2026-01-10", "수강료", "", "박민서", 20000, 0],
+        ["2026-01-11", "수강료", "", "이현수", 30000, 0],
+        ["2026-01-12", "수강료", "", "김기춘", 20000, 0],
     ])
     result = parse_bank_statement(data)
     assert len(result) == 3
