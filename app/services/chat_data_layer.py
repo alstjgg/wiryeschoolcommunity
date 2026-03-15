@@ -16,6 +16,7 @@ from chainlit.element import ElementDict
 from chainlit.step import StepDict
 from chainlit.types import (
     Feedback,
+    PageInfo,
     PaginatedResponse,
     Pagination,
     ThreadDict,
@@ -246,10 +247,11 @@ class PostgresDataLayer(BaseDataLayer):
 
         return PaginatedResponse(
             data=thread_dicts,
-            pageInfo={
-                "hasNextPage": has_next,
-                "endCursor": threads[-1]["id"] if threads else None,
-            },
+            pageInfo=PageInfo(
+                hasNextPage=has_next,
+                startCursor=threads[0]["id"] if threads else None,
+                endCursor=threads[-1]["id"] if threads else None,
+            ),
         )
 
     async def update_thread(
