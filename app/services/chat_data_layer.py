@@ -19,7 +19,7 @@ from chainlit.types import (
     PaginatedResponse,
     Pagination,
     ThreadDict,
-    ThreadsFilters,
+    ThreadFilter,
 )
 from chainlit.user import PersistedUser, User
 
@@ -189,7 +189,7 @@ class PostgresDataLayer(BaseDataLayer):
         )
 
     async def list_threads(
-        self, pagination: Pagination, filters: ThreadsFilters
+        self, pagination: Pagination, filters: ThreadFilter
     ) -> PaginatedResponse[ThreadDict]:
         pool = await self._get_pool()
         async with pool.acquire() as conn:
