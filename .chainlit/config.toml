@@ -90,5 +90,11 @@ cot = "full"
 #     icon_url = "https://avatars.githubusercontent.com/u/128686189?s=200&v=4"
 #     url = "https://github.com/Chainlit/chainlit/issues"
 
+[auth]
+
+[auth.oauth]
+[[auth.oauth.providers]]
+id = "google"
+
 [meta]
 generated_by = "2.4.2"

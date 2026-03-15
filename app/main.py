@@ -27,6 +27,21 @@ from app.utils.matching import run_code_matching
 from app.context.term import get_current_term
 
 
+@cl.oauth_callback
+def oauth_callback(
+    provider_id: str,
+    token: str,
+    raw_user_data: dict,
+    default_user: cl.User,
+) -> cl.User | None:
+    """Google OAuth 콜백 — wiryeschoolcomunity.com 도메인만 허용"""
+    if provider_id == "google":
+        email = raw_user_data.get("email", "")
+        if email.endswith("@wiryeschoolcomunity.com"):
+            return default_user
+    return None  # 그 외 계정은 거부
+
+
 @cl.set_starters
 async def set_starters():
     return [
