@@ -5,6 +5,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+# 데이터 레이어 등록 (DATABASE_URL 있을 때만 활성화 — 다른 import보다 먼저)
+import app.services.chat_data_layer  # noqa: F401
+
 import chainlit as cl
 from app.chains.qa import answer_question
 from app.chains.payment import (
@@ -25,6 +28,25 @@ from app.services.excel import parse_bank_statement
 from app.services.google_drive import find_term_folder
 from app.utils.matching import run_code_matching
 from app.context.term import get_current_term
+
+
+@cl.on_chat_resume
+async def on_chat_resume(thread: dict):
+    """과거 대화를 열었을 때 메시지 히스토리 복원"""
+    for step in thread.get("steps", []):
+        step_type = step.get("type", "")
+        output = step.get("output") or ""
+        if not output:
+            continue
+        if step_type == "user_message":
+            await cl.Message(
+                author=step.get("name") or "관리자",
+                content=output,
+                type="user_message",
+            ).send()
+        elif step_type in ("assistant_message", "llm"):
+            await cl.Message(content=output).send()
+    cl.user_session.set("state", "idle")
 
 
 @cl.oauth_callback

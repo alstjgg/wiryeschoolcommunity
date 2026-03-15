@@ -16,3 +16,6 @@ beautifulsoup4==4.12.3
 
 # Utilities
 python-dotenv==1.1.0
+
+# PostgreSQL (채팅 기록 영속성)
+asyncpg==0.30.0
