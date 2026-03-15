@@ -61,9 +61,9 @@ def find_folder_by_path(path_parts: list[str]) -> str | None:
 def find_term_folder(term_id: str) -> dict | None:
     """Drive에서 회차 폴더를 동적 탐색.
 
-    경로: 02_학사운영 → {year} → {term_id}로 시작하는 폴더
-    예: term_id="2026-1" → "2026" 폴더 내 "2026-1_겨울학기" 폴더 반환.
-    폴더명 구분자(space/underscore)는 startswith 검색에 영향 없음.
+    경로: 02 학사운영 → {year} → {term_id}로 시작하는 폴더
+    예: term_id="2026-1" → "2026" 폴더 내 "2026-1 겨울학기" 폴더 반환.
+    폴더명은 공백 구분이지만 startswith 검색에 영향 없음.
     """
     year = term_id.split("-")[0]  # "2026"
 
