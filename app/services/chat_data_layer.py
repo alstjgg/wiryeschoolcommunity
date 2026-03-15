@@ -151,7 +151,13 @@ class PostgresDataLayer(BaseDataLayer):
         pool = await self._get_pool()
         async with pool.acquire() as conn:
             t_row = await conn.fetchrow(
-                "SELECT id, name, user_id, metadata, tags, created_at, updated_at FROM threads WHERE id = $1",
+                """
+                SELECT t.id, t.name, t.user_id, t.metadata, t.tags, t.created_at,
+                       u.identifier AS user_identifier
+                FROM threads t
+                LEFT JOIN users u ON u.id = t.user_id
+                WHERE t.id = $1
+                """,
                 thread_id,
             )
             if not t_row:
@@ -182,6 +188,7 @@ class PostgresDataLayer(BaseDataLayer):
             id=t_row["id"],
             name=t_row["name"] or "",
             userId=t_row["user_id"],
+            userIdentifier=t_row["user_identifier"],
             metadata=json.loads(t_row["metadata"]) if t_row["metadata"] else {},
             tags=list(t_row["tags"] or []),
             steps=steps,
@@ -219,8 +226,10 @@ class PostgresDataLayer(BaseDataLayer):
 
             rows = await conn.fetch(
                 f"""
-                SELECT t.id, t.name, t.user_id, t.metadata, t.tags, t.created_at, t.updated_at
+                SELECT t.id, t.name, t.user_id, t.metadata, t.tags, t.created_at, t.updated_at,
+                       u.identifier AS user_identifier
                 FROM threads t
+                LEFT JOIN users u ON u.id = t.user_id
                 {cursor_condition}
                 ORDER BY t.updated_at DESC
                 LIMIT ${limit_idx}
@@ -236,6 +245,7 @@ class PostgresDataLayer(BaseDataLayer):
                 id=r["id"],
                 name=r["name"] or "",
                 userId=r["user_id"],
+                userIdentifier=r["user_identifier"],
                 metadata=json.loads(r["metadata"]) if r["metadata"] else {},
                 tags=list(r["tags"] or []),
                 steps=[],
