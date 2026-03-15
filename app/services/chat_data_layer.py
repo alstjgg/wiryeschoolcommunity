@@ -361,6 +361,14 @@ class PostgresDataLayer(BaseDataLayer):
     async def build_debug_url(self) -> str:
         return ""
 
+    async def close(self) -> None:
+        if self._pool:
+            await self._pool.close()
+            self._pool = None
+
+    async def get_favorite_steps(self, user_id: str) -> List[StepDict]:
+        return []
+
 
 # ------------------------------------------------------------------ helpers --
 
