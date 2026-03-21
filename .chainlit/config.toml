@@ -64,14 +64,14 @@ default_theme = "light"
 # layout = "wide"
 
 # Description of the assistant. This is used for HTML tags.
-# description = ""
+description = "위례인생학교 관리자 업무 지원 챗봇"
 
 # Chain of Thought (CoT) display mode. Can be "hidden", "tool_call" or "full".
-cot = "full"
+cot = "hidden"
 
 # Specify a CSS file that can be used to customize the user interface.
 # The CSS file can be served from the public directory or via an external link.
-custom_css = "/public/custom.css"
+custom_css = "/public/stylesheet.css"
 
 # Specify a Javascript file that can be used to customize the user interface.
 # The Javascript file can be served from the public directory.

@@ -14,7 +14,7 @@ sa-key.json
 *.json
 !package.json
 !public/theme.json
-!public/custom.css
+!public/stylesheet.css
 !n8n/*.json
 
 # IDE

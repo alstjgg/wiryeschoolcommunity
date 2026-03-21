@@ -1,0 +1,46 @@
+/* ================================================================
+   위례인생학교 업무 도우미 — 타이포그래피 & 접근성 스타일시트
+   대상: 55세+ 비개발자 관리자
+   폰트: Noto Sans KR (theme.json custom_fonts에서 로딩)
+   ================================================================ */
+
+/* ── 기본 설정 ── */
+html {
+  font-size: 16px; /* rem 기준 고정 */
+}
+
+body {
+  font-size: 1.125rem;               /* 18px 본문 기본 */
+  line-height: 1.7;
+  letter-spacing: 0.01em;
+  font-weight: 400;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ── 메시지 본문 (가장 많이 읽는 텍스트) ── */
+.message-content,
+.step-content {
+  font-size: 1.125rem;               /* 18px */
+  line-height: 1.7;
+  letter-spacing: 0.01em;
+}
+
+/* ── 입력창 ── */
+textarea {
+  font-size: 1.125rem;               /* 18px — 본문과 동일 */
+  line-height: 1.7;
+  letter-spacing: 0.01em;
+}
+
+/* ── 버튼 공통 ── */
+button {
+  font-size: 1rem;                    /* 16px 최소 */
+  letter-spacing: 0.015em;
+  font-weight: 500;
+}
+
+/* ── 사이드바 ── */
+[class*="sidebar"] {
+  letter-spacing: 0.015em;
+}
