@@ -19,7 +19,9 @@ def load_registered_students(applications_sheet_id: str) -> list[dict]:
     result = []
     for row in rows[1:]:
         data = dict(zip(header, row + [""] * (len(header) - len(row))))
-        if data.get("유형") == "수강" and data.get("등록상태", "").strip():
+        등록상태 = data.get("등록상태", "").strip()
+        is_registered = 등록상태 and 등록상태.upper() != "FALSE"
+        if data.get("유형") == "수강" and is_registered:
             result.append(data)
     return result
 
@@ -134,6 +136,39 @@ async def create_attendance_sheet(
             data_rows.append(row)
 
         write_sheet(spreadsheet_id, f"{course_name}!A1", data_rows)
+
+    # 모든 과목 탭에 BasicFilter 일괄 설정
+    sheet_metadata_final = sheets_service.spreadsheets().get(
+        spreadsheetId=spreadsheet_id
+    ).execute()
+    sheet_id_map = {
+        s["properties"]["title"]: s["properties"]["sheetId"]
+        for s in sheet_metadata_final["sheets"]
+    }
+
+    filter_requests = []
+    for course_name in course_names:
+        sid = sheet_id_map.get(course_name)
+        if sid is None:
+            continue
+        filter_requests.append({
+            "setBasicFilter": {
+                "filter": {
+                    "range": {
+                        "sheetId": sid,
+                        "startRowIndex": 0,
+                        "startColumnIndex": 0,
+                        "endColumnIndex": 2 + MAX_SESSIONS + 1,
+                    }
+                }
+            }
+        })
+
+    if filter_requests:
+        sheets_service.spreadsheets().batchUpdate(
+            spreadsheetId=spreadsheet_id,
+            body={"requests": filter_requests},
+        ).execute()
 
     return {
         "spreadsheet_id": spreadsheet_id,

@@ -123,37 +123,82 @@ def write_applications_sheet(
     if existing:
         spreadsheet_id = existing["id"]
         write_sheet(spreadsheet_id, "신청서!A1", rows)
-        return spreadsheet_id
+    else:
+        # 새 시트 생성
+        drive = get_drive_service()
+        file_metadata = {
+            "name": "신청서",
+            "mimeType": "application/vnd.google-apps.spreadsheet",
+            "parents": [folder_id],
+        }
+        file = drive.files().create(
+            body=file_metadata, fields="id", supportsAllDrives=True
+        ).execute()
+        spreadsheet_id = file["id"]
 
-    # 새 시트 생성
-    drive = get_drive_service()
-    file_metadata = {
-        "name": "신청서",
-        "mimeType": "application/vnd.google-apps.spreadsheet",
-        "parents": [folder_id],
-    }
-    file = drive.files().create(
-        body=file_metadata, fields="id", supportsAllDrives=True
-    ).execute()
-    spreadsheet_id = file["id"]
+        # 기본 탭 이름 변경
+        sheets_svc = get_sheets_service()
+        meta = sheets_svc.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
+        default_sheet_id = meta["sheets"][0]["properties"]["sheetId"]
+        sheets_svc.spreadsheets().batchUpdate(
+            spreadsheetId=spreadsheet_id,
+            body={
+                "requests": [{
+                    "updateSheetProperties": {
+                        "properties": {"sheetId": default_sheet_id, "title": "신청서"},
+                        "fields": "title",
+                    }
+                }]
+            },
+        ).execute()
 
-    # 기본 탭 이름 변경
+        write_sheet(spreadsheet_id, "신청서!A1", rows)
+
+    # 필터 + 등록상태 체크박스 설정
     sheets_svc = get_sheets_service()
     meta = sheets_svc.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
-    default_sheet_id = meta["sheets"][0]["properties"]["sheetId"]
+    sheet_id = next(
+        s["properties"]["sheetId"]
+        for s in meta["sheets"]
+        if s["properties"]["title"] == "신청서"
+    )
+
     sheets_svc.spreadsheets().batchUpdate(
         spreadsheetId=spreadsheet_id,
-        body={
-            "requests": [{
-                "updateSheetProperties": {
-                    "properties": {"sheetId": default_sheet_id, "title": "신청서"},
-                    "fields": "title",
+        body={"requests": [
+            {
+                "setBasicFilter": {
+                    "filter": {
+                        "range": {
+                            "sheetId": sheet_id,
+                            "startRowIndex": 0,
+                            "startColumnIndex": 0,
+                            "endColumnIndex": len(APPLICATION_HEADER),
+                        }
+                    }
                 }
-            }]
-        },
+            },
+            {
+                "repeatCell": {
+                    "range": {
+                        "sheetId": sheet_id,
+                        "startRowIndex": 1,
+                        "endRowIndex": 1 + len(applications),
+                        "startColumnIndex": _COL["등록상태"],
+                        "endColumnIndex": _COL["등록상태"] + 1,
+                    },
+                    "cell": {
+                        "dataValidation": {
+                            "condition": {"type": "BOOLEAN"},
+                            "strict": True,
+                        }
+                    },
+                    "fields": "dataValidation",
+                }
+            },
+        ]},
     ).execute()
 
-    write_sheet(spreadsheet_id, "신청서!A1", rows)
     return spreadsheet_id
 
 

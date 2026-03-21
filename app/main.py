@@ -132,12 +132,14 @@ async def on_message(message: cl.Message):
                 response = await answer_question(message.content)
                 msg.content = response
                 await msg.update()
+                await send_default_actions("question")
             except Exception as e:
                 msg.content = (
                     f"오류가 발생했습니다: {str(e)}\n\n"
                     "환경 변수(ANTHROPIC_API_KEY)가 올바르게 설정되어 있는지 확인해주세요."
                 )
                 await msg.update()
+                await send_default_actions()
         else:
             await ask_intent_confirm(intent_result)
 
@@ -425,24 +427,6 @@ async def write_payment_results(
             if app_sheet_id else ""
         )
 
-        actions = [
-            cl.Action(
-                name="create_attendance",
-                label="📋 출석부 생성하기",
-                payload={"value": "attendance"},
-            ),
-            cl.Action(
-                name="redo_payment",
-                label="🔄 입금대조 다시하기",
-                payload={"value": "redo"},
-            ),
-            cl.Action(
-                name="free_question",
-                label="❓ 다른 질문하기",
-                payload={"value": "question"},
-            ),
-        ]
-
         await cl.Message(
             content=(
                 f"입금 대조가 완료되었습니다.\n\n"
@@ -451,30 +435,15 @@ async def write_payment_results(
                 f"배움숲 포탈에서 수강 등록을 처리한 뒤\n"
                 f"등록상태 체크박스를 클릭해주세요.{sheet_link}"
             ),
-            actions=actions,
         ).send()
+
+        await send_default_actions("payment")
 
     except Exception as e:
         await cl.Message(f"저장 중 오류: {str(e)}").send()
+        await send_default_actions()
 
     _clear_payment_session()
-
-
-@cl.action_callback("create_attendance")
-async def on_create_attendance(action: cl.Action):
-    await do_create_attendance()
-
-
-@cl.action_callback("redo_payment")
-async def on_redo_payment(action: cl.Action):
-    cl.user_session.set("state", "awaiting_payment_file")
-    await cl.Message("입금내역 파일(.xls 또는 .xlsx)을 다시 업로드해주세요.").send()
-
-
-@cl.action_callback("free_question")
-async def on_free_question(action: cl.Action):
-    cl.user_session.set("state", "idle")
-    await cl.Message("궁금한 점을 자유롭게 질문해주세요.").send()
 
 
 # ===================================================== 출석부 생성 플로우 =====
@@ -504,15 +473,27 @@ async def start_attendance_flow(message: cl.Message | None):
 
         # 신청서 시트 확인
         app_sheet_id = cl.user_session.get("applications_sheet_id")
-        sheet_note = (
-            f"[신청서 시트](https://docs.google.com/spreadsheets/d/{app_sheet_id})에서 "
-            "배움숲 수강 등록을 완료하셨나요?"
-            if app_sheet_id
-            else "신청서 시트에서 배움숲 수강 등록을 완료하셨나요?"
-        )
+
+        if app_sheet_id:
+            confirm_content = (
+                "출석부 생성 전 아래 3단계가 완료되었는지 확인해주세요.\n\n"
+                "1. ✅ 입금 대조 완료\n"
+                "2. ✅ 배움숲 포탈에서 수강 등록 처리 완료\n"
+                f"3. ✅ [신청서 시트](https://docs.google.com/spreadsheets/d/{app_sheet_id})의 "
+                "등록상태 열 체크박스 클릭 완료\n\n"
+                "모두 완료되셨으면 출석부를 생성합니다."
+            )
+        else:
+            confirm_content = (
+                "출석부 생성 전 아래 3단계가 완료되었는지 확인해주세요.\n\n"
+                "1. ✅ 입금 대조 완료\n"
+                "2. ✅ 배움숲 포탈에서 수강 등록 처리 완료\n"
+                "3. ✅ 신청서 시트의 등록상태 열 체크박스 클릭 완료\n\n"
+                "모두 완료되셨으면 출석부를 생성합니다."
+            )
 
         res = await cl.AskActionMessage(
-            content=f"{sheet_note}\n\n등록상태를 기준으로 출석부를 생성합니다.",
+            content=confirm_content,
             actions=[
                 cl.Action(
                     name="confirm_attendance",
@@ -530,14 +511,31 @@ async def start_attendance_flow(message: cl.Message | None):
         if res and res.get("payload", {}).get("value") == "confirm":
             await do_create_attendance()
         else:
-            await cl.Message(
-                "배움숲 포탈에서 수강 등록을 완료한 뒤 신청서 시트의 등록상태를 체크해주세요.\n"
-                "완료 후 '📋 출석부 생성' 버튼을 다시 눌러주세요."
-            ).send()
+            if app_sheet_id:
+                guide = (
+                    "아직 완료되지 않은 단계가 있다면 아래 순서로 진행해주세요.\n\n"
+                    "**1단계** — 신청서 시트에서 입금현황 확인\n"
+                    f"→ [신청서 시트 열기](https://docs.google.com/spreadsheets/d/{app_sheet_id})\n\n"
+                    "**2단계** — 배움숲 포탈에서 수강 등록 처리\n"
+                    "→ 배움숲 포탈 접속 → 수강신청관리 → 등록 처리\n\n"
+                    "**3단계** — 신청서 시트로 돌아와 등록상태 열의 체크박스 클릭\n\n"
+                    "3단계까지 완료되면 '📋 출석부 생성' 버튼을 다시 눌러주세요."
+                )
+            else:
+                guide = (
+                    "아직 완료되지 않은 단계가 있다면 아래 순서로 진행해주세요.\n\n"
+                    "**1단계** — 입금 대조를 먼저 진행해주세요.\n"
+                    "**2단계** — 배움숲 포탈에서 수강 등록 처리\n"
+                    "**3단계** — 신청서 시트의 등록상태 열 체크박스 클릭\n\n"
+                    "완료 후 '📋 출석부 생성' 버튼을 다시 눌러주세요."
+                )
+            await cl.Message(guide).send()
+            await send_default_actions()
 
     except Exception as e:
         msg.content = f"출석부 생성 준비 중 오류: {str(e)}"
         await msg.update()
+        await send_default_actions()
 
 
 async def do_create_attendance():
@@ -593,9 +591,11 @@ async def do_create_attendance():
                 f"[출석부 열기]({result['spreadsheet_url']})"
             )
         ).send()
+        await send_default_actions("attendance")
 
     except Exception as e:
         await cl.Message(f"출석부 생성 중 오류: {str(e)}").send()
+        await send_default_actions()
 
     cl.user_session.set("state", "idle")
 
@@ -709,40 +709,61 @@ async def _route_to_workflow(intent: str, term_text: str | None):
 
 
 async def _show_workflow_buttons():
-    """워크플로우 선택 버튼 5개 표시"""
-    actions = [
-        cl.Action(name="btn_payment", label="💰 입금 대조", payload={"value": "payment"}),
-        cl.Action(name="btn_attendance", label="📋 출석부 생성", payload={"value": "attendance"}),
-        cl.Action(name="btn_ocr", label="✅ 출석 체크", payload={"value": "ocr"}),
-        cl.Action(name="btn_plan", label="📝 계획서 검토", payload={"value": "plan"}),
-        cl.Action(name="btn_question", label="❓ 질문하기", payload={"value": "question"}),
+    """의도 분류 실패 시 워크플로우 선택 버튼 표시 (send_default_actions 위임)"""
+    await send_default_actions()
+
+
+# ===================================================== 공통 액션 버튼 =====
+
+async def send_default_actions(completed: str | None = None):
+    """모든 작업 완료/종료 후 공통으로 호출하는 기본 액션 버튼.
+
+    completed: 방금 완료한 작업 키 — 해당 작업은 "다시하기" 레이블로 표시.
+    """
+    definitions = [
+        ("payment", "💰 입금 대조"),
+        ("attendance", "📋 출석부 생성"),
+        ("ocr", "✅ 출석 체크"),
+        ("plan", "📝 계획서 검토"),
+        ("question", "❓ 질문하기"),
     ]
-    await cl.Message(content="어떤 작업을 도와드릴까요?", actions=actions).send()
+    actions = []
+    for key, label in definitions:
+        display = label + " 다시하기" if key == completed else label
+        actions.append(cl.Action(
+            name=f"default_{key}",
+            label=display,
+            payload={"value": key},
+        ))
+
+    await cl.Message(content="무엇을 도와드릴까요?", actions=actions).send()
 
 
-@cl.action_callback("btn_payment")
-async def on_btn_payment(action: cl.Action):
+@cl.action_callback("default_payment")
+async def on_default_payment(action: cl.Action):
     term = get_current_term()
     await start_payment_flow_with_term(term)
 
 
-@cl.action_callback("btn_attendance")
-async def on_btn_attendance(action: cl.Action):
+@cl.action_callback("default_attendance")
+async def on_default_attendance(action: cl.Action):
     await start_attendance_flow(None)
 
 
-@cl.action_callback("btn_ocr")
-async def on_btn_ocr(action: cl.Action):
+@cl.action_callback("default_ocr")
+async def on_default_ocr(action: cl.Action):
     await cl.Message("출석 체크 기능은 준비 중입니다.").send()
+    await send_default_actions()
 
 
-@cl.action_callback("btn_plan")
-async def on_btn_plan(action: cl.Action):
+@cl.action_callback("default_plan")
+async def on_default_plan(action: cl.Action):
     await cl.Message("계획서 검토 기능은 준비 중입니다.").send()
+    await send_default_actions()
 
 
-@cl.action_callback("btn_question")
-async def on_btn_question(action: cl.Action):
+@cl.action_callback("default_question")
+async def on_default_question(action: cl.Action):
     cl.user_session.set("state", "idle")
     await cl.Message("궁금한 점을 자유롭게 질문해주세요.").send()
 
