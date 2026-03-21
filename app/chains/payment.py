@@ -385,82 +385,23 @@ def format_results(
     applications: list[dict],
     exempted: list[dict] | None = None,
 ) -> str:
-    """매칭 결과를 한국어 요약 텍스트로 포맷"""
+    """매칭 결과를 한 줄 숫자 요약으로 포맷"""
     if exempted is None:
         exempted = []
 
-    total = len(matched)
     success = sum(1 for r in matched if r["상태"] == "✅정상")
     needs_check = sum(1 for r in matched if r["상태"] == "🔶확인필요")
     name_mismatch = sum(1 for r in matched if r["상태"] == "⚠️이름불일치")
-    duplicate = sum(1 for r in matched if r["상태"] == "🔄중복")
-    skipped = sum(1 for r in matched if r["상태"] == "⏭️스킵")
-    unmatched_count = sum(1 for r in matched if r["상태"] == "❌미매칭")
-
     unpaid = find_unpaid(applications)
 
-    lines = [
-        "## 📊 입금 대조 결과\n",
-        f"**총 거래**: {total}건",
-        f"- ✅ 정상 매칭: {success}건",
-        f"- 🔶 확인 필요: {needs_check}건",
-        f"- ⚠️ 이름 불일치: {name_mismatch}건",
-        f"- 🔄 중복: {duplicate}건",
-        f"- ❌ 미매칭: {unmatched_count}건",
-        f"- ⏭️ 스킵: {skipped}건",
-        f"- 💎 면제(정회원): {len(exempted)}명",
-        f"- ❌ 미입금 수강생: {len(unpaid)}명\n",
-    ]
-
-    if success > 0:
-        lines.append("### ✅ 정상 매칭")
-        for r in matched:
-            if r["상태"] == "✅정상":
-                lines.append(
-                    f"- {r['매칭이름']} → {r.get('매칭강좌', '?')} ({r['금액분류']})"
-                )
-        lines.append("")
-
-    if needs_check > 0:
-        lines.append("### 🔶 확인 필요")
-        for r in matched:
-            if r["상태"] == "🔶확인필요":
-                lines.append(
-                    f"- 적요: \"{r['적요']}\" / 의뢰인: \"{r['의뢰인']}\" / "
-                    f"{r['금액분류']} → {r.get('메모', '')}"
-                )
-        lines.append("")
-
-    if name_mismatch > 0:
-        lines.append("### ⚠️ 이름 불일치 (대리입금 추정)")
-        for r in matched:
-            if r["상태"] == "⚠️이름불일치":
-                lines.append(
-                    f"- 적요: \"{r['적요']}\" / 의뢰인: \"{r['의뢰인']}\" / "
-                    f"{r['금액분류']} → {r.get('메모', '')}"
-                )
-        lines.append("")
-
-    if exempted:
-        lines.append("### 💎 면제 (정회원)")
-        for e in exempted:
-            lines.append(f"- {e['이름']} ({e['과목명']})")
-        lines.append("")
-
+    parts = [f"✅ {success}건"]
+    if needs_check:
+        parts.append(f"🔶 {needs_check}건")
+    if name_mismatch:
+        parts.append(f"⚠️ {name_mismatch}건")
     if unpaid:
-        lines.append("### ❌ 미입금 수강생")
-        for u in unpaid:
-            lines.append(f"- {u['이름']} ({u['과목명']})")
-        lines.append("")
+        parts.append(f"❌ {len(unpaid)}건")
+    if exempted:
+        parts.append(f"💎 {len(exempted)}건")
 
-    unmatched_txs = [r for r in matched if r["상태"] == "❌미매칭"]
-    if unmatched_txs:
-        lines.append("### ❌ 미매칭 입금 거래 (수동 확인 필요)")
-        for r in unmatched_txs:
-            lines.append(
-                f"- 적요: \"{r['적요']}\" / 의뢰인: \"{r['의뢰인']}\" / "
-                f"{r['금액분류']} / {r.get('메모', '')}"
-            )
-        lines.append("")
-
-    return "\n".join(lines)
+    return "  ".join(parts)

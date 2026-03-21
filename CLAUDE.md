@@ -27,19 +27,23 @@
 - 각 작업(입금 대조, 출석부 생성 등)은 실행 순서가 고정된 Python 함수 파이프라인으로 구현한다
 - LLM은 비정형 텍스트 해석이 필요한 특정 단계에서만 호출한다 (예: 입금자명 파싱)
 - LangChain은 LLM 호출 래퍼(ChatAnthropic)로만 사용, 오케스트레이션 프레임워크로는 사용하지 않는다
-- 의도 분류는 Conversation Starter 버튼의 고정 메시지로 판별 (LLM 기반 intent classifier 불필요)
+- 의도 분류는 Conversation Starter 버튼의 고정 메시지로 판별. 버튼이 아닌 자유 텍스트 입력에 한해 LLM 기반 intent 분류를 사용하며 (`classify_intent_llm`), 분류 결과는 반드시 관리자 확인 단계(`AskActionMessage`)를 거친다.
 - `.agents/skills/`에 LangChain Skills(langchain-ai/langchain-skills)이 설치되어 있음. Claude Code가 LangChain 관련 코드 작성 시 참조하는 코딩 가이드이며, 런타임 동작에는 영향 없음.
 
 **이유**: 대상 사용자가 55세 이상 비개발자 관리자 2~4명. 대화형 AI에 익숙하지 않음. 예측 가능하고 가이드된 UX가 필수. 자유도가 높으면 오히려 혼란.
 
 ```python
-# 라우팅 패턴 — 버튼 메시지로 단순 분기
+# 라우팅 패턴 — 버튼 메시지로 분기 + 자유 텍스트는 LLM 의도 분류
 if message.content == "입금 대조를 시작합니다.":
-    await payment_flow(message)
+    await start_payment_flow(message)
 elif message.content == "출석부를 생성합니다.":
-    await attendance_flow(message)
+    await start_attendance_flow(message)
 else:
-    await qa_flow(message)  # 자유 Q&A만 LLM 자유 사용
+    intent = await classify_intent_llm(message.content)
+    if intent["intent"] == "question":
+        await qa_flow(message)
+    else:
+        await ask_intent_confirm(intent)  # 관리자 확인 후 워크플로우 진입
 ```
 
 ## 용어 정의
@@ -524,7 +528,7 @@ DATABASE_URL=                   # Railway가 자동 주입 (PostgreSQL 연결 �
 - 회원관리/수강기록 업데이트, 동적 Drive 폴더 탐색
 - Action 버튼, AskActionMessage, 세션 상태 머신
 - Railway 배포, 단위 테스트 50개 통과
-- **남은 작업**: E2E 기능 테스트, cl.Step 진행 상황 공유, Context Injection 고도화
+- **남은 작업**: E2E 기능 테스트, Context Injection 고도화
 
 ### Phase 2 — 데이터 파이프라인 ✅ 완료
 

@@ -1,5 +1,6 @@
 """Chainlit 엔트리포인트 — 위례인생학교 업무 도우미"""
 
+import json
 import sys
 from pathlib import Path
 
@@ -9,6 +10,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import app.services.chat_data_layer  # noqa: F401
 
 import chainlit as cl
+from langchain_anthropic import ChatAnthropic
+from langchain_core.messages import SystemMessage, HumanMessage
+
 from app.chains.qa import answer_question
 from app.chains.payment import (
     build_applications,
@@ -23,6 +27,7 @@ from app.chains.payment import (
     format_results,
 )
 from app.chains.attendance import create_attendance_sheet
+from app.config import ANTHROPIC_API_KEY, LLM_MODEL
 from app.services.excel import parse_bank_statement, parse_applicant_list
 from app.services.google_drive import find_term_folder
 from app.services.signup_loader import (
@@ -30,7 +35,7 @@ from app.services.signup_loader import (
     load_fullmember_signups_from_drive,
 )
 from app.utils.matching import run_code_matching
-from app.context.term import get_current_term
+from app.context.term import get_current_term, parse_term_input
 
 
 @cl.on_chat_resume
@@ -104,8 +109,8 @@ async def on_message(message: cl.Message):
     if session_state == "awaiting_payment_file":
         await handle_payment_file(message)
         return
-    if session_state == "awaiting_payment_confirm":
-        await handle_payment_confirm(message)
+    if session_state == "awaiting_term_input":
+        await handle_term_input(message)
         return
 
     # Starter 버튼 메시지 라우팅
@@ -118,38 +123,55 @@ async def on_message(message: cl.Message):
     elif message.content == "강의 계획서를 검토합니다.":
         await cl.Message("계획서 검토 기능은 준비 중입니다.").send()
     else:
-        # Q&A 폴백
-        msg = cl.Message(content="")
-        await msg.send()
-        try:
-            response = await answer_question(message.content)
-            msg.content = response
-            await msg.update()
-        except Exception as e:
-            msg.content = (
-                f"오류가 발생했습니다: {str(e)}\n\n"
-                "환경 변수(ANTHROPIC_API_KEY)가 올바르게 설정되어 있는지 확인해주세요."
-            )
-            await msg.update()
+        # LLM 의도 분류 → 워크플로우 or Q&A
+        intent_result = await classify_intent_llm(message.content)
+        if intent_result["intent"] == "question":
+            msg = cl.Message(content="")
+            await msg.send()
+            try:
+                response = await answer_question(message.content)
+                msg.content = response
+                await msg.update()
+            except Exception as e:
+                msg.content = (
+                    f"오류가 발생했습니다: {str(e)}\n\n"
+                    "환경 변수(ANTHROPIC_API_KEY)가 올바르게 설정되어 있는지 확인해주세요."
+                )
+                await msg.update()
+        else:
+            await ask_intent_confirm(intent_result)
 
 
 # ===================================================== 입금 대조 플로우 =====
 
 async def start_payment_flow(message: cl.Message):
-    """입금 대조 시작 — 회차 추측 → 확인 → 신청자 파일 업로드 요청"""
+    """입금 대조 시작 — 회차 추측 → 확인"""
     term = get_current_term()
+    cl.user_session.set("term", term)
+    await start_payment_flow_with_term(term)
+
+
+async def start_payment_flow_with_term(term: dict):
+    """회차 확인 AskActionMessage — 루프 재진입점"""
     cl.user_session.set("term", term)
 
     res = await cl.AskActionMessage(
         content=f"**{term['term_name']}** 입금 대조를 시작할까요?",
         actions=[
             cl.Action(name="confirm_term", label="✅ 맞습니다", payload={"value": "confirm"}),
+            cl.Action(name="other_term", label="📅 다른 회차에요", payload={"value": "other"}),
             cl.Action(name="cancel_term", label="❌ 취소", payload={"value": "cancel"}),
         ],
     ).send()
 
-    if res and res.get("payload", {}).get("value") == "confirm":
+    value = (res or {}).get("payload", {}).get("value")
+    if value == "confirm":
         await _ask_for_applicants_file()
+    elif value == "other":
+        cl.user_session.set("state", "awaiting_term_input")
+        await cl.Message(
+            "어떤 회차인지 알려주세요.\n예) 2026-2, 2026년 봄, 봄학기"
+        ).send()
     else:
         await cl.Message("입금 대조가 취소되었습니다.").send()
         cl.user_session.set("state", "idle")
@@ -345,53 +367,35 @@ async def handle_payment_file(message: cl.Message):
         # 매칭 결과를 applications에 반영
         apply_matching_results(applications, all_results)
 
-        summary = format_results(all_results, applications, exempted)
-
-        actions = [
-            cl.Action(
-                name="write_results",
-                label="✅ 신청서에 반영하기",
-                payload={"value": "write"},
-            ),
-            cl.Action(
-                name="cancel_results",
-                label="❌ 취소",
-                payload={"value": "cancel"},
-            ),
-        ]
-        await cl.Message(content=summary, actions=actions).send()
-
-        cl.user_session.set("state", "awaiting_payment_confirm")
+        cl.user_session.set("applications", applications)
         cl.user_session.set("matched_results", all_results)
+
+        # 즉시 시트에 자동 반영
+        await write_payment_results(all_results, exempted)
 
     except Exception as e:
         await cl.Message(f"입금 대조 중 오류가 발생했습니다: {str(e)}").send()
         cl.user_session.set("state", "idle")
 
 
-async def handle_payment_confirm(message: cl.Message):
-    """텍스트 입력으로 시트 반영 확인 (AskActionMessage 폴백)"""
-    text = message.content.strip()
-    if any(word in text for word in ["예", "네", "응", "확인", "반영"]):
-        await write_payment_results()
+async def handle_term_input(message: cl.Message):
+    """회차 자유 텍스트 입력 파싱 → 확인 루프"""
+    term = parse_term_input(message.content)
+    if term:
+        await start_payment_flow_with_term(term)
     else:
-        await cl.Message("입금 대조 결과가 반영되지 않았습니다.").send()
-        _clear_payment_session()
+        await cl.Message(
+            "회차를 인식하지 못했어요. 다시 입력해주세요.\n"
+            "예) 2026-2, 봄학기, 2026년 여름"
+        ).send()
+        # 상태 유지 — awaiting_term_input
 
 
-@cl.action_callback("write_results")
-async def on_write_results(action: cl.Action):
-    await write_payment_results()
-
-
-@cl.action_callback("cancel_results")
-async def on_cancel_results(action: cl.Action):
-    await cl.Message("입금 대조 결과가 반영되지 않았습니다.").send()
-    _clear_payment_session()
-
-
-async def write_payment_results():
-    """매칭 결과를 신청서 Sheets에 반영 → 다음 단계 Action 제공"""
+async def write_payment_results(
+    matched_results: list[dict] | None = None,
+    exempted: list[dict] | None = None,
+):
+    """매칭 결과를 신청서 Sheets에 자동 반영 → 요약 + 다음 단계 Action 제공"""
     try:
         app_sheet_id = cl.user_session.get("applications_sheet_id")
         applications = cl.user_session.get("applications", [])
@@ -403,17 +407,23 @@ async def write_payment_results():
             else:
                 step.output = "시트 정보가 없어 반영하지 못했습니다."
 
-        sheet_note = (
-            f"\n[신청서 시트 열기](https://docs.google.com/spreadsheets/d/{app_sheet_id})"
+        # 숫자 요약
+        if matched_results is None:
+            matched_results = cl.user_session.get("matched_results", [])
+        summary_line = format_results(matched_results, applications, exempted)
+
+        needs_check = sum(
+            1 for r in matched_results if r["상태"] == "🔶확인필요"
+        )
+        check_note = (
+            "\n\n🔶 확인이 필요한 건이 있습니다. 신청서 시트에서 직접 확인해주세요."
+            if needs_check else ""
+        )
+
+        sheet_link = (
+            f"\n\n[신청서 시트 열기](https://docs.google.com/spreadsheets/d/{app_sheet_id})"
             if app_sheet_id else ""
         )
-        await cl.Message(
-            content=(
-                f"입금 대조 결과가 신청서에 반영되었습니다.{sheet_note}\n\n"
-                "신청서 시트에서 입금현황을 확인하시고, "
-                "배움숲 포탈에서 수강 등록을 처리한 뒤 등록상태를 체크해주세요."
-            )
-        ).send()
 
         actions = [
             cl.Action(
@@ -432,7 +442,17 @@ async def write_payment_results():
                 payload={"value": "question"},
             ),
         ]
-        await cl.Message(content="다음 작업을 선택해주세요.", actions=actions).send()
+
+        await cl.Message(
+            content=(
+                f"입금 대조가 완료되었습니다.\n\n"
+                f"{summary_line}{check_note}\n\n"
+                f"신청서 시트에서 입금현황을 확인하시고, "
+                f"배움숲 포탈에서 수강 등록을 처리한 뒤\n"
+                f"등록상태 체크박스를 클릭해주세요.{sheet_link}"
+            ),
+            actions=actions,
+        ).send()
 
     except Exception as e:
         await cl.Message(f"저장 중 오류: {str(e)}").send()
@@ -459,8 +479,8 @@ async def on_free_question(action: cl.Action):
 
 # ===================================================== 출석부 생성 플로우 =====
 
-async def start_attendance_flow(message: cl.Message):
-    """출석부 생성 — Starter 버튼에서 독립 진입"""
+async def start_attendance_flow(message: cl.Message | None):
+    """출석부 생성 — Starter 버튼 또는 워크플로우 라우팅에서 진입"""
     term = cl.user_session.get("term") or get_current_term()
     cl.user_session.set("term", term)
 
@@ -579,6 +599,155 @@ async def do_create_attendance():
 
     cl.user_session.set("state", "idle")
 
+
+# ===================================================== LLM 의도 분류 =====
+
+INTENT_LABELS = {
+    "payment": "입금 대조",
+    "attendance": "출석부 생성",
+    "ocr": "출석 체크",
+    "plan": "계획서 검토",
+}
+
+
+async def classify_intent_llm(text: str) -> dict:
+    """자유 텍스트에서 LLM으로 의도를 분류. max_tokens=150."""
+    llm = ChatAnthropic(
+        model=LLM_MODEL,
+        api_key=ANTHROPIC_API_KEY,
+        max_tokens=150,
+    )
+
+    system_prompt = """당신은 위례인생학교 관리 시스템의 의도 분류기입니다.
+관리자의 메시지를 보고 아래 중 하나로 분류하세요.
+
+작업 목록:
+- payment: 입금 대조, 입금 확인, 입금 처리, 입금 매칭
+- attendance: 출석부 생성, 출석부 만들기, 출석부
+- ocr: 출석 체크, 출석 확인, OCR, 사진으로 출석
+- plan: 계획서 검토, 강의 계획서, 강의계획서
+- question: 위 어디에도 해당 안 되는 질문
+
+응답은 반드시 JSON만 출력하세요. 설명 금지.
+{"intent": "payment", "term": "2026-2", "confidence": 0.95}
+
+term: 메시지에 회차 정보가 있으면 추출 (예: "2026-1", "봄학기"). 없으면 null.
+confidence: 0.0~1.0 (0.8 이상이면 확신, 미만이면 불확실)."""
+
+    try:
+        response = await llm.ainvoke([
+            SystemMessage(content=system_prompt),
+            HumanMessage(content=text),
+        ])
+        content = response.content.strip()
+        if "```json" in content:
+            content = content.split("```json")[1].split("```")[0].strip()
+        elif "```" in content:
+            content = content.split("```")[1].split("```")[0].strip()
+        result = json.loads(content)
+        return {
+            "intent": result.get("intent", "question"),
+            "term": result.get("term"),
+            "confidence": float(result.get("confidence", 0.0)),
+        }
+    except Exception:
+        return {"intent": "question", "term": None, "confidence": 0.0}
+
+
+async def ask_intent_confirm(intent_result: dict):
+    """의도 분류 결과를 관리자에게 확인"""
+    intent = intent_result["intent"]
+    confidence = intent_result["confidence"]
+    label = INTENT_LABELS.get(intent, intent)
+
+    if confidence >= 0.8:
+        prompt = f"**{label}**을(를) 시작할까요?"
+        confirm_label = "✅ 네, 시작해주세요"
+    else:
+        prompt = f"혹시 **{label}**을(를) 원하시는 건가요?"
+        confirm_label = "✅ 맞아요"
+
+    res = await cl.AskActionMessage(
+        content=prompt,
+        actions=[
+            cl.Action(
+                name="intent_confirm",
+                label=confirm_label,
+                payload={"value": "confirm", "intent": intent, "term": intent_result["term"]},
+            ),
+            cl.Action(
+                name="intent_deny",
+                label="❌ 아니요, 다른 작업이에요",
+                payload={"value": "deny"},
+            ),
+        ],
+    ).send()
+
+    value = (res or {}).get("payload", {}).get("value")
+    if value == "confirm":
+        await _route_to_workflow(intent, intent_result.get("term"))
+    else:
+        await _show_workflow_buttons()
+
+
+async def _route_to_workflow(intent: str, term_text: str | None):
+    """의도에 맞는 워크플로우로 진입"""
+    if intent == "payment":
+        if term_text:
+            term = parse_term_input(term_text)
+            if term:
+                await start_payment_flow_with_term(term)
+                return
+        term = get_current_term()
+        await start_payment_flow_with_term(term)
+    elif intent == "attendance":
+        await start_attendance_flow(None)
+    elif intent == "ocr":
+        await cl.Message("출석 체크 기능은 준비 중입니다.").send()
+    elif intent == "plan":
+        await cl.Message("계획서 검토 기능은 준비 중입니다.").send()
+
+
+async def _show_workflow_buttons():
+    """워크플로우 선택 버튼 5개 표시"""
+    actions = [
+        cl.Action(name="btn_payment", label="💰 입금 대조", payload={"value": "payment"}),
+        cl.Action(name="btn_attendance", label="📋 출석부 생성", payload={"value": "attendance"}),
+        cl.Action(name="btn_ocr", label="✅ 출석 체크", payload={"value": "ocr"}),
+        cl.Action(name="btn_plan", label="📝 계획서 검토", payload={"value": "plan"}),
+        cl.Action(name="btn_question", label="❓ 질문하기", payload={"value": "question"}),
+    ]
+    await cl.Message(content="어떤 작업을 도와드릴까요?", actions=actions).send()
+
+
+@cl.action_callback("btn_payment")
+async def on_btn_payment(action: cl.Action):
+    term = get_current_term()
+    await start_payment_flow_with_term(term)
+
+
+@cl.action_callback("btn_attendance")
+async def on_btn_attendance(action: cl.Action):
+    await start_attendance_flow(None)
+
+
+@cl.action_callback("btn_ocr")
+async def on_btn_ocr(action: cl.Action):
+    await cl.Message("출석 체크 기능은 준비 중입니다.").send()
+
+
+@cl.action_callback("btn_plan")
+async def on_btn_plan(action: cl.Action):
+    await cl.Message("계획서 검토 기능은 준비 중입니다.").send()
+
+
+@cl.action_callback("btn_question")
+async def on_btn_question(action: cl.Action):
+    cl.user_session.set("state", "idle")
+    await cl.Message("궁금한 점을 자유롭게 질문해주세요.").send()
+
+
+# ===================================================== 유틸 =====
 
 def _clear_payment_session():
     cl.user_session.set("state", "idle")
