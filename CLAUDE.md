@@ -468,8 +468,24 @@ TERM_SEASONS = {1: "겨울", 2: "봄", 3: "여름", 4: "가을"}
 | Root folder | `ROOT_FOLDER_ID` | Shared Drive root | `0AANInBeWsB7dUk9PVA` | — |
 | 회원 폴더 | `MEMBERS_FOLDER_ID` | Drive folder | `12xm3vG4w5nOPTwoWgmyGCpz939KvJ93e` | — |
 | 학사운영 folder | `OPERATIONS_FOLDER_ID` | Drive folder | `1WuqNFt-g5qhnY1nMk0a8dsowZHKQVRMm` | — |
+| 신규가입 신청서 폴더 | `MEMBER_SIGNUP_FOLDER_ID` | Drive folder | `10ZL8rD9j7OyyZOihfyJ6GRTzmBrTBgWe` | — |
+| 정회원가입 신청서 폴더 | `FULLMEMBER_SIGNUP_FOLDER_ID` | Drive folder | `17tsWfYwIRgHHcT1DQEj8Sqa4ys6pe0Vy` | — |
 
 회원관리/수강기록 시트는 `03 회원과 강사/회원(회원명단/가입서/정회원)/` 폴더에 위치한다 (Shared Drive 루트가 아님).
+
+### 회원 폴더 내부 구조 (03 회원과 강사/회원/)
+
+```
+회원(회원명단/가입서/정회원)/
+├── 회원관리 (Google Sheets)          ← 데이터 테이블 (영속)
+├── 수강기록 (Google Sheets)          ← 데이터 테이블 (영속)
+├── 신규가입 신청서/                   ← 연도별 Google Forms 응답 xlsx
+├── 정회원가입 신청서/                 ← 연도별 Google Forms 응답 xlsx
+├── 연회비/                           ← 연회비 기록
+└── 운영자료/                         ← 홍보물, 양식, 과거 작업 파일
+```
+
+**신청서 파일 탐색**: 신규가입/정회원 신청서는 연도별로 새 Google Form을 생성하므로 파일 ID가 고정이 아님. `listFolderContents`로 폴더 내 파일 목록을 가져온 뒤 파일명 패턴 매칭으로 해당 연도/회차 응답서를 찾아야 함. (Google Drive Search API는 Shared Drive에서 결과가 불안정하므로 사용하지 않음)
 
 ### 회차별 리소스 (런타임에 동적 탐색 — config.py에 없음)
 
@@ -607,9 +623,12 @@ DATABASE_URL=                   # Railway가 자동 주입 (PostgreSQL 연결 �
 - ✅ `n8n/P1_member_signup.json`: 회원 가입 전처리 (Google Sheets trigger → Code → Postgres INSERT)
 - ✅ `n8n/P2_fullmember_signup.json`: 정회원 가입 전처리 (동일 패턴 + 시작/종료회차 계산)
 - ✅ `n8n/P4_daily_sync.json`: DB→Sheets 일일 동기화 (cron 매일 2시, 회원관리+수강기록)
-- ⏳ 워크플로우 JSON에서 `REPLACE_WITH_CREDENTIAL_ID` / `REPLACE_WITH_FORM_RESPONSE_SHEET_ID` 교체 필요
-- ⏳ n8n UI에서 워크플로우 import + credential 연결 + 활성화
-- ⏳ Google Sheets credential 연결 문제 해결 필요 (401 unauthorized_client)
+- ✅ 3개 워크플로우 n8n UI에 import 완료 (비활성 상태)
+- ⏳ Google Sheets credential 연결 문제 해결 필요 (401 unauthorized_client — Domain-wide Delegation scope 전파 대기)
+- ⏳ 워크플로우 내 credential 연결 + 응답 시트 ID 설정 (Google Sheets credential 해결 후)
+- ⏳ P1/P2: 응답 시트는 연도별로 변경되므로 고정 ID가 아닌 동적 설정 필요
+- ⏳ P1/P2: credential type 확인 필요 — JSON에는 `googleSheetsOAuth2Api`로 되어 있으나 SA credential인 경우 `googleSheetsApi`일 수 있음
+- ⏳ 워크플로우 활성화 (credential + 설정 완료 후)
 
 ### Phase 3 — 기능 확장 📋 백로그
 
