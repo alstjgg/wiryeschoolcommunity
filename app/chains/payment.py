@@ -1,9 +1,7 @@
-"""입금 대조 파이프라인 — DB SoT + Sheets 뷰 동기화
+"""입금 대조 파이프라인 — Google Sheets SoT
 
-SoT: PostgreSQL (app/services/db.py)
-관리자 뷰: Google Sheets (동기화 방향: DB → Sheets)
-
-신청자 목록 로드: 챗봇 직접 업로드 (Drive 탐색 제거)
+SoT: Google Sheets (통합 신청서, 회원관리)
+PostgreSQL은 채팅 기록 전용 (chat_data_layer.py).
 """
 
 import json
@@ -13,69 +11,133 @@ from langchain_core.messages import SystemMessage, HumanMessage
 
 from app.config import (
     ANTHROPIC_API_KEY, LLM_MODEL,
-    MEMBERS_SHEET_ID, RECORDS_SHEET_ID, COURSE_KEYWORDS,
+    MEMBERS_SHEET_ID, COURSE_KEYWORDS,
+    TUITION_FEE, MEMBERSHIP_FEE, FULL_MEMBERSHIP_FEE,
 )
-from app.services import db
-from app.services.google_auth import get_drive_service
+from app.services.google_auth import get_drive_service, get_sheets_service
 from app.services.google_drive import find_spreadsheet_by_name, find_or_create_folder
-from app.services.google_sheets import read_sheet, write_sheet, append_sheet
+from app.services.google_sheets import read_sheet, write_sheet
 
 
-# -------------------------------------------------- 수강생 시트 Sheets 동기화 ----
+# =========================================== 통합 신청서 시트 관리 ====
 
-def _students_to_rows(students: list[dict]) -> list[list]:
-    """students DB 행 목록 → Sheets 2D 배열 (헤더 포함)"""
-    header = ["이름ID", "과목명", "입금시간", "입금자명(적요)", "비고", "입금현황", "등록상태"]
-    rows = [header]
-    for s in students:
-        rows.append([
-            s.get("name_id") or s.get("이름ID", ""),
-            s.get("course_name") or s.get("강좌명", ""),
-            s.get("payment_time") or "",
-            s.get("payment_memo") or "",
-            s.get("note") or "",
-            s.get("payment_status") or "❌미입금",
-            s.get("registration_status") or "",
-        ])
-    return rows
+APPLICATION_HEADER = [
+    "이름ID", "이름", "유형", "과목명", "예상금액",
+    "입금현황", "등록상태", "입금시간", "입금자명(적요)",
+    "전화번호", "주소", "생년월일", "성별", "신청일",
+    "시작회차", "종료회차",
+]
+
+# 컬럼 인덱스 (0-based)
+_COL = {name: i for i, name in enumerate(APPLICATION_HEADER)}
 
 
-def sync_students_to_sheet(
-    term_id: str,
-    students: list[dict],
+def _app_to_row(app: dict) -> list[str]:
+    """신청서 dict → Sheets 행"""
+    return [str(app.get(col, "") or "") for col in APPLICATION_HEADER]
+
+
+def build_applications(
+    applicants: list[dict],
+    member_signups: list[dict],
+    fullmember_signups: list[dict],
+) -> list[dict]:
+    """수강 신청 + 신규가입 + 정회원가입을 통합 신청서 리스트로 합친다.
+
+    중복 제거: 이름ID + 유형 + 과목명 기준.
+    """
+    seen = set()
+    apps = []
+
+    for a in applicants:
+        key = (a["이름ID"], "수강", a["강좌명"])
+        if key in seen:
+            continue
+        seen.add(key)
+        apps.append({
+            "이름ID": a["이름ID"],
+            "이름": a["이름"],
+            "유형": "수강",
+            "과목명": a["강좌명"],
+            "예상금액": str(TUITION_FEE),
+            "입금현황": "❌미입금",
+            "등록상태": "",
+            "입금시간": "",
+            "입금자명(적요)": "",
+            "전화번호": a.get("전화번호", ""),
+            "주소": a.get("주소", ""),
+            "생년월일": a.get("생년월일", ""),
+            "성별": a.get("성별", ""),
+            "신청일": a.get("신청일", ""),
+            "시작회차": "",
+            "종료회차": "",
+        })
+
+    for s in member_signups:
+        key = (s["이름ID"], "신규가입", "")
+        if key in seen:
+            continue
+        seen.add(key)
+        apps.append({
+            **s,
+            "예상금액": str(MEMBERSHIP_FEE),
+            "입금현황": "❌미입금",
+            "등록상태": "",
+            "입금시간": "",
+            "입금자명(적요)": "",
+        })
+
+    for f in fullmember_signups:
+        key = (f["이름ID"], "정회원", "")
+        if key in seen:
+            continue
+        seen.add(key)
+        apps.append({
+            **f,
+            "예상금액": str(FULL_MEMBERSHIP_FEE),
+            "입금현황": "❌미입금",
+            "등록상태": "",
+            "입금시간": "",
+            "입금자명(적요)": "",
+        })
+
+    return apps
+
+
+def write_applications_sheet(
     term_folder_id: str,
+    applications: list[dict],
 ) -> str:
-    """DB students → Google Sheets 동기화.
+    """통합 신청서를 Google Sheets에 저장.
 
-    수강생/ 서브폴더에 "수강생" 시트가 없으면 생성.
+    회차 폴더 → '신청서' 서브폴더 → '신청서' 시트.
+    기존 시트가 있으면 덮어쓰기, 없으면 생성.
     Returns: spreadsheet_id
     """
-    subfolder = find_or_create_folder(term_folder_id, "수강생")
-    students_folder_id = subfolder["id"]
+    subfolder = find_or_create_folder(term_folder_id, "신청서")
+    folder_id = subfolder["id"]
 
-    existing = find_spreadsheet_by_name(students_folder_id, "수강생")
-
-    rows = _students_to_rows(students)
+    existing = find_spreadsheet_by_name(folder_id, "신청서")
+    rows = [APPLICATION_HEADER] + [_app_to_row(a) for a in applications]
 
     if existing:
         spreadsheet_id = existing["id"]
-        write_sheet(spreadsheet_id, "수강생!A1", rows)
+        write_sheet(spreadsheet_id, "신청서!A1", rows)
         return spreadsheet_id
 
     # 새 시트 생성
     drive = get_drive_service()
     file_metadata = {
-        "name": "수강생",
+        "name": "신청서",
         "mimeType": "application/vnd.google-apps.spreadsheet",
-        "parents": [students_folder_id],
+        "parents": [folder_id],
     }
     file = drive.files().create(
         body=file_metadata, fields="id", supportsAllDrives=True
     ).execute()
     spreadsheet_id = file["id"]
 
-    # 기본 탭 이름 "수강생"으로 변경
-    from app.services.google_auth import get_sheets_service
+    # 기본 탭 이름 변경
     sheets_svc = get_sheets_service()
     meta = sheets_svc.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
     default_sheet_id = meta["sheets"][0]["properties"]["sheetId"]
@@ -84,115 +146,135 @@ def sync_students_to_sheet(
         body={
             "requests": [{
                 "updateSheetProperties": {
-                    "properties": {"sheetId": default_sheet_id, "title": "수강생"},
+                    "properties": {"sheetId": default_sheet_id, "title": "신청서"},
                     "fields": "title",
                 }
             }]
         },
     ).execute()
 
-    write_sheet(spreadsheet_id, "수강생!A1", rows)
+    write_sheet(spreadsheet_id, "신청서!A1", rows)
     return spreadsheet_id
 
 
-def sync_members_to_sheet(members: list[dict]) -> None:
-    """DB members → 회원관리 Sheets 동기화 (헤더 포함 전체 덮어쓰기)"""
+def read_applications_sheet(spreadsheet_id: str) -> list[dict]:
+    """신청서 시트에서 전체 행을 dict 리스트로 읽기"""
+    rows = read_sheet(spreadsheet_id, "신청서!A1:P5000")
+    if not rows or len(rows) < 2:
+        return []
+    header = rows[0]
+    result = []
+    for row in rows[1:]:
+        data = dict(zip(header, row + [""] * (len(header) - len(row))))
+        result.append(data)
+    return result
+
+
+def update_applications_sheet(
+    spreadsheet_id: str,
+    applications: list[dict],
+) -> None:
+    """매칭 결과가 반영된 applications를 시트에 다시 쓴다."""
+    rows = [APPLICATION_HEADER] + [_app_to_row(a) for a in applications]
+    write_sheet(spreadsheet_id, "신청서!A1", rows)
+
+
+# ================================================= 회원관리 시트 ====
+
+def load_members_from_sheet() -> list[dict]:
+    """회원관리 시트에서 전체 회원 로드"""
+    rows = read_sheet(MEMBERS_SHEET_ID, "회원관리!A1:J2000")
+    if not rows or len(rows) < 2:
+        return []
+    header = rows[0]
+    return [dict(zip(header, r + [""] * (len(header) - len(r)))) for r in rows[1:]]
+
+
+def update_members_sheet(members: list[dict]) -> None:
+    """회원관리 시트 전체 덮어쓰기"""
     header = ["이름ID", "이름", "성별", "전화번호", "주소", "나이", "등급",
               "수강count", "출석률(누적)", "마지막수강회차"]
     rows = [header]
     for m in members:
         rows.append([
-            m.get("name_id", ""),
-            m.get("name", ""),
-            m.get("gender") or "",
-            m.get("phone") or "",
-            m.get("address") or "",
-            str(m.get("age") or ""),
-            m.get("grade", "회원"),
-            str(m.get("enrollment_count") or 0),
-            str(m.get("attendance_rate") or ""),
-            m.get("last_term") or "",
+            m.get("이름ID", ""),
+            m.get("이름", ""),
+            m.get("성별", ""),
+            m.get("전화번호", ""),
+            m.get("주소", ""),
+            m.get("나이", ""),
+            m.get("등급", "회원"),
+            m.get("수강count", "0"),
+            m.get("출석률(누적)", ""),
+            m.get("마지막수강회차", ""),
         ])
     write_sheet(MEMBERS_SHEET_ID, "회원관리!A1", rows)
 
 
-def sync_enrollment_records_to_sheet(records: list[dict]) -> None:
-    """DB enrollment_records → 수강기록 Sheets 동기화"""
-    header = ["이름ID", "회차", "과목명", "출석률"]
-    rows = [header]
-    for r in records:
-        rows.append([
-            r.get("name_id", ""),
-            r.get("term_id", ""),
-            r.get("course_name", ""),
-            str(r.get("attendance_rate") or ""),
-        ])
-    write_sheet(RECORDS_SHEET_ID, "수강기록!A1", rows)
+# ======================================= 입금 매칭 관련 함수 ====
 
-
-# -------------------------------------------- Sheets → DB 역방향 동기화 ----
-
-def sync_registration_status_from_sheet(
-    term_id: str,
-    students_sheet_id: str,
-) -> list[tuple[str, str, str]]:
-    """수강생 시트 등록상태 컬럼 → DB students 반영.
-
-    관리자가 시트에서 직접 체크한 등록상태를 DB로 가져온다.
-    Returns: 업데이트된 (term_id, name_id, course_name) 목록
-    """
-    import asyncio
-
-    rows = read_sheet(students_sheet_id, "수강생!A1:G500")
-    if not rows or len(rows) < 2:
-        return []
-
-    updates = []
-    for row in rows[1:]:
-        if len(row) < 7:
-            continue
-        name_id = row[0]
-        course_name = row[1]
-        reg_status = row[6] if len(row) > 6 else ""
-        if name_id and course_name and reg_status:
-            updates.append((term_id, name_id, course_name, reg_status))
-
-    if not updates:
-        return []
-
-    async def _apply():
-        pool = await db.get_pool()
-        async with pool.acquire() as conn:
-            await conn.executemany(
-                """
-                UPDATE students
-                SET registration_status = $4, updated_at = NOW()
-                WHERE term_id = $1 AND name_id = $2 AND course_name = $3
-                """,
-                updates,
-            )
-
-    asyncio.get_event_loop().run_until_complete(_apply())
-    return [(u[0], u[1], u[2]) for u in updates]
-
-
-# ---------------------------------------------- 매칭 로직 (변경 없음) ----
-
-def apply_exemptions(students: list[dict], members: list[dict]) -> list[dict]:
-    """정회원 선처리: 정회원은 입금현황=💎면제"""
-    member_grades = {m["name_id"]: m["grade"] for m in members}
+def apply_exemptions(
+    applications: list[dict],
+    members: list[dict],
+) -> list[dict]:
+    """정회원 선처리: 회원관리에서 등급='정회원' → 해당 수강 행의 입금현황=💎면제"""
+    member_grades = {m.get("이름ID", ""): m.get("등급", "") for m in members}
     exempted = []
-    for s in students:
-        name_id = s.get("name_id") or s.get("이름ID", "")
-        grade = member_grades.get(name_id, "")
-        if grade == "정회원":
-            exempted.append({
-                "이름ID": name_id,
-                "이름": s.get("이름", ""),
-                "강좌명": s.get("course_name") or s.get("강좌명", ""),
-                "상태": "💎면제",
-            })
+    for app in applications:
+        if app["유형"] != "수강":
+            continue
+        name_id = app["이름ID"]
+        if member_grades.get(name_id) == "정회원":
+            app["입금현황"] = "💎면제"
+            exempted.append(app)
     return exempted
+
+
+def applications_to_students(applications: list[dict]) -> list[dict]:
+    """통합 신청서에서 수강 유형만 추출하여 matching.py 호환 형식으로 변환"""
+    return [
+        {
+            "이름ID": a["이름ID"],
+            "이름": a["이름"],
+            "강좌명": a["과목명"],
+        }
+        for a in applications
+        if a["유형"] == "수강"
+    ]
+
+
+def apply_matching_results(
+    applications: list[dict],
+    matched_results: list[dict],
+) -> None:
+    """매칭 결과를 applications에 반영 (입금현황, 입금시간, 입금자명)"""
+    # 이름ID + 과목명 → application 인덱스 매핑
+    app_index = {}
+    for i, app in enumerate(applications):
+        if app["유형"] == "수강":
+            app_index[(app["이름ID"], app["과목명"])] = i
+
+    for r in matched_results:
+        if r["상태"] == "⏭️스킵":
+            continue
+        matched_id = r.get("매칭ID")
+        matched_course = r.get("매칭강좌", "")
+        if not matched_id:
+            continue
+
+        key = (matched_id, matched_course)
+        if key not in app_index:
+            # 강좌 없이 이름ID만으로 시도
+            for k, idx in app_index.items():
+                if k[0] == matched_id and applications[idx]["입금현황"] == "❌미입금":
+                    key = k
+                    break
+
+        if key in app_index:
+            idx = app_index[key]
+            applications[idx]["입금현황"] = r["상태"]
+            applications[idx]["입금시간"] = r.get("거래일시", "")
+            applications[idx]["입금자명(적요)"] = r.get("적요", "")
 
 
 async def run_llm_matching(unmatched: list[dict], students: list[dict]) -> list[dict]:
@@ -207,8 +289,7 @@ async def run_llm_matching(unmatched: list[dict], students: list[dict]) -> list[
     )
 
     student_info = [
-        f"- {s.get('이름', '')} / {s.get('course_name') or s.get('강좌명', '')} "
-        f"(ID: {s.get('name_id') or s.get('이름ID', '')})"
+        f"- {s['이름']} / {s['강좌명']} (ID: {s['이름ID']})"
         for s in students
     ]
     student_list_text = "\n".join(student_info)
@@ -291,38 +372,17 @@ JSON만 응답하세요. 설명은 메모 필드에 넣어주세요."""
     return unmatched
 
 
-def find_unpaid_students(
-    students: list[dict],
-    matched_results: list[dict],
-    exempted_ids: set[str] | None = None,
-) -> list[dict]:
-    """매칭된 결과에 없는 수강생 → 미입금 목록 (정회원 제외)"""
-    if exempted_ids is None:
-        exempted_ids = set()
-
-    matched_ids = {
-        r["매칭ID"]
-        for r in matched_results
-        if r.get("매칭ID") and r["상태"] == "✅정상"
-    }
-
-    unpaid = []
-    for s in students:
-        name_id = s.get("name_id") or s.get("이름ID", "")
-        if name_id in matched_ids or name_id in exempted_ids:
-            continue
-        unpaid.append({
-            "이름ID": name_id,
-            "이름": s.get("이름", ""),
-            "강좌명": s.get("course_name") or s.get("강좌명", ""),
-            "상태": "❌미입금",
-        })
-    return unpaid
+def find_unpaid(applications: list[dict]) -> list[dict]:
+    """입금현황이 ❌미입금인 수강 행"""
+    return [
+        a for a in applications
+        if a["유형"] == "수강" and a["입금현황"] == "❌미입금"
+    ]
 
 
 def format_results(
     matched: list[dict],
-    unpaid: list[dict],
+    applications: list[dict],
     exempted: list[dict] | None = None,
 ) -> str:
     """매칭 결과를 한국어 요약 텍스트로 포맷"""
@@ -336,6 +396,8 @@ def format_results(
     duplicate = sum(1 for r in matched if r["상태"] == "🔄중복")
     skipped = sum(1 for r in matched if r["상태"] == "⏭️스킵")
     unmatched_count = sum(1 for r in matched if r["상태"] == "❌미매칭")
+
+    unpaid = find_unpaid(applications)
 
     lines = [
         "## 📊 입금 대조 결과\n",
@@ -382,13 +444,13 @@ def format_results(
     if exempted:
         lines.append("### 💎 면제 (정회원)")
         for e in exempted:
-            lines.append(f"- {e['이름']} ({e['강좌명']})")
+            lines.append(f"- {e['이름']} ({e['과목명']})")
         lines.append("")
 
     if unpaid:
         lines.append("### ❌ 미입금 수강생")
         for u in unpaid:
-            lines.append(f"- {u['이름']} ({u['강좌명']})")
+            lines.append(f"- {u['이름']} ({u['과목명']})")
         lines.append("")
 
     unmatched_txs = [r for r in matched if r["상태"] == "❌미매칭"]

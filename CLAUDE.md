@@ -8,13 +8,13 @@
 
 ## 기술 스택
 
-- **언어**: Python 3.10+
+- **언어**: Python 3.12 (`.python-version`으로 고정)
 - **LLM 프레임워크**: LangChain (LLM 호출 래퍼로만 사용)
 - **채팅 UI**: Chainlit (WebSocket 기반, Conversation Starter 버튼 지원)
 - **LLM**: Claude API (Anthropic) — 한국어 + Vision
-- **데이터베이스**: PostgreSQL (Railway 플러그인) — SoT(Single Source of Truth)
-- **관리자 인터페이스**: Google Sheets (관리자 열람/작업용 뷰) + Google Drive (파일 저장)
-- **배치 파이프라인**: n8n (Railway에 Docker 배포, 스케줄/이벤트 기반)
+- **데이터 SoT**: Google Sheets (비즈니스 데이터) + Google Drive (파일 저장)
+- **데이터베이스**: PostgreSQL (Railway) — 채팅 기록(chat_data_layer.py) 전용
+- **배치 파이프라인**: n8n (Railway, 당장 비활성 — P4만 유지, 추후 제거 검토)
 - **Google 인증**: Service Account + Domain-wide Delegation
 - **배포**: Railway (Git push 자동 배포)
 - **RAG 없음**: Context Injection (시스템 프롬프트에 비즈니스 컨텍스트 직접 주입)
@@ -105,9 +105,7 @@ wiryeschoolcommunity/
 │   ├── BUSINESS_CONTEXT.md      # Context Injection 소스 텍스트
 │   └── PLANNED_DRIVE_STRUCTURE.md  # Google Drive 확정 구조 + 폴더 ID 참조
 ├── n8n/                         # n8n 워크플로우 JSON (n8n UI에서 import 용)
-│   ├── P1_member_signup.json    # 회원 가입 신청 전처리
-│   ├── P2_fullmember_signup.json # 정회원 가입 신청 전처리
-│   └── P4_daily_sync.json       # DB → Sheets 일일 동기화
+│   └── P4_daily_sync.json       # DB → Sheets 일일 동기화 (P1/P2는 챗봇 코드로 이동)
 ├── app/
 │   ├── main.py                  # Chainlit 엔트리포인트 + 세션 상태 라우터 + 입금 대조 wizard flow
 │   ├── config.py                # 환경 변수, 상수, 영속 Google IDs, COURSE_KEYWORDS
@@ -121,9 +119,9 @@ wiryeschoolcommunity/
 │   ├── services/
 │   │   ├── google_auth.py       # Google API 인증 (SA 파일 + JSON 환경변수 이중 지원)
 │   │   ├── google_drive.py      # Drive API 래퍼 + 동적 폴더 탐색 (find_term_folder 등)
-│   │   ├── google_sheets.py     # Sheets API 래퍼
+│   │   ├── google_sheets.py     # Sheets API 래퍼 (SoT 읽기/쓰기)
 │   │   ├── excel.py             # Excel 파싱 (입금내역 .xls/.xlsx + 신청자 목록 HTML .xls)
-│   │   ├── db.py                # PostgreSQL 비즈니스 데이터 레이어 (asyncpg, 스키마 + CRUD)
+│   │   ├── signup_loader.py     # Drive에서 신규가입/정회원가입 신청서 로드 → 파싱 결과 반환
 │   │   └── chat_data_layer.py   # Chainlit 채팅 기록 PostgreSQL 영속성 (BaseDataLayer 구현)
 │   └── utils/
 │       ├── __init__.py
@@ -131,6 +129,8 @@ wiryeschoolcommunity/
 ├── scripts/
 │   ├── populate_members.py      # 회원관리 시트 초기 데이터 생성
 │   └── populate_students.py     # 수강생 시트 초기 데이터 생성
+├── .python-version              # Python 3.12 고정 (Railway mise 빌드용)
+├── nixpacks.toml                # Railway Nixpacks 빌드 설정
 ├── Procfile                     # PaaS 실행 명령
 ├── requirements.txt
 ├── .env.example                 # 환경 변수 템플릿
@@ -172,39 +172,18 @@ drive_service = build('drive', 'v3', credentials=credentials)
 
 ### 설계 원칙
 
-- **PostgreSQL이 SoT** (Single Source of Truth). 모든 비즈니스 데이터의 정합성은 DB가 보장.
-- **Google Sheets는 관리자 열람/작업용 뷰**. DB → Sheets 단방향 동기화가 기본. 유일한 예외: `수강생` 시트의 `등록상태` 컬럼 (관리자가 직접 기입, 출석부 생성 시 역방향 동기화).
+- **Google Sheets가 SoT** (Single Source of Truth). 관리자가 보는 것이 곧 데이터. 별도 동기화 레이어 없음.
+- **PostgreSQL은 채팅 기록 전용** (chat_data_layer.py). 비즈니스 데이터는 저장하지 않음.
 - **Google Drive는 파일 저장소**. Raw 엑셀, PDF, 출석부 등 파일 단위 자료 관리.
 
-### 데이터 계층
+### 데이터 구조
 
-```
-[Raw Data]                     [History]                    [Master]
-구글 설문 응답 ──n8n 배치──→  회원신청기록 (append-only) ──→ 회원관리 (snapshot)
-정회원 가입 신청서 ─n8n──→  정회원신청기록 (append-only) ──→       ↑ 집계
-배움숲 LEARNING_APPLY*.xls    수강기록 (append-only) ─────────→   ↑
-은행 입금내역 엑셀
-```
-
-| 계층 | 성격 | 저장소 | 예시 |
+| 시트 | 성격 | 저장소 | 설명 |
 |------|------|--------|------|
-| **Raw** | 외부 시스템 원본 | Google Drive / 챗봇 업로드 | 배움숲 엑셀, 은행 입금내역, 구글 설문 응답 xlsx |
-| **History** | 전처리된 이력 (append-only) | PostgreSQL + Sheets(뷰) | 수강기록, 회원신청기록, 정회원신청기록 |
-| **Master** | 현재 상태 스냅샷 (upsert) | PostgreSQL + Sheets(뷰) | 회원관리 |
-| **Working** | 회차별 작업 테이블 | PostgreSQL + Sheets(작업용) | 수강생, 출석부 |
-
-### 테이블 관계
-
-```
-[Master]                         [History]
-회원관리 ←────── 집계 ─────────── 수강기록          ← 종강 시 append
-   ↑                              회원신청기록       ← 신규 가입 시 append (n8n)
-   ↑ 정회원 여부                   정회원신청기록     ← 정회원 가입 시 append (n8n)
-   │
-   │ 이름ID                [Working]
-   ▼                       수강생 ──────→ 출석부
-                           (회차별)       (회차별)
-```
+| **회원관리** | Master (영속) | Google Sheets | 전체 회원 현재 상태 스냅샷 |
+| **수강기록** | History (영속) | Google Sheets | 전체 수강 이력 (종강 시 append) |
+| **신청서** | Working (회차별) | Google Sheets | 통합 신청서 — 수강+신규가입+정회원 |
+| **출석부** | Working (회차별) | Google Sheets | 과목별 시트탭, 12회차 출석 |
 
 ### 회원관리 (Master) — 현재 상태 스냅샷
 
@@ -213,12 +192,6 @@ drive_service = build('drive', 'v3', credentials=credentials)
 
 - **PK**: 이름ID
 - **등급**: 회원 / 준회원 / 정회원
-- **가입날짜 없음**: 가입 이력은 `회원신청기록` History 테이블에서 관리
-- **수강count/출석률/마지막수강회차**: `수강기록`에서 집계 (n8n 배치)
-- **등급 자동 전환** (n8n 배치):
-  - 입금 대조 완료 후: 회원 → 준회원
-  - 종강: 준회원 → 회원
-  - 1회차(겨울) 종강: 정회원 → 회원 (강사/사무처 예외)
 
 ### 수강기록 (History) — 전체 수강 이력
 
@@ -227,31 +200,20 @@ drive_service = build('drive', 'v3', credentials=credentials)
 
 종강 시: 출석부 → 출석률 확정 → 수강기록에 행 추가 → 회원관리 재집계
 
-### 회원신청기록 (History, NEW) — 신규 회원 가입 이력
+### 통합 신청서 (Working, 회차별) — 수강+가입+정회원 통합
 
-| 이름ID | 이름 | 전화번호 | 주소 | 생년월일 | 성별 | 신청일 | 가입회차 |
-|--------|------|---------|------|---------|------|--------|---------|
+| 이름ID | 이름 | 유형 | 과목명 | 예상금액 | 입금현황 | 등록상태 | 입금시간 | 입금자명(적요) | 전화번호 | 주소 | 생년월일 | 성별 | 신청일 | 시작회차 | 종료회차 |
+|--------|------|------|--------|---------|---------|---------|---------|-------------|---------|------|---------|------|--------|---------|---------|
 
-- **Raw 원본**: 구글 설문 `회원 가입서(응답).xlsx`
-- **n8n 배치**: 설문 응답 감지 → 전처리 → 이 테이블에 append. 등급 전환은 하지 않음 (가입비 입금 확인 후 입금 대조에서 처리)
-
-### 정회원신청기록 (History, NEW) — 정회원 가입 이력
-
-| 이름ID | 이름 | 전화번호 | 주소 | 생년월일 | 신청일 | 가입회차 | 시작회차 | 종료회차 |
-|--------|------|---------|------|---------|--------|---------|---------|---------|
-
-- **Raw 원본**: 구글 설문 `정회원 가입 신청서(응답).xlsx`
-- **n8n 배치**: 설문 응답 감지 → 전처리 → 이 테이블에 append. 등급 전환은 하지 않음 (정회원비 입금 확인 후 입금 대조에서 처리)
-
-### 수강생 (Working, 회차별) — 수강 신청 + 입금 + 등록 추적
-
-| 이름ID | 과목명 | 입금시간 | 입금자명(적요) | 비고 | 입금현황 | 등록상태 |
-|--------|--------|---------|-------------|------|---------|---------|
-
-- **PK**: 이름ID + 과목명
+- **유형**: `수강`(수강료 2만), `신규가입`(가입비 1만), `정회원`(정회원비 12만)
+- **과목명**: 수강 유형만 값 있음. 신규가입/정회원은 빈칸.
+- **시작회차/종료회차**: 정회원 유형만 값 있음.
 - **입금현황**: Agent가 자동 채움 (✅정상 / 🔶확인필요 / ⚠️이름불일치 / ❌미입금 / 🔄중복 / 💎면제)
-- **등록상태**: **Agent는 빈칸으로 둠**. 관리자가 배움숲 포탈에서 수강 등록 처리 완료 후 Sheets에서 직접 체크. 출석부 생성 시 이 필드를 기준으로 필터.
-- **역방향 동기화**: 관리자가 "출석부 생성"을 요청하면 Agent가 Sheets → DB로 `등록상태` 동기화 후 출석부 생성
+- **등록상태**: Agent는 빈칸. 관리자가 배움숲 포탈에서 등록 완료 후 직접 체크. 출석부 생성 시 필터 기준.
+- **데이터 소스**:
+  - 수강: 배움숲 다운로드 엑셀 (관리자가 챗봇에 업로드)
+  - 신규가입: Drive 신규가입 신청서 폴더 (signup_loader.py가 자동 탐색)
+  - 정회원: Drive 정회원가입 신청서 폴더 (signup_loader.py가 자동 탐색)
 
 ### 출석부 (Working, 회차별, 1파일 다중시트)
 
@@ -261,8 +223,7 @@ Google Sheets 파일 1개, 과목별 시트탭.
 |----|------|------------|--------|
 
 - 12회차 일괄 생성, 출석률 = 출석수/회차수×100 (수식)
-- `등록상태`가 체크된 수강자만 포함
-- 과목별 PDF도 생성 (A4 프린트용)
+- 신청서의 `등록상태`가 체크된 수강자만 포함
 
 ---
 
@@ -271,21 +232,21 @@ Google Sheets 파일 1개, 과목별 시트탭.
 ### 시스템 아키텍처
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│  Railway                                                         │
-│                                                                  │
-│  ┌──────────────┐   ┌──────────────┐   ┌──────────────────────┐ │
-│  │  Chainlit     │   │  n8n         │   │  PostgreSQL          │ │
-│  │  + LangChain  │   │  (Docker)    │   │  (SoT)               │ │
-│  │  (챗봇)       │──→│  (배치)      │──→│  채팅기록 + 비즈니스  │ │
-│  └──────┬───────┘   └──────┬───────┘   └──────────┬───────────┘ │
-│         │                  │                       │             │
-└─────────┼──────────────────┼───────────────────────┼─────────────┘
-          │                  │                       │
-          ▼                  ▼                       ▼
+┌──────────────────────────────────────────────────────┐
+│  Railway                                              │
+│                                                       │
+│  ┌──────────────┐        ┌──────────────────────┐    │
+│  │  Chainlit     │        │  PostgreSQL           │    │
+│  │  + LangChain  │───────→│  (채팅 기록 전용)     │    │
+│  │  (챗봇)       │        └──────────────────────┘    │
+│  └──────┬───────┘                                     │
+│         │                                             │
+└─────────┼─────────────────────────────────────────────┘
+          │
+          ▼
    ┌──────────────────────────────────────────────────────────┐
    │  Google Workspace                                         │
-   │  Drive (파일) + Sheets (관리자 뷰) + Forms (설문)         │
+   │  Drive (파일) + Sheets (SoT, 비즈니스 데이터) + Forms     │
    └──────────────────────────────────────────────────────────┘
           │
           ▼
@@ -299,30 +260,9 @@ Google Sheets 파일 1개, 과목별 시트탭.
 
 | 구분 | 트리거 | 실행 엔진 | 설명 |
 |------|--------|----------|------|
-| **On-demand** | 관리자 버튼 클릭 | 챗봇 (Chainlit) | 입금 대조 (수강료+가입비+정회원비 전체 입금 유형 처리), 출석부 생성, 종강 처리, OCR, 계획서 검토, Q&A |
-| **Event-driven** | 구글 설문 응답 | n8n (Google Sheets trigger) | Raw → History 전처리 (회원신청기록, 정회원신청기록 append만, 등급 전환은 입금 대조 시) |
-| **Scheduled** | cron | n8n (cron trigger) | DB→Sheets 동기화 |
+| **On-demand** | 관리자 버튼 클릭 | 챗봇 (Chainlit) | 입금 대조 (수강+가입+정회원 통합), 출석부 생성, 종강 처리, OCR, 계획서 검토, Q&A |
 
 ### n8n 배치 파이프라인 상세
-
-**P1. 회원 가입 신청 전처리** (event-driven)
-```
-트리거: 구글 설문 '회원 가입서' 연결 Sheets에 새 행 추가 감지 (Google Sheets trigger)
-1. 새 응답 행 읽기
-2. 이름ID 생성 (이름 + 전화번호 뒷4자리)
-3. DB 회원신청기록 테이블에 append
-4. (등급 전환 없음 — 가입비 입금 확인은 입금 대조에서 처리)
-```
-
-**P2. 정회원 가입 신청 전처리** (event-driven)
-```
-트리거: 구글 설문 '정회원 가입 신청서' 연결 Sheets에 새 행 추가 감지 (Google Sheets trigger)
-1. 새 응답 행 읽기
-2. 이름ID 생성
-3. 시작회차/종료회차 계산 (가입시점 기준 → 후년 1회차 종강)
-4. DB 정회원신청기록 테이블에 append
-5. (등급 전환 없음 — 정회원비 입금 확인은 입금 대조에서 처리)
-```
 
 **P3. 종강 처리** (on-demand, 관리자 요청)
 ```
@@ -337,26 +277,20 @@ Google Sheets 파일 1개, 과목별 시트탭.
 8. 종강 보고서 생성
 ```
 
-**P4. DB → Sheets 동기화** (scheduled, daily)
+**P4. DB → Sheets 동기화** (scheduled, 비활성)
 ```
-트리거: cron (매일 1회, 새벽)
-1. DB 회원관리 → Google Sheets 회원관리 시트 전체 덮어쓰기
-2. DB 수강기록 → Google Sheets 수강기록 시트 전체 덮어쓰기
-3. (활성 회차가 있을 때) DB 수강생 → Google Sheets 수강생 시트 동기화
+n8n/P4_daily_sync.json — 비즈니스 테이블 제거로 실질적으로 무용.
+당장은 비활성 유지, 추후 제거 검토.
 ```
 
-### 데이터 흐름 방향 정리
+### 데이터 흐름 정리
 
 | 방향 | 시점 | 내용 |
 |------|------|------|
-| Raw → DB | 입금 대조 시 (on-demand) | 신청자 목록 → 수강생 테이블 |
-| Raw → DB | 입금 대조 시 (on-demand) | 은행 입금내역 → 매칭 결과 |
-| Raw → DB | 설문 응답 시 (event-driven) | 구글 설문 → 회원/정회원 신청기록 (append만, 등급 전환 없음) |
-| DB → Sheets | 입금 대조 완료 시 | 수강생 데이터 + 입금현황 |
-| **Sheets → DB** | **출석부 생성 요청 시** | **등록상태 컬럼만 역방향 동기화** |
-| DB → Sheets | 출석부 생성 완료 시 | 출석부 시트 생성 |
-| DB → Sheets | 종강 처리 시 (on-demand) | 회원관리, 수강기록 뷰 갱신 |
-| DB → Sheets | daily 배치 | 회원관리, 수강기록, 수강생 뷰 갱신 |
+| Raw → Sheets | 입금 대조 시 | 배움숲 엑셀 → 통합 신청서 (수강 유형) |
+| Raw → Sheets | 입금 대조 시 | Drive 신청서 → 통합 신청서 (신규가입/정회원 유형) |
+| Raw → Sheets | 입금 대조 시 | 은행 입금내역 → 통합 신청서 입금현황 반영 |
+| Sheets → Sheets | 출석부 생성 시 | 신청서 등록상태 체크된 행 → 출석부 시트 생성 |
 
 ### 신청자 목록 (배움숲 다운로드 원본, SoT)
 
@@ -389,10 +323,13 @@ Google Sheets 파일 1개, 과목별 시트탭.
 2. **Agent**: 현재 날짜 기반으로 회차 추측 → "2026-1 겨울학기 입금 대조를 시작할까요?" → 관리자가 확정/수정
 3. **Agent**: "신청자 목록 엑셀을 업로드해주세요" (배움숲에서 다운로드한 `LEARNING_APPLY*.xls`)
 4. **관리자**: 신청자 목록 엑셀을 챗봇에 직접 업로드
-5. **Agent**: 신청자 목록 파싱 → DB에 수강생 데이터 생성 → 수강생 Google Sheets 동기화
-6. **Agent**: "2026-1 겨울학기 수강 신청자(총 N명)를 확인했습니다. 입금 내역을 업로드해주세요"
-7. **관리자**: 입금 내역 엑셀을 챗봇에 직접 업로드
-8. **Agent**: 회원관리(DB) + 수강생 + 회원신청기록 + 정회원신청기록 + 입금내역을 바탕으로 매칭 (코드 80~90% → LLM 10~20%) → DB 업데이트 + 수강생 시트 동기화
+5. **Agent**: 신청자 목록 파싱 (수강 유형)
+6. **Agent**: (자동) Drive에서 신규가입 신청서 로드 → 파싱 (cl.Step 진행 표시)
+7. **Agent**: (자동) Drive에서 정회원가입 신청서 로드 → 파싱 (cl.Step 진행 표시)
+8. **Agent**: 5+6+7을 합쳐 통합 신청서 생성 → Google Sheets에 저장
+9. **Agent**: "입금 내역을 업로드해주세요"
+10. **관리자**: 입금 내역 엑셀을 챗봇에 직접 업로드
+11. **Agent**: 회원관리(Sheets) + 통합 신청서 + 입금내역을 바탕으로 매칭 (코드 80~90% → LLM 10~20%) → 신청서 시트에 결과 반영
 9. **Agent**: 결과 요약 + 시트 링크 제공 + "수강생 시트에서 입금현황을 확인하시고, 배움숲 포탈에서 수강 등록을 처리한 뒤 등록상태를 체크해주세요"
 10. **Agent**: Action 버튼 제공 — 📋 출석부 생성, 🔄 입금대조 다시하기, ❓ 다른 질문하기
 11. **관리자**: 수강생 시트를 보면서 배움숲 포탈에서 수강 등록 처리 → 등록상태를 시트에서 직접 체크
@@ -485,7 +422,7 @@ TERM_SEASONS = {1: "겨울", 2: "봄", 3: "여름", 4: "가을"}
 └── 운영자료/                         ← 홍보물, 양식, 과거 작업 파일
 ```
 
-**신청서 파일 탐색**: 신규가입/정회원 신청서는 연도별로 새 Google Form을 생성하므로 파일 ID가 고정이 아님. `listFolderContents`로 폴더 내 파일 목록을 가져온 뒤 파일명 패턴 매칭으로 해당 연도/회차 응답서를 찾아야 함. (Google Drive Search API는 Shared Drive에서 결과가 불안정하므로 사용하지 않음)
+**신청서 파일 탐색**: 신규가입/정회원 신청서는 연도별로 새 Google Form을 생성하므로 파일 ID가 고정이 아님. 챗봇 `signup_loader.py`에서 Drive 폴더 탐색 → Spreadsheet mimeType 필터 → 파일명에 회차 문자열(예: "2026-2") 매칭으로 자동화.
 
 ### 회차별 리소스 (런타임에 동적 탐색 — config.py에 없음)
 
@@ -554,6 +491,13 @@ n8n 환경 변수 (실제 배포 설정):
 
 n8n은 기존 PostgreSQL에 자체 테이블(`execution_entity`, `workflow_entity`, `credentials_entity` 등)을 자동 생성. 챗봇의 채팅기록/비즈니스 테이블과 같은 DB에 공존.
 
+### n8n Credential 참조 (P4 워크플로우 JSON에서 사용, 현재 비활성)
+
+| 노드 타입 | credential key | credential name | credential ID |
+|----------|----------------|-----------------|---------------|
+| `n8n-nodes-base.postgres` | `postgres` | `Postgres account` | `j1PLbiwu8dCOVpl5` |
+| `n8n-nodes-base.googleSheets` | `googleApi` | `Google Service Account account` | `JtDg23azfbja0yi3` |
+
 ### Railway 환경 변수 (web 서비스)
 
 ```
@@ -591,44 +535,23 @@ DATABASE_URL=                   # Railway가 자동 주입 (PostgreSQL 연결 �
 **2-0. n8n 배포 + PostgreSQL 연결** ✅ 완료
 - Railway 템플릿 "n8n (w/ postgres)"로 별도 프로젝트에 배포
 - 기존 Postgres public URL로 연결 전환 (yamanote.proxy.rlwy.net:26189)
-- 템플릿 생성 Postgres-us3E 삭제
-- n8n 웹 UI 접속 확인 (https://n8n-production-81b4.up.railway.app)
-- admin 계정 생성 완료
-- PostgreSQL credential 등록 + Execute Query로 연결 검증 완료 (테이블 목록 조회 성공)
-- Google Sheets credential (Service Account) 등록 — Workspace Admin Console에서 Domain-wide Delegation scope 추가 완료 (drive, spreadsheets, drive.file, drive.readonly). 연결 테스트 시 401 에러 발생, scope 전파 대기 또는 추가 디버깅 필요.
+- n8n 웹 UI 접속 확인, admin 계정 생성 완료
+- Credential 등록 완료:
+  - PostgreSQL: `Postgres account` (id: `j1PLbiwu8dCOVpl5`)
+  - Google SA: `Google Service Account account` (id: `JtDg23azfbja0yi3`, key: `googleApi`)
+- P4 워크플로우로 정상 동작 검증 완료
 
-**2-1. PostgreSQL 스키마 설계** ✅ 완료
-- `app/services/db.py`에 6개 테이블 스키마 정의 + asyncpg connection pool + CRUD 함수 구현
-- Master: `members` (회원관리)
-- History: `enrollment_records` (수강기록), `member_signups` (회원신청기록), `fullmember_signups` (정회원신청기록)
-- Working: `students` (수강생, PK: term_id + name_id + course_name), `attendance` (출석부, 12회차 컬럼)
-- 주요 함수: `load_members`, `upsert_member`, `bulk_upgrade_members`, `upsert_students`, `load_students`, `update_student_payments`, `load_registered_students`, `add_enrollment_records`
-- `app/services/chat_data_layer.py`: Chainlit 채팅 기록 PostgreSQL 영속성 (BaseDataLayer 구현, DATABASE_URL 자동 활성화)
+**2-1. PostgreSQL 스키마 설계** ❌ 폐기
+- 비즈니스 테이블 불필요 판단 → `db.py` 삭제. git 히스토리에 참조용으로 남음.
+- `chat_data_layer.py`: Chainlit 채팅 기록 PostgreSQL 영속성은 유지 (DATABASE_URL 자동 활성화)
 
-**2-2. 챗봇 DB 전환** 📋 진행 필요
-```
-- payment.py / attendance.py 에서 google_sheets.py → db.py 전환
-- DB → Sheets 단방향 동기화 함수 구현
-- 출석부 생성 시 Sheets → DB 역방향 동기화 (등록상태)
-```
-
-**2-3. 입금 대조 확장** 📋 진행 필요
-```
-- 신청자 목록 챗봇 직접 업로드 방식으로 전환 (Drive 탐색 제거)
-- 입금 유형별 등급 전환: 가입비(→회원), 수강료(→준회원), 정회원비(→정회원)
-- 회원신청기록/정회원신청기록과 대조
-```
-
-**2-4. n8n 워크플로우 구현** 🔄 부분 완료
-- ✅ `n8n/P1_member_signup.json`: 회원 가입 전처리 (Google Sheets trigger → Code → Postgres INSERT)
-- ✅ `n8n/P2_fullmember_signup.json`: 정회원 가입 전처리 (동일 패턴 + 시작/종료회차 계산)
-- ✅ `n8n/P4_daily_sync.json`: DB→Sheets 일일 동기화 (cron 매일 2시, 회원관리+수강기록)
-- ✅ 3개 워크플로우 n8n UI에 import 완료 (비활성 상태)
-- ⏳ Google Sheets credential 연결 문제 해결 필요 (401 unauthorized_client — Domain-wide Delegation scope 전파 대기)
-- ⏳ 워크플로우 내 credential 연결 + 응답 시트 ID 설정 (Google Sheets credential 해결 후)
-- ⏳ P1/P2: 응답 시트는 연도별로 변경되므로 고정 ID가 아닌 동적 설정 필요
-- ⏳ P1/P2: credential type 확인 필요 — JSON에는 `googleSheetsOAuth2Api`로 되어 있으나 SA credential인 경우 `googleSheetsApi`일 수 있음
-- ⏳ 워크플로우 활성화 (credential + 설정 완료 후)
+**2-2. Sheets SoT 복귀 + 통합 신청서** ✅ 완료
+- PostgreSQL 비즈니스 테이블 제거 (`db.py` 삭제). DB는 채팅 기록 전용.
+- 3개 테이블(students, member_signups, fullmember_signups) → 1개 통합 신청서 시트로 변경
+- `payment.py`: Sheets 직접 읽기/쓰기 (DB 동기화 레이어 제거)
+- `attendance.py`: 신청서 시트에서 등록상태 체크된 행 필터
+- `signup_loader.py`: Drive에서 파싱 결과만 반환 (DB INSERT 제거)
+- n8n P4: 비즈니스 테이블 없으므로 비활성 유지, 추후 제거 검토
 
 ### Phase 3 — 기능 확장 📋 백로그
 
@@ -643,8 +566,7 @@ DATABASE_URL=                   # Railway가 자동 주입 (PostgreSQL 연결 �
 ## 코딩 규칙
 
 - 한국어 주석 OK, 변수명/함수명은 영문
-- **데이터 읽기/쓰기는 PostgreSQL이 기본**. Google Sheets는 관리자 뷰 동기화용.
-- 유일한 Sheets → DB 역방향: `수강생` 시트의 `등록상태` 컬럼 (출석부 생성 시)
+- **데이터 읽기/쓰기는 Google Sheets가 기본 (SoT)**. PostgreSQL은 채팅 기록 전용.
 - LLM 호출은 최소화 — 코드로 처리 가능하면 코드로
 - 에러 시 사용자에게 한국어로 안내 메시지 반환
 - Docker 사용 안 함 (챗봇). n8n만 Docker 배포. Railway는 Procfile 기반 배포.

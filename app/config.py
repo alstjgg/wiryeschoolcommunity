@@ -39,6 +39,8 @@ OPERATIONS_FOLDER_ID = "1WuqNFt-g5qhnY1nMk0a8dsowZHKQVRMm"  # 02 학사운영
 MEMBERS_FOLDER_ID = "12xm3vG4w5nOPTwoWgmyGCpz939KvJ93e"  # 03 회원과 강사/회원(회원명단/가입서/정회원) — 회원관리·수강기록 소재
 MEMBERS_SHEET_ID = "193r34mtLHd0-oX7MKJOWq1Ane9iBfbBZB5yYf78R3Bo"  # 회원관리 시트
 RECORDS_SHEET_ID = "1cKolq6Mr-5u65nQDeMq8z4DsFWpHTLVthkAvyt4Rb6s"  # 수강기록 시트
+MEMBER_SIGNUP_FOLDER_ID = "10ZL8rD9j7OyyZOihfyJ6GRTzmBrTBgWe"  # 신규가입 신청서 폴더
+FULLMEMBER_SIGNUP_FOLDER_ID = "17tsWfYwIRgHHcT1DQEj8Sqa4ys6pe0Vy"  # 정회원가입 신청서 폴더
 
 # LLM 설정
 LLM_MODEL = "claude-sonnet-4-20250514"
