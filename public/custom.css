@@ -1,6 +1,6 @@
 /* 위례인생학교 — 55세+ 관리자를 위한 접근성 커스터마이징 */
 
-/* ── 1. 폰트 크기 확대 ── */
+/* ── 폰트 크기 확대 ── */
 html {
   font-size: 17px;
 }
@@ -13,34 +13,4 @@ html {
 
 textarea {
   font-size: 1.05rem;
-}
-
-/* ── 2. Primary 배경 위 텍스트를 흰색으로 강제 ── */
-/* Chainlit 버튼 중 primary 배경을 쓰는 모든 요소 */
-[data-variant="default"],
-.bg-primary,
-button.bg-primary,
-a.bg-primary {
-  color: hsl(var(--primary-foreground)) !important;
-}
-
-/* shadcn/Tailwind: bg-primary 클래스를 가진 모든 요소 */
-[class*="bg-primary"] {
-  color: hsl(var(--primary-foreground)) !important;
-}
-
-/* ── 3. Input 박스 — 배경은 밝게, 테두리만 primary ── */
-textarea,
-textarea:focus,
-.composer textarea,
-[class*="composer"] textarea {
-  background-color: hsl(var(--card)) !important;
-  border: 1.5px solid hsl(var(--border)) !important;
-}
-
-textarea:focus,
-[class*="composer"] textarea:focus {
-  border-color: hsl(var(--primary)) !important;
-  outline: none !important;
-  box-shadow: 0 0 0 2px hsl(var(--primary) / 0.2) !important;
 }
