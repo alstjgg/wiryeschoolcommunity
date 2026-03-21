@@ -98,14 +98,54 @@ if res and res.get("value") == "confirm":
     await write_back_to_sheets()
 ```
 
+## Chainlit 테마 & 디자인 시스템
+
+### 색상 팔레트 — Palette C: 마을회관
+
+따뜻한 테라코타/황토 톤. "사람이 모이는 커뮤니티" 정체성. 55세+ 사용자를 위한 WCAG AA 이상 접근성.
+
+**Chainlit CSS 변수 → UI 요소 매핑** (실측 기반, 수정 시 주의):
+
+| Variable | Chainlit 실제 사용처 | 성격 |
+|----------|---------------------|------|
+| `--primary` | 유저 아바타, 체크박스, 라디오, 프로그레스 바, 링크, Step 세로선, 로딩 스피너 | 진한 색 + 흰 텍스트 |
+| `--accent` | **입력창 배경, 유저 메시지 버블** | 밝은 색 + 어두운 텍스트 |
+| `--secondary` | 보조 버튼, 비활성 영역 | 밝은 중성 색 |
+| `--card` | 어시스턴트 메시지 카드 배경 | 거의 흰색 |
+| `--muted` | 비활성 배경 영역 | 매우 밝은 색 |
+
+**주의**: `--accent`에 진한 색을 넣으면 입력창과 유저 메시지 버블이 어두워져 텍스트를 읽을 수 없음. 반드시 밝은 색 유지.
+
+주요 색상 (HEX):
+- Primary: `#7A5234` (따뜻한 테라코타) — 버튼/강조
+- Accent: `#E8D8C4` (라이트 웜 피치) — 입력창/유저 메시지
+- Background: `#FAF6EF` (따뜻한 오프화이트)
+- Foreground: `#2C2520` (따뜻한 차콜)
+
+설정 파일:
+- `public/theme.json` — 전체 색상 팔레트 (HSL), 폰트 설정, Google Fonts URL
+- `public/stylesheet.css` — 타이포그래피 (본문 18px, line-height 1.7)
+- `.chainlit/config.toml` — `custom_css = "/public/stylesheet.css"`, `default_theme = "light"`
+
+### 타이포그래피
+
+- **폰트**: Noto Sans KR (400/500/700), `theme.json`의 `custom_fonts`로 로딩
+- **본문**: 18px (`1.125rem`), line-height 1.7, letter-spacing 0.01em
+- **버튼**: 16px 최소, font-weight 500
+- **16px 미만 텍스트 금지** (타임스탬프 14px만 예외)
+- **빨간 텍스트 금지** — 색상 대신 아이콘 + Bold로 강조
+
 ## 프로젝트 구조
 
 ```
 wiryeschoolcommunity/
 ├── CLAUDE.md                    # 이 파일
 ├── chainlit.md                  # Chainlit 웰컴 화면
+├── public/
+│   ├── theme.json               # Chainlit 테마 (색상 팔레트 + 폰트, shadcn HSL 형식)
+│   └── stylesheet.css           # 커스텀 CSS (타이포그래피, 접근성)
 ├── .chainlit/
-│   └── config.toml              # Chainlit UI 설정 (이름, 테마 등)
+│   └── config.toml              # Chainlit UI 설정 (이름, 테마, CSS 경로 등)
 ├── .agents/
 │   └── skills/                  # LangChain Skills (Claude Code 코딩 가이드)
 ├── docs/
@@ -540,6 +580,9 @@ DATABASE_URL=                   # Railway가 자동 주입 (PostgreSQL 연결 �
 - 신청서 시트: 필터 + 등록상태 체크박스 자동 설정
 - 출석부 시트: 과목별 탭 BasicFilter 자동 설정
 - Railway 배포, 단위 테스트 54개 통과
+- 커스텀 테마 (Palette C 마을회관): `public/theme.json` + `public/stylesheet.css`
+- Noto Sans KR 폰트, 본문 18px, WCAG AA 접근성
+- `config.toml`: `cot = "hidden"`, `description` 추가
 - **남은 작업**: E2E 기능 테스트, Context Injection 고도화
 
 ### Phase 2 — 데이터 파이프라인 ✅ 완료
@@ -574,8 +617,8 @@ DATABASE_URL=                   # Railway가 자동 주입 (PostgreSQL 연결 �
 - 계획서 검토: PDF 파싱 → 오탈자/말투 수정 → 배움숲 멘트 생성
 - Google OAuth 인증 (Workspace 도메인 제한)
 - 과목별 출석부 PDF 생성 (A4 프린트용)
-- Theme/CSS 커스터마이징 (폰트 크기, 색상, 접근성)
-- Chainlit UI 커스터마이징 (chainlit.md 웰컴 화면, 어시스턴트 이름 표시)
+- ~~Theme/CSS 커스터마이징~~ ✅ 완료 (Palette C 마을회관 + Noto Sans KR 타이포그래피)
+- Chainlit UI 커스터마이징 (chainlit.md 웰컴 화면)
 
 ## 코딩 규칙
 
