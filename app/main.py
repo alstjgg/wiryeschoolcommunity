@@ -37,6 +37,9 @@ from app.services.signup_loader import (
 from app.utils.matching import run_code_matching
 from app.context.term import get_current_term, parse_term_input
 
+# 워크플로우 중 취소 의도 감지 키워드
+CANCEL_KEYWORDS = ["취소", "중단", "그만", "멈춰", "stop", "cancel", "안 할게", "안할게", "나가기"]
+
 
 @cl.on_chat_resume
 async def on_chat_resume(thread: dict):
@@ -104,10 +107,16 @@ async def on_message(message: cl.Message):
 
     # 세션 상태 기반 라우팅 (진행 중인 플로우)
     if session_state == "awaiting_applicants_file":
-        await handle_applicants_file(message)
+        if message.elements:
+            await handle_applicants_file(message)
+        else:
+            await handle_mid_flow_text(message, "awaiting_applicants_file")
         return
     if session_state == "awaiting_payment_file":
-        await handle_payment_file(message)
+        if message.elements:
+            await handle_payment_file(message)
+        else:
+            await handle_mid_flow_text(message, "awaiting_payment_file")
         return
     if session_state == "awaiting_term_input":
         await handle_term_input(message)
@@ -132,7 +141,7 @@ async def on_message(message: cl.Message):
                 response = await answer_question(message.content)
                 msg.content = response
                 await msg.update()
-                await send_default_actions("question")
+                await send_default_actions()
             except Exception as e:
                 msg.content = (
                     f"오류가 발생했습니다: {str(e)}\n\n"
@@ -179,6 +188,59 @@ async def start_payment_flow_with_term(term: dict):
         cl.user_session.set("state", "idle")
 
 
+async def handle_mid_flow_text(message: cl.Message, current_state: str):
+    """워크플로우 진행 중 텍스트 입력 처리 (파일 없음).
+
+    취소 → 플로우 종료
+    질문 → Q&A 답변 후 상태 유지 + 재안내
+    그 외 → 재안내
+    """
+    # 1) 취소 감지
+    if any(k in message.content for k in CANCEL_KEYWORDS):
+        await cl.Message("작업이 취소되었습니다.").send()
+        cl.user_session.set("state", "idle")
+        await send_default_actions()
+        return
+
+    # 2) LLM 의도 분류 — question이면 Q&A
+    intent_result = await classify_intent_llm(message.content)
+    if intent_result["intent"] == "question":
+        msg = cl.Message(content="")
+        await msg.send()
+        try:
+            response = await answer_question(message.content)
+            msg.content = response
+            await msg.update()
+        except Exception as e:
+            msg.content = f"오류가 발생했습니다: {str(e)}"
+            await msg.update()
+        # state 유지 + 재안내
+        resume = _get_resume_prompt(current_state)
+        await cl.Message(resume).send()
+        return
+
+    # 3) 그 외 — 재안내
+    resume = _get_resume_prompt(current_state)
+    await cl.Message(resume).send()
+
+
+def _get_resume_prompt(state: str) -> str:
+    """상태별 재안내 문구 반환"""
+    term = cl.user_session.get("term") or {}
+    term_name = term.get("term_name", "")
+    prompts = {
+        "awaiting_applicants_file": (
+            f"계속 진행하려면 **{term_name}** 수강 신청자 목록 파일(.xls)을 업로드해주세요.\n"
+            "취소하려면 '취소'라고 입력하세요."
+        ),
+        "awaiting_payment_file": (
+            "계속 진행하려면 입금내역 파일(.xls 또는 .xlsx)을 업로드해주세요.\n"
+            "취소하려면 '취소'라고 입력하세요."
+        ),
+    }
+    return prompts.get(state, "계속 진행하려면 파일을 업로드해주세요.\n취소하려면 '취소'라고 입력하세요.")
+
+
 async def _ask_for_applicants_file():
     """신청자 목록 파일 업로드 요청"""
     term = cl.user_session.get("term")
@@ -194,12 +256,6 @@ async def _ask_for_applicants_file():
 
 async def handle_applicants_file(message: cl.Message):
     """신청자 목록 파일 수신 → 파싱 → Drive 신청서 로드 → 통합 신청서 Sheets 생성"""
-    if not message.elements:
-        await cl.Message(
-            "배움숲에서 다운로드한 신청자 목록 파일(.xls)을 업로드해주세요."
-        ).send()
-        return
-
     file_element = message.elements[0]
     term = cl.user_session.get("term")
     term_id = term["term_id"]
@@ -311,10 +367,6 @@ async def _load_signup_data(term_id: str) -> tuple[list[dict], list[dict]]:
 
 async def handle_payment_file(message: cl.Message):
     """입금내역 파일 수신 → 파싱 → 매칭 → 결과 표시"""
-    if not message.elements:
-        await cl.Message("입금내역 파일을 업로드해주세요. (.xls 또는 .xlsx)").send()
-        return
-
     file_element = message.elements[0]
 
     try:
@@ -626,7 +678,7 @@ async def classify_intent_llm(text: str) -> dict:
 - attendance: 출석부 생성, 출석부 만들기, 출석부
 - ocr: 출석 체크, 출석 확인, OCR, 사진으로 출석
 - plan: 계획서 검토, 강의 계획서, 강의계획서
-- question: 위 어디에도 해당 안 되는 질문
+- question: 위 작업에 대한 질문이나 설명 요청, 또는 위 어디에도 해당 안 되는 내용. "~이 뭐야?", "~가 뭔가요?", "~는 어떻게 해?", "~를 설명해줘" 처럼 정보를 얻으려는 의도이면 무조건 question으로 분류. 작업을 직접 실행하려는 의도가 명확할 때만 payment/attendance/ocr/plan으로 분류.
 
 응답은 반드시 JSON만 출력하세요. 설명 금지.
 {"intent": "payment", "term": "2026-2", "confidence": 0.95}
@@ -686,8 +738,9 @@ async def ask_intent_confirm(intent_result: dict):
     value = (res or {}).get("payload", {}).get("value")
     if value == "confirm":
         await _route_to_workflow(intent, intent_result.get("term"))
-    else:
-        await _show_workflow_buttons()
+    elif value == "deny":
+        await send_default_actions()
+    # res=None (타임아웃) 시 아무것도 하지 않음
 
 
 async def _route_to_workflow(intent: str, term_text: str | None):
@@ -706,11 +759,6 @@ async def _route_to_workflow(intent: str, term_text: str | None):
         await cl.Message("출석 체크 기능은 준비 중입니다.").send()
     elif intent == "plan":
         await cl.Message("계획서 검토 기능은 준비 중입니다.").send()
-
-
-async def _show_workflow_buttons():
-    """의도 분류 실패 시 워크플로우 선택 버튼 표시 (send_default_actions 위임)"""
-    await send_default_actions()
 
 
 # ===================================================== 공통 액션 버튼 =====
