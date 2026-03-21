@@ -13,6 +13,7 @@ env/
 sa-key.json
 *.json
 !package.json
+!public/theme.json
 
 # IDE
 .vscode/
