@@ -28,22 +28,30 @@
 - LLM은 비정형 텍스트 해석이 필요한 특정 단계에서만 호출한다 (예: 입금자명 파싱)
 - LangChain은 LLM 호출 래퍼(ChatAnthropic)로만 사용, 오케스트레이션 프레임워크로는 사용하지 않는다
 - 의도 분류는 Conversation Starter 버튼의 고정 메시지로 판별. 버튼이 아닌 자유 텍스트 입력에 한해 LLM 기반 intent 분류를 사용하며 (`classify_intent_llm`), 분류 결과는 반드시 관리자 확인 단계(`AskActionMessage`)를 거친다.
+- 워크플로우 진행 중 파일 대신 텍스트가 입력되면 `handle_mid_flow_text()`로 처리: 취소 키워드 감지 → Q&A 답변 후 상태 유지 → 파일 재요청. 워크플로우를 이탈하지 않는다.
 - `.agents/skills/`에 LangChain Skills(langchain-ai/langchain-skills)이 설치되어 있음. Claude Code가 LangChain 관련 코드 작성 시 참조하는 코딩 가이드이며, 런타임 동작에는 영향 없음.
 
 **이유**: 대상 사용자가 55세 이상 비개발자 관리자 2~4명. 대화형 AI에 익숙하지 않음. 예측 가능하고 가이드된 UX가 필수. 자유도가 높으면 오히려 혼란.
 
 ```python
-# 라우팅 패턴 — 버튼 메시지로 분기 + 자유 텍스트는 LLM 의도 분류
+# 라우팅 패턴 — 세션 상태 → 버튼 메시지 → 자유 텍스트 LLM 의도 분류
+# 1) 워크플로우 진행 중: 파일 있으면 핸들러, 없으면 mid-flow 텍스트 처리
+if session_state == "awaiting_applicants_file":
+    if message.elements:
+        await handle_applicants_file(message)
+    else:
+        await handle_mid_flow_text(message, session_state)  # 취소/질문/재안내
+    return
+# 2) Starter 버튼 메시지로 분기
 if message.content == "입금 대조를 시작합니다.":
     await start_payment_flow(message)
-elif message.content == "출석부를 생성합니다.":
-    await start_attendance_flow(message)
+# 3) 자유 텍스트 → LLM 의도 분류 → 확인 후 워크플로우 진입
 else:
     intent = await classify_intent_llm(message.content)
     if intent["intent"] == "question":
         await qa_flow(message)
     else:
-        await ask_intent_confirm(intent)  # 관리자 확인 후 워크플로우 진입
+        await ask_intent_confirm(intent)
 ```
 
 ## 용어 정의
@@ -70,14 +78,10 @@ async def match_payments():
 ```
 
 ### Action — 다음 작업 추천 버튼
-작업 완료 후 다음 가능한 작업을 버튼으로 제시. 자유 텍스트 입력 없이 클릭만으로 업무 진행.
+모든 작업 완료/취소/에러 후 `send_default_actions(completed)` 호출로 5개 기본 버튼 제공. 방금 완료한 작업은 "다시하기" 레이블로 표시. 자유 텍스트 입력 없이 클릭만으로 다음 업무 진행.
 ```python
-actions = [
-    cl.Action(name="create_attendance", label="📋 출석부 생성하기"),
-    cl.Action(name="redo_payment", label="🔄 입금 대조 다시하기"),
-    cl.Action(name="free_question", label="❓ 다른 질문하기"),
-]
-await cl.Message(content="입금 대조가 완료되었습니다.", actions=actions).send()
+await send_default_actions("payment")  # 입금 대조 완료 후 → "💰 입금 대조 다시하기" 레이블
+await send_default_actions()            # 에러/취소 후 → 기본 레이블
 ```
 
 ### AskActionMessage — 사용자 확인 대기
@@ -111,11 +115,11 @@ wiryeschoolcommunity/
 ├── n8n/                         # n8n 워크플로우 JSON (n8n UI에서 import 용)
 │   └── P4_daily_sync.json       # DB → Sheets 일일 동기화 (P1/P2는 챗봇 코드로 이동)
 ├── app/
-│   ├── main.py                  # Chainlit 엔트리포인트 + 세션 상태 라우터 + 입금 대조 wizard flow
+│   ├── main.py                  # Chainlit 엔트리포인트 + 세션 상태 라우터 + LLM 의도 분류 + mid-flow 인터럽트 처리
 │   ├── config.py                # 환경 변수, 상수, 영속 Google IDs, COURSE_KEYWORDS
 │   ├── context/
 │   │   ├── business.py          # 정적 비즈니스 컨텍스트 dict + 시스템 프롬프트
-│   │   └── term.py              # 현재 회차 자동 판별
+│   │   └── term.py              # 현재 회차 자동 판별 + 자유 텍스트 회차 파싱 (parse_term_input)
 │   ├── chains/
 │   │   ├── qa.py                # 질의 응답 체인
 │   │   ├── payment.py           # 입금 대조 파이프라인 (신청자 로드, 코드 매칭, LLM 폴백, 시트 기록)
@@ -213,7 +217,7 @@ drive_service = build('drive', 'v3', credentials=credentials)
 - **과목명**: 수강 유형만 값 있음. 신규가입/정회원은 빈칸.
 - **시작회차/종료회차**: 정회원 유형만 값 있음.
 - **입금현황**: Agent가 자동 채움 (✅정상 / 🔶확인필요 / ⚠️이름불일치 / ❌미입금 / 🔄중복 / 💎면제)
-- **등록상태**: Agent는 빈칸. 관리자가 배움숲 포탈에서 등록 완료 후 직접 체크. 출석부 생성 시 필터 기준.
+- **등록상태**: 체크박스 (Google Sheets BOOLEAN validation). Agent가 시트 생성 시 자동 설정. 관리자가 배움숲 포탈에서 등록 완료 후 체크박스 클릭. 출석부 생성 시 필터 기준 (TRUE만 포함, FALSE/빈칸 제외).
 - **데이터 소스**:
   - 수강: 배움숲 다운로드 엑셀 (관리자가 챗봇에 업로드)
   - 신규가입: Drive 신규가입 신청서 폴더 (signup_loader.py가 자동 탐색)
@@ -322,23 +326,23 @@ n8n/P4_daily_sync.json — 비즈니스 테이블 제거로 실질적으로 무�
 
 관리자 관점의 전체 플로우:
 
-1. **관리자**: 챗봇에서 "💰 입금 대조" Starter 버튼 클릭
-2. **Agent**: 현재 날짜 기반으로 회차 추측 → "2026-1 겨울학기 입금 대조를 시작할까요?" → 관리자가 확정/수정
-3. **Agent**: "신청자 목록 엑셀을 업로드해주세요" (배움숲에서 다운로드한 `LEARNING_APPLY*.xls`)
-4. **관리자**: 신청자 목록 엑셀을 챗봇에 직접 업로드
-5. **Agent**: 신청자 목록 파싱 (수강 유형)
-6. **Agent**: (자동) Drive에서 신규가입 신청서 로드 → 파싱 (cl.Step 진행 표시)
-7. **Agent**: (자동) Drive에서 정회원가입 신청서 로드 → 파싱 (cl.Step 진행 표시)
-8. **Agent**: 5+6+7을 합쳐 통합 신청서 생성 → Google Sheets에 저장
-9. **Agent**: "입금 내역을 업로드해주세요"
-10. **관리자**: 입금 내역 엑셀을 챗봇에 직접 업로드
-11. **Agent**: 회원관리(Sheets) + 통합 신청서 + 입금내역을 바탕으로 매칭 (코드 80~90% → LLM 10~20%) → 신청서 시트에 결과 반영
-12. **Agent**: 결과 요약 + 시트 링크 제공 + "신청서 시트에서 입금현황을 확인하시고, 배움숲 포탈에서 수강 등록을 처리한 뒤 등록상태를 체크해주세요"
-13. **Agent**: Action 버튼 제공 — 📋 출석부 생성, 🔄 입금대조 다시하기, ❓ 다른 질문하기
-14. **관리자**: 신청서 시트를 보면서 배움숲 포탈에서 수강 등록 처리 → 등록상태를 시트에서 직접 체크
+1. **관리자**: 챗봇에서 "💰 입금 대조" Starter 버튼 클릭 (또는 자유 텍스트 → LLM 의도 분류 → 확인)
+2. **Agent**: 현재 날짜 기반으로 회차 추측 → "2026-1 겨울학기 입금 대조를 시작할까요?" → ✅ 맞습니다 / 📅 다른 회차에요 / ❌ 취소
+3. **관리자**: "다른 회차에요" 선택 시 → 자유 텍스트로 회차 입력 (`parse_term_input`으로 파싱) → 재확인 루프
+4. **Agent**: "신청자 목록 엑셀을 업로드해주세요" (배움숲에서 다운로드한 `LEARNING_APPLY*.xls`)
+5. **관리자**: 신청자 목록 엑셀을 챗봇에 직접 업로드 (파일 대기 중 텍스트 입력 시: 취소 감지 / Q&A 답변 후 재안내 / 파일 재요청)
+6. **Agent**: 신청자 목록 파싱 (수강 유형)
+7. **Agent**: (자동) Drive에서 신규가입 신청서 로드 → 파싱 (cl.Step 진행 표시)
+8. **Agent**: (자동) Drive에서 정회원가입 신청서 로드 → 파싱 (cl.Step 진행 표시)
+9. **Agent**: 6+7+8을 합쳐 통합 신청서 생성 → Google Sheets에 저장 (필터 + 등록상태 체크박스 자동 설정)
+10. **Agent**: "입금 내역을 업로드해주세요"
+11. **관리자**: 입금 내역 엑셀을 챗봇에 직접 업로드
+12. **Agent**: 회원관리(Sheets) + 통합 신청서 + 입금내역을 바탕으로 매칭 (코드 80~90% → LLM 10~20%) → **즉시** 신청서 시트에 자동 반영 (확인 단계 없음)
+13. **Agent**: 숫자 요약 한 줄 (✅ 78건 🔶 5건 ...) + 시트 링크 + "등록상태 체크박스를 클릭해주세요" + 기본 Action 버튼 5개 (`send_default_actions`)
+14. **관리자**: 신청서 시트를 보면서 배움숲 포탈에서 수강 등록 처리 → 등록상태 체크박스 클릭
 15. **관리자**: '출석부 생성' 클릭
-16. **Agent**: "신청서의 등록상태를 기준으로 출석부를 생성합니다." → 관리자 확인
-17. **Agent**: 신청서 시트에서 등록상태 체크된 수강생만 → 출석부 생성
+16. **Agent**: 3단계 완료 확인 체크리스트 (입금대조 → 배움숲 등록 → 체크박스) → 관리자 확인
+17. **Agent**: 신청서 시트에서 등록상태 체크된 수강생만 → 출석부 생성 (과목별 필터 자동 설정) → 기본 Action 버튼
 
 ### 입금 매칭 로직
 
@@ -527,7 +531,15 @@ DATABASE_URL=                   # Railway가 자동 주입 (PostgreSQL 연결 �
 - 출석부 생성 (`app/chains/attendance.py`): 과목별 시트탭, 출석률 수식
 - 회원관리/수강기록 업데이트, 동적 Drive 폴더 탐색
 - Action 버튼, AskActionMessage, 세션 상태 머신
-- Railway 배포, 단위 테스트 50개 통과
+- cl.Step 진행 상황 표시 (각 파이프라인 단계별 expandable indicator)
+- 입금 대조 결과 즉시 자동 반영 (확인 단계 제거, 숫자 요약 한 줄)
+- 회차 불일치 시 자유 텍스트 재입력 루프 (`parse_term_input`)
+- 자유 텍스트 → LLM 의도 분류 (`classify_intent_llm`) → 관리자 확인 후 워크플로우 진입
+- 워크플로우 중 인터럽트 처리 (`handle_mid_flow_text`): 취소 감지, Q&A 답변 후 상태 유지
+- 모든 작업 종료 후 공통 기본 Action 버튼 (`send_default_actions`)
+- 신청서 시트: 필터 + 등록상태 체크박스 자동 설정
+- 출석부 시트: 과목별 탭 BasicFilter 자동 설정
+- Railway 배포, 단위 테스트 54개 통과
 - **남은 작업**: E2E 기능 테스트, Context Injection 고도화
 
 ### Phase 2 — 데이터 파이프라인 ✅ 완료
