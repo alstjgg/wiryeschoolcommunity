@@ -102,7 +102,12 @@ wiryeschoolcommunity/
 │   └── skills/                  # LangChain Skills (Claude Code 코딩 가이드)
 ├── docs/
 │   ├── DEV_DOCUMENT.md          # 상세 기획서 (비즈니스 컨텍스트, 데이터 구조, 입금 패턴 등)
-│   └── BUSINESS_CONTEXT.md      # Context Injection 소스 텍스트
+│   ├── BUSINESS_CONTEXT.md      # Context Injection 소스 텍스트
+│   └── PLANNED_DRIVE_STRUCTURE.md  # Google Drive 확정 구조 + 폴더 ID 참조
+├── n8n/                         # n8n 워크플로우 JSON (n8n UI에서 import 용)
+│   ├── P1_member_signup.json    # 회원 가입 신청 전처리
+│   ├── P2_fullmember_signup.json # 정회원 가입 신청 전처리
+│   └── P4_daily_sync.json       # DB → Sheets 일일 동기화
 ├── app/
 │   ├── main.py                  # Chainlit 엔트리포인트 + 세션 상태 라우터 + 입금 대조 wizard flow
 │   ├── config.py                # 환경 변수, 상수, 영속 Google IDs, COURSE_KEYWORDS
@@ -117,7 +122,9 @@ wiryeschoolcommunity/
 │   │   ├── google_auth.py       # Google API 인증 (SA 파일 + JSON 환경변수 이중 지원)
 │   │   ├── google_drive.py      # Drive API 래퍼 + 동적 폴더 탐색 (find_term_folder 등)
 │   │   ├── google_sheets.py     # Sheets API 래퍼
-│   │   └── excel.py             # Excel 파싱 (입금내역 .xls/.xlsx + 신청자 목록 HTML .xls)
+│   │   ├── excel.py             # Excel 파싱 (입금내역 .xls/.xlsx + 신청자 목록 HTML .xls)
+│   │   ├── db.py                # PostgreSQL 비즈니스 데이터 레이어 (asyncpg, 스키마 + CRUD)
+│   │   └── chat_data_layer.py   # Chainlit 채팅 기록 PostgreSQL 영속성 (BaseDataLayer 구현)
 │   └── utils/
 │       ├── __init__.py
 │       └── matching.py          # 이름/강좌 추출, 규칙 기반 입금 매칭
@@ -489,40 +496,45 @@ TERM_SEASONS = {1: "겨울", 2: "봄", 3: "여름", 4: "가을"}
 ### Railway 프로젝트 구조
 
 ```
-Railway 프로젝트
-├── web (Chainlit 챗봇)          ← Procfile 기반, Online
-│   └── ai-wiryeschoolcommunity.up.railway.app
-├── Postgres                     ← 공유 DB, Online (채팅기록 + 비즈니스 데이터)
+Railway 프로젝트 1 (기존)              Railway 프로젝트 2 (n8n)
+├── web (Chainlit 챗봇)               └── n8n (Docker: n8nio/n8n)
+│   └── ai-wiryeschoolcommunity.          └── n8n-production-81b4.up.railway.app
+│       up.railway.app                    └── 기존 Postgres에 public URL로 연결
+├── Postgres (공유 DB)
+│   └── yamanote.proxy.rlwy.net:26189
 │   └── postgres-volume
-└── n8n (Docker: n8nio/n8n)      ← 배치 파이프라인, 설정 필요
-    └── {n8n도메인}.up.railway.app
 ```
+
+n8n은 Railway 템플릿("n8n w/ postgres")으로 별도 프로젝트에 배포. 템플릿이 생성한 Postgres-us3E는 삭제 완료. n8n은 기존 Postgres의 public URL로 연결.
 
 ### n8n 배포 방법
 
-Railway 대시보드에서 Docker Image로 직접 배포 (별도 Docker 빌드/레지스트리 불필요):
+Railway 템플릿 "n8n (w/ postgres)"으로 배포 후 기존 PostgreSQL로 연결 전환:
 
 ```
-Railway 대시보드 → 프로젝트 열기 → "+ New" → "Docker Image" → "n8nio/n8n" 입력 → Deploy
+1. Railway 대시보드 → "+ New" → "Template" → "n8n (w/ postgres)" 선택 → Deploy
+2. 새 프로젝트로 n8n + Postgres가 생성됨
+3. n8n 서비스 Variables에서 DB 연결 정보를 기존 Postgres의 public URL로 변경
+4. 템플릿이 생성한 새 Postgres 서비스 삭제
+5. n8n 웹 UI 접속 → admin 계정 생성
 ```
 
-n8n 환경 변수:
+**주의**: n8n과 기존 Postgres가 다른 프로젝트에 있으므로 `*.railway.internal` (internal host)은 사용 불가. 반드시 `DATABASE_PUBLIC_URL`에서 추출한 public host + port를 사용.
+
+n8n 환경 변수 (실제 배포 설정):
 
 | 변수명 | 값 | 설명 |
 |--------|-----|------|
 | `DB_TYPE` | `postgresdb` | DB 종류 |
-| `DB_POSTGRESDB_HOST` | `${{Postgres.PGHOST}}` | Railway 내부 참조 |
-| `DB_POSTGRESDB_PORT` | `${{Postgres.PGPORT}}` | |
-| `DB_POSTGRESDB_DATABASE` | `${{Postgres.POSTGRES_DB}}` | |
-| `DB_POSTGRESDB_USER` | `${{Postgres.POSTGRES_USER}}` | |
-| `DB_POSTGRESDB_PASSWORD` | `${{Postgres.POSTGRES_PASSWORD}}` | |
+| `DB_POSTGRESDB_HOST` | `yamanote.proxy.rlwy.net` | 기존 Postgres public host |
+| `DB_POSTGRESDB_PORT` | `26189` | 기존 Postgres public port |
+| `DB_POSTGRESDB_DATABASE` | `railway` | |
+| `DB_POSTGRESDB_USER` | `postgres` | |
+| `DB_POSTGRESDB_PASSWORD` | (기존 Postgres PGPASSWORD) | |
 | `N8N_PORT` | `5678` | n8n 기본 포트 |
-| `WEBHOOK_URL` | `https://${{RAILWAY_PUBLIC_DOMAIN}}` | 외부 webhook 수신 URL |
-| `N8N_ENCRYPTION_KEY` | `${{secret()}}` | credential 암호화 키 |
-| `GENERIC_TIMEZONE` | `Asia/Seoul` | 한국 시간대 |
-| `N8N_BASIC_AUTH_ACTIVE` | `true` | 웹 UI 보호 |
-| `N8N_BASIC_AUTH_USER` | (설정 필요) | |
-| `N8N_BASIC_AUTH_PASSWORD` | (설정 필요) | |
+| `PORT` | `5678` | Railway 포트 매핑 |
+| `WEBHOOK_URL` | `https://n8n-production-81b4.up.railway.app` | 외부 webhook 수신 URL |
+| `N8N_ENCRYPTION_KEY` | (자동 생성) | credential 암호화 키 |
 
 n8n은 기존 PostgreSQL에 자체 테이블(`execution_entity`, `workflow_entity`, `credentials_entity` 등)을 자동 생성. 챗봇의 채팅기록/비즈니스 테이블과 같은 DB에 공존.
 
@@ -556,50 +568,48 @@ DATABASE_URL=                   # Railway가 자동 주입 (PostgreSQL 연결 �
 - Railway 배포, 단위 테스트 50개 통과
 - **남은 작업**: E2E 기능 테스트, cl.Step 진행 상황 공유, Context Injection 고도화
 
-### Phase 2 — 데이터 파이프라인 📋 진행 예정
+### Phase 2 — 데이터 파이프라인 🔄 진행 중
 
 인프라 + 데이터 아키텍처를 Sheets 기반 → PostgreSQL SoT + n8n 배치로 전환.
 
-**2-0. n8n 배포 + PostgreSQL 연결** ← 🔴 최우선
-```
-1. Railway 대시보드 → "+ New" → "Docker Image" → "n8nio/n8n"
-2. 환경 변수 설정 (위 테이블 참조)
-3. Public networking 활성화 (포트 5678)
-4. n8n 웹 UI 접속 확인 (https://{도메인}.up.railway.app)
-5. PostgreSQL 연결 확인 (n8n 자체 테이블 생성 확인)
-6. Google Sheets credential 등록 (Service Account JSON)
-7. 테스트 워크플로우 생성: Google Sheets 읽기 → PostgreSQL 쓰기
-```
+**2-0. n8n 배포 + PostgreSQL 연결** ✅ 완료
+- Railway 템플릿 "n8n (w/ postgres)"로 별도 프로젝트에 배포
+- 기존 Postgres public URL로 연결 전환 (yamanote.proxy.rlwy.net:26189)
+- 템플릿 생성 Postgres-us3E 삭제
+- n8n 웹 UI 접속 확인 (https://n8n-production-81b4.up.railway.app)
+- admin 계정 생성 완료
+- PostgreSQL credential 등록 + Execute Query로 연결 검증 완료 (테이블 목록 조회 성공)
+- Google Sheets credential (Service Account) 등록 — Workspace Admin Console에서 Domain-wide Delegation scope 추가 완료 (drive, spreadsheets, drive.file, drive.readonly). 연결 테스트 시 401 에러 발생, scope 전파 대기 또는 추가 디버깅 필요.
 
-**2-1. PostgreSQL 스키마 설계**
-```
-- Master: members (회원관리)
-- History: enrollment_records (수강기록), member_signups (회원신청기록), fullmember_signups (정회원신청기록)
-- Working: students (수강생), attendance (출석부)
-- 마이그레이션: 기존 Sheets 데이터 → DB 초기 적재
-```
+**2-1. PostgreSQL 스키마 설계** ✅ 완료
+- `app/services/db.py`에 6개 테이블 스키마 정의 + asyncpg connection pool + CRUD 함수 구현
+- Master: `members` (회원관리)
+- History: `enrollment_records` (수강기록), `member_signups` (회원신청기록), `fullmember_signups` (정회원신청기록)
+- Working: `students` (수강생, PK: term_id + name_id + course_name), `attendance` (출석부, 12회차 컬럼)
+- 주요 함수: `load_members`, `upsert_member`, `bulk_upgrade_members`, `upsert_students`, `load_students`, `update_student_payments`, `load_registered_students`, `add_enrollment_records`
+- `app/services/chat_data_layer.py`: Chainlit 채팅 기록 PostgreSQL 영속성 (BaseDataLayer 구현, DATABASE_URL 자동 활성화)
 
-**2-2. 챗봇 DB 전환**
+**2-2. 챗봇 DB 전환** 📋 진행 필요
 ```
-- app/services/ 에 db.py 추가 (SQLAlchemy/asyncpg)
-- google_sheets.py → db.py 전환 (읽기/쓰기 대상 변경)
+- payment.py / attendance.py 에서 google_sheets.py → db.py 전환
 - DB → Sheets 단방향 동기화 함수 구현
 - 출석부 생성 시 Sheets → DB 역방향 동기화 (등록상태)
 ```
 
-**2-3. 입금 대조 확장**
+**2-3. 입금 대조 확장** 📋 진행 필요
 ```
 - 신청자 목록 챗봇 직접 업로드 방식으로 전환 (Drive 탐색 제거)
 - 입금 유형별 등급 전환: 가입비(→회원), 수강료(→준회원), 정회원비(→정회원)
 - 회원신청기록/정회원신청기록과 대조
 ```
 
-**2-4. n8n 워크플로우 구현**
-```
-- P1: 회원 가입 신청 전처리 (Google Sheets trigger → DB append)
-- P2: 정회원 가입 신청 전처리 (Google Sheets trigger → DB append)
-- P4: DB → Sheets daily 동기화 (cron trigger)
-```
+**2-4. n8n 워크플로우 구현** 🔄 부분 완료
+- ✅ `n8n/P1_member_signup.json`: 회원 가입 전처리 (Google Sheets trigger → Code → Postgres INSERT)
+- ✅ `n8n/P2_fullmember_signup.json`: 정회원 가입 전처리 (동일 패턴 + 시작/종료회차 계산)
+- ✅ `n8n/P4_daily_sync.json`: DB→Sheets 일일 동기화 (cron 매일 2시, 회원관리+수강기록)
+- ⏳ 워크플로우 JSON에서 `REPLACE_WITH_CREDENTIAL_ID` / `REPLACE_WITH_FORM_RESPONSE_SHEET_ID` 교체 필요
+- ⏳ n8n UI에서 워크플로우 import + credential 연결 + 활성화
+- ⏳ Google Sheets credential 연결 문제 해결 필요 (401 unauthorized_client)
 
 ### Phase 3 — 기능 확장 📋 백로그
 
