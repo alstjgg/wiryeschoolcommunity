@@ -180,70 +180,72 @@ async def handle_applicants_file(message: cl.Message):
     term = cl.user_session.get("term")
     term_id = term["term_id"]
 
-    msg = cl.Message(content="신청자 목록 파일을 분석하는 중...")
-    await msg.send()
-
     try:
-        with open(file_element.path, "rb") as f:
-            file_bytes = f.read()
+        # Step 1: 신청자 목록 파싱
+        async with cl.Step(name="📊 신청자 목록 분석") as step:
+            with open(file_element.path, "rb") as f:
+                file_bytes = f.read()
+            applicants = parse_applicant_list(file_bytes)
+            if not applicants:
+                step.output = "파일에서 신청자 데이터를 찾을 수 없습니다."
+                await cl.Message(
+                    "파일에서 신청자 데이터를 찾을 수 없습니다. 파일 형식을 확인해주세요."
+                ).send()
+                cl.user_session.set("state", "idle")
+                return
+            courses = set(a.get("과목명", "") for a in applicants if a.get("과목명"))
+            step.output = f"수강 신청자 **{len(applicants)}명** 확인 ({len(courses)}개 과목)"
 
-        applicants = parse_applicant_list(file_bytes)
-        if not applicants:
-            msg.content = "파일에서 신청자 데이터를 찾을 수 없습니다. 파일 형식을 확인해주세요."
-            await msg.update()
-            cl.user_session.set("state", "idle")
-            return
-
-        msg.content = f"수강 신청자 **{len(applicants)}명** 확인. 신청서 데이터를 로드하는 중..."
-        await msg.update()
-
-        # Drive에서 신규가입/정회원가입 신청서 자동 로드
+        # Step 2-3: Drive에서 신규가입/정회원가입 신청서 자동 로드 (기존 cl.Step 사용)
         member_records, fullmember_records = await _load_signup_data(term_id)
 
-        # 통합 신청서 생성
-        applications = build_applications(applicants, member_records, fullmember_records)
+        # Step 4: 통합 신청서 생성 + Sheets 저장
+        async with cl.Step(name="📝 통합 신청서 생성") as step:
+            applications = build_applications(applicants, member_records, fullmember_records)
 
-        # Drive 회차 폴더 탐색
-        term_folder_id = cl.user_session.get("term_folder_id")
-        if not term_folder_id:
-            term_folder = find_term_folder(term_id)
-            if term_folder:
-                term_folder_id = term_folder["id"]
-                cl.user_session.set("term_folder_id", term_folder_id)
+            term_folder_id = cl.user_session.get("term_folder_id")
+            if not term_folder_id:
+                term_folder = find_term_folder(term_id)
+                if term_folder:
+                    term_folder_id = term_folder["id"]
+                    cl.user_session.set("term_folder_id", term_folder_id)
 
-        # 통합 신청서 Sheets 저장
-        app_sheet_id = None
-        if term_folder_id:
-            try:
-                app_sheet_id = write_applications_sheet(term_folder_id, applications)
-                cl.user_session.set("applications_sheet_id", app_sheet_id)
-            except Exception as e:
-                await cl.Message(f"신청서 시트 생성 오류: {e}").send()
+            app_sheet_id = None
+            if term_folder_id:
+                try:
+                    app_sheet_id = write_applications_sheet(term_folder_id, applications)
+                    cl.user_session.set("applications_sheet_id", app_sheet_id)
+                except Exception as e:
+                    await cl.Message(f"신청서 시트 생성 오류: {e}").send()
+
+            수강_count = sum(1 for a in applications if a["유형"] == "수강")
+            신규_count = sum(1 for a in applications if a["유형"] == "신규가입")
+            정회원_count = sum(1 for a in applications if a["유형"] == "정회원")
+            step.output = (
+                f"수강 {수강_count}건, 신규가입 {신규_count}건, "
+                f"정회원 {정회원_count}건 → 시트 저장 완료"
+            )
 
         sheet_note = (
             f"\n[신청서 시트 열기](https://docs.google.com/spreadsheets/d/{app_sheet_id})"
             if app_sheet_id else ""
         )
 
-        수강_count = sum(1 for a in applications if a["유형"] == "수강")
-        신규_count = sum(1 for a in applications if a["유형"] == "신규가입")
-        정회원_count = sum(1 for a in applications if a["유형"] == "정회원")
-
-        msg.content = (
-            f"**{term['term_name']}** 통합 신청서 생성 완료:{sheet_note}\n\n"
-            f"- 수강 신청: **{수강_count}건**\n"
-            f"- 신규가입: **{신규_count}건**\n"
-            f"- 정회원: **{정회원_count}건**\n\n"
-            "입금내역 파일(.xls 또는 .xlsx)을 업로드해주세요."
-        )
-        await msg.update()
+        await cl.Message(
+            content=(
+                f"**{term['term_name']}** 통합 신청서 생성 완료:{sheet_note}\n\n"
+                f"- 수강 신청: **{수강_count}건**\n"
+                f"- 신규가입: **{신규_count}건**\n"
+                f"- 정회원: **{정회원_count}건**\n\n"
+                "입금내역 파일(.xls 또는 .xlsx)을 업로드해주세요."
+            )
+        ).send()
 
         cl.user_session.set("state", "awaiting_payment_file")
         cl.user_session.set("applications", applications)
 
     except Exception as e:
-        msg.content = f"신청자 데이터 로드 중 오류: {str(e)}"
-        await msg.update()
+        await cl.Message(f"신청자 데이터 로드 중 오류: {str(e)}").send()
         cl.user_session.set("state", "idle")
 
 
@@ -290,58 +292,55 @@ async def handle_payment_file(message: cl.Message):
         return
 
     file_element = message.elements[0]
-    term = cl.user_session.get("term")
-    term_id = term["term_id"]
-
-    msg = cl.Message(content="입금내역 파일을 분석하는 중...")
-    await msg.send()
 
     try:
-        with open(file_element.path, "rb") as f:
-            file_bytes = f.read()
-
-        transactions = parse_bank_statement(file_bytes)
-        if not transactions:
-            msg.content = "입금내역에서 거래 데이터를 찾을 수 없습니다. 파일 형식을 확인해주세요."
-            await msg.update()
-            cl.user_session.set("state", "idle")
-            return
+        # Step 1: 입금내역 파싱
+        async with cl.Step(name="💰 입금내역 분석") as step:
+            with open(file_element.path, "rb") as f:
+                file_bytes = f.read()
+            transactions = parse_bank_statement(file_bytes)
+            if not transactions:
+                step.output = "거래 데이터를 찾을 수 없습니다."
+                await cl.Message(
+                    "입금내역에서 거래 데이터를 찾을 수 없습니다. 파일 형식을 확인해주세요."
+                ).send()
+                cl.user_session.set("state", "idle")
+                return
+            step.output = f"입금 거래 **{len(transactions)}건** 확인"
 
         applications = cl.user_session.get("applications", [])
         if not applications:
-            msg.content = "신청서 데이터가 없습니다. 입금 대조를 처음부터 다시 시작해주세요."
-            await msg.update()
+            await cl.Message(
+                "신청서 데이터가 없습니다. 입금 대조를 처음부터 다시 시작해주세요."
+            ).send()
             cl.user_session.set("state", "idle")
             return
 
-        # 회원관리 시트에서 등급 로드 (정회원 면제 처리용)
-        members = load_members_from_sheet()
-        exempted = apply_exemptions(applications, members)
-        exempted_ids = {e["이름ID"] for e in exempted}
+        # Step 2: 회원 정보 로드 + 정회원 면제 처리
+        async with cl.Step(name="👥 회원 정보 로드") as step:
+            members = load_members_from_sheet()
+            exempted = apply_exemptions(applications, members)
+            students = applications_to_students(applications)
+            step.output = (
+                f"회원 **{len(members)}명** 로드, "
+                f"정회원 면제 **{len(exempted)}건** 처리"
+            )
 
-        # 수강 유형만 매칭 대상으로 변환
-        students = applications_to_students(applications)
+        # Step 3: 규칙 기반 매칭
+        async with cl.Step(name="🔍 규칙 기반 매칭") as step:
+            all_results, unmatched = run_code_matching(transactions, students)
+            code_matched = sum(1 for r in all_results if r["상태"] == "✅정상")
+            step.output = f"✅ {code_matched}건 매칭 / 🔶 {len(unmatched)}건 미매칭"
 
-        msg.content = (
-            f"입금 거래 **{len(transactions)}건**을 "
-            f"수강생 **{len(students)}명**과 대조하는 중..."
-        )
-        await msg.update()
-
-        # 규칙 기반 매칭
-        all_results, unmatched = run_code_matching(transactions, students)
-
-        code_matched = sum(1 for r in all_results if r["상태"] == "✅정상")
-        msg.content = (
-            f"코드 매칭 완료: ✅ {code_matched}건 매칭 / 🔶 {len(unmatched)}건 미매칭\n\n"
-            "미매칭 건을 AI로 분석하는 중..."
-        )
-        await msg.update()
-
-        # LLM 매칭
+        # Step 4: LLM 매칭 (미매칭 건이 있을 때만)
         llm_unmatched = [r for r in unmatched if r["상태"] != "⏭️스킵"]
         if llm_unmatched:
-            await run_llm_matching(llm_unmatched, students)
+            async with cl.Step(name="🤖 AI 매칭") as step:
+                await run_llm_matching(llm_unmatched, students)
+                llm_resolved = sum(
+                    1 for r in llm_unmatched if r["상태"] != "🔶확인필요"
+                )
+                step.output = f"AI 분석 완료: **{llm_resolved}건** 추가 매칭"
 
         # 매칭 결과를 applications에 반영
         apply_matching_results(applications, all_results)
@@ -366,8 +365,7 @@ async def handle_payment_file(message: cl.Message):
         cl.user_session.set("matched_results", all_results)
 
     except Exception as e:
-        msg.content = f"입금 대조 중 오류가 발생했습니다: {str(e)}"
-        await msg.update()
+        await cl.Message(f"입금 대조 중 오류가 발생했습니다: {str(e)}").send()
         cl.user_session.set("state", "idle")
 
 
@@ -394,26 +392,28 @@ async def on_cancel_results(action: cl.Action):
 
 async def write_payment_results():
     """매칭 결과를 신청서 Sheets에 반영 → 다음 단계 Action 제공"""
-    msg = cl.Message(content="입금 대조 결과를 저장하는 중...")
-    await msg.send()
-
     try:
         app_sheet_id = cl.user_session.get("applications_sheet_id")
         applications = cl.user_session.get("applications", [])
 
-        if app_sheet_id and applications:
-            update_applications_sheet(app_sheet_id, applications)
+        async with cl.Step(name="💾 신청서 시트 업데이트") as step:
+            if app_sheet_id and applications:
+                update_applications_sheet(app_sheet_id, applications)
+                step.output = f"입금현황 **{len(applications)}건** 반영 완료"
+            else:
+                step.output = "시트 정보가 없어 반영하지 못했습니다."
 
         sheet_note = (
             f"\n[신청서 시트 열기](https://docs.google.com/spreadsheets/d/{app_sheet_id})"
             if app_sheet_id else ""
         )
-        msg.content = (
-            f"입금 대조 결과가 신청서에 반영되었습니다.{sheet_note}\n\n"
-            "신청서 시트에서 입금현황을 확인하시고, "
-            "배움숲 포탈에서 수강 등록을 처리한 뒤 등록상태를 체크해주세요."
-        )
-        await msg.update()
+        await cl.Message(
+            content=(
+                f"입금 대조 결과가 신청서에 반영되었습니다.{sheet_note}\n\n"
+                "신청서 시트에서 입금현황을 확인하시고, "
+                "배움숲 포탈에서 수강 등록을 처리한 뒤 등록상태를 체크해주세요."
+            )
+        ).send()
 
         actions = [
             cl.Action(
@@ -435,8 +435,7 @@ async def write_payment_results():
         await cl.Message(content="다음 작업을 선택해주세요.", actions=actions).send()
 
     except Exception as e:
-        msg.content = f"저장 중 오류: {str(e)}"
-        await msg.update()
+        await cl.Message(f"저장 중 오류: {str(e)}").send()
 
     _clear_payment_session()
 
@@ -539,26 +538,44 @@ async def do_create_attendance():
         ).send()
         return
 
-    msg = cl.Message(content=f"**{term['term_name']}** 출석부를 생성하는 중...")
-    await msg.send()
-
     try:
-        result = await create_attendance_sheet(
-            term["term_id"], term_folder_id, app_sheet_id
-        )
+        async with cl.Step(name="📊 등록 수강생 확인") as step:
+            from app.chains.attendance import load_registered_students
+            registered = load_registered_students(app_sheet_id)
+            courses = set(s.get("과목명", "") for s in registered if s.get("과목명"))
+            step.output = (
+                f"등록상태 체크된 수강생 **{len(registered)}명** ({len(courses)}개 과목)"
+            )
 
-        msg.content = (
-            f"## 📋 출석부 생성 완료\n\n"
-            f"- 과목 수: {len(result['courses'])}개\n"
-            f"- 총 수강생: {result['total_students']}명\n"
-            f"- 과목: {', '.join(result['courses'])}\n\n"
-            f"[출석부 열기]({result['spreadsheet_url']})"
-        )
-        await msg.update()
+        if not registered:
+            await cl.Message(
+                "등록상태가 체크된 수강생이 없습니다. "
+                "배움숲에서 등록 처리 후 신청서 시트에 등록상태를 체크해주세요."
+            ).send()
+            cl.user_session.set("state", "idle")
+            return
+
+        async with cl.Step(name="📋 출석부 시트 생성") as step:
+            result = await create_attendance_sheet(
+                term["term_id"], term_folder_id, app_sheet_id
+            )
+            step.output = (
+                f"과목별 시트탭 **{len(result['courses'])}개** 생성, "
+                f"수강생 **{result['total_students']}명**, 출석률 수식 삽입"
+            )
+
+        await cl.Message(
+            content=(
+                f"## 출석부 생성 완료\n\n"
+                f"- 과목 수: {len(result['courses'])}개\n"
+                f"- 총 수강생: {result['total_students']}명\n"
+                f"- 과목: {', '.join(result['courses'])}\n\n"
+                f"[출석부 열기]({result['spreadsheet_url']})"
+            )
+        ).send()
 
     except Exception as e:
-        msg.content = f"출석부 생성 중 오류: {str(e)}"
-        await msg.update()
+        await cl.Message(f"출석부 생성 중 오류: {str(e)}").send()
 
     cl.user_session.set("state", "idle")
 
