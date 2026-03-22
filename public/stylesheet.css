@@ -49,6 +49,12 @@ button {
 #starters button {
   border: 1px solid #DED7CA !important;
   background: #FEFCF8 !important;
+  transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+
+#starters button:hover {
+  background: #EAE2D4 !important;
+  border-color: #7A5234 !important;
 }
 
 div[data-step-type="assistant_message"] button.border-input {
