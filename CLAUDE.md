@@ -78,7 +78,7 @@ async def match_payments():
 ```
 
 ### Action — 다음 작업 추천 버튼
-모든 작업 완료/취소/에러 후 `send_default_actions(completed)` 호출로 5개 기본 버튼 제공. 방금 완료한 작업은 "다시하기" 레이블로 표시. 자유 텍스트 입력 없이 클릭만으로 다음 업무 진행.
+모든 작업 완료/취소/에러 후 `send_default_actions(completed)` 호출로 6개 기본 버튼 제공. 방금 완료한 작업은 "다시하기" 레이블로 표시. 자유 텍스트 입력 없이 클릭만으로 다음 업무 진행.
 ```python
 await send_default_actions("payment")  # 입금 대조 완료 후 → "💰 입금 대조 다시하기" 레이블
 await send_default_actions()            # 에러/취소 후 → 기본 레이블
@@ -162,8 +162,10 @@ wiryeschoolcommunity/
 │   │   └── term.py              # 현재 회차 자동 판별 + 자유 텍스트 회차 파싱 (parse_term_input)
 │   ├── chains/
 │   │   ├── qa.py                # 질의 응답 체인
-│   │   ├── payment.py           # 입금 대조 파이프라인 (신청자 로드, 코드 매칭, LLM 폴백, 시트 기록)
-│   │   └── attendance.py        # 출석부 생성 파이프라인
+│   │   ├── payment.py           # 입금 대조 파이프라인 (신청자 로드, 코드 매칭, LLM 폴백, 시트 기록, 회원기록)
+│   │   ├── attendance.py        # 출석부 생성 (수강생 탭 + 과목별 탭 + PDF 생성/업로드)
+│   │   ├── ocr.py               # 출석 체크 OCR (Claude Vision, 과목 탭 B:M 쓰기)
+│   │   └── graduation.py        # 종강 처리 (출석률 집계, 수강기록, 회원목록 재집계, 등급 강등)
 │   ├── services/
 │   │   ├── google_auth.py       # Google API 인증 (SA 파일 + JSON 환경변수 이중 지원)
 │   │   ├── google_drive.py      # Drive API 래퍼 + 동적 폴더 탐색 (find_term_folder 등)
@@ -174,7 +176,10 @@ wiryeschoolcommunity/
 │   └── utils/
 │       ├── __init__.py
 │       └── matching.py          # 이름/강좌 추출, 규칙 기반 입금 매칭
+├── assets/
+│   └── fonts/                   # NanumGothic TTF (빌드 시 다운로드, .gitignore)
 ├── scripts/
+│   ├── download_fonts.py        # NanumGothic 폰트 다운로드 (빌드 시 자동 실행)
 │   ├── populate_members.py      # 회원관리 시트 초기 데이터 생성
 │   └── populate_students.py     # 수강생 시트 초기 데이터 생성
 ├── .python-version              # Python 3.12 고정 (Railway mise 빌드용)
@@ -226,32 +231,44 @@ drive_service = build('drive', 'v3', credentials=credentials)
 
 ### 데이터 구조
 
-| 시트 | 성격 | 저장소 | 설명 |
-|------|------|--------|------|
-| **회원관리** | Master (영속) | Google Sheets | 전체 회원 현재 상태 스냅샷 |
-| **수강기록** | History (영속) | Google Sheets | 전체 수강 이력 (종강 시 append) |
+| 시트/탭 | 성격 | 저장소 | 설명 |
+|---------|------|--------|------|
+| **회원관리 → 회원목록** 탭 | Master (영속) | Google Sheets | 전체 회원 현재 상태 스냅샷 |
+| **회원관리 → 회원기록** 탭 | History (영속) | Google Sheets | 등급 변경 이력 (입금/종강 시 append) |
+| **회원관리 → 수강기록** 탭 | History (영속) | Google Sheets | 전체 수강 이력 (종강 시 append) |
 | **신청서** | Working (회차별) | Google Sheets | 통합 신청서 — 수강+신규가입+정회원 |
-| **출석부** | Working (회차별) | Google Sheets | 과목별 시트탭, 12회차 출석 |
+| **출석부** | Working (회차별) | Google Sheets | 수강생 탭 + 과목별 탭, 12회차 출석 |
 
-### 회원관리 (Master) — 현재 상태 스냅샷
+회원관리 시트(`MEMBERS_SHEET_ID`)는 3탭 구조: `회원목록`, `회원기록`, `수강기록`.
+탭명 상수: `MEMBERS_TAB`, `MEMBER_RECORDS_TAB`, `COURSE_RECORDS_TAB` (`config.py`).
 
-| 이름ID | 이름 | 성별 | 전화번호 | 주소 | 나이 | 등급 | 수강count | 출석률(누적) | 마지막수강회차 |
-|--------|------|------|---------|------|------|------|----------|------------|--------------|
+### 회원목록 (Master) — 현재 상태 스냅샷
+
+| 이름ID | 이름 | 전화번호 | 주소 | 등급 | 예외여부 | 수강count | 출석률(누적) | 마지막수강회차 |
+|--------|------|---------|------|------|---------|----------|------------|--------------|
 
 - **PK**: 이름ID
 - **등급**: 회원 / 준회원 / 정회원
+- **예외여부**: TRUE이면 종강 시 정회원 강등 면제 (강사/사무처)
+
+### 회원기록 (History) — 등급 변경 이력
+
+| 이름ID | 이름 | 변경일시 | 변경전등급 | 변경후등급 | 사유 | 관련회차 |
+|--------|------|---------|----------|----------|------|---------|
+
+입금 대조 시 자동 기록 (신규가입→회원, 수강→준회원, 정회원비→정회원), 종강 강등 시 자동 기록.
 
 ### 수강기록 (History) — 전체 수강 이력
 
 | 이름ID | 회차 | 과목명 | 출석률 |
 |--------|------|--------|--------|
 
-종강 시: 출석부 → 출석률 확정 → 수강기록에 행 추가 → 회원관리 재집계
+종강 시: 출석부 → 출석률 확정 → 수강기록에 행 추가 → 회원목록 재집계
 
-### 통합 신청서 (Working, 회차별) — 수강+가입+정회원 통합
+### 통합 신청서 (Working, 회차별) — 수강+가입+정회원 통합 (14컬럼)
 
-| 이름ID | 이름 | 유형 | 과목명 | 예상금액 | 입금현황 | 등록상태 | 입금시간 | 입금자명(적요) | 전화번호 | 주소 | 생년월일 | 성별 | 신청일 | 시작회차 | 종료회차 |
-|--------|------|------|--------|---------|---------|---------|---------|-------------|---------|------|---------|------|--------|---------|---------|
+| 이름ID | 이름 | 유형 | 과목명 | 예상금액 | 입금현황 | 등록상태 | 입금시간 | 입금자명(적요) | 전화번호 | 주소 | 신청일 | 시작회차 | 종료회차 |
+|--------|------|------|--------|---------|---------|---------|---------|-------------|---------|------|--------|---------|---------|
 
 - **유형**: `수강`(수강료 2만), `신규가입`(가입비 1만), `정회원`(정회원비 12만)
 - **과목명**: 수강 유형만 값 있음. 신규가입/정회원은 빈칸.
@@ -265,12 +282,18 @@ drive_service = build('drive', 'v3', credentials=credentials)
 
 ### 출석부 (Working, 회차별, 1파일 다중시트)
 
-Google Sheets 파일 1개, 과목별 시트탭.
+Google Sheets 파일 1개. 수강생 탭 + 과목별 탭 + 과목별 인쇄용 PDF.
 
-| ID | 이름 | 1회차~12회차 | 출석률 |
-|----|------|------------|--------|
+```
+출석부 시트
+├── 탭: 수강생       → 이름ID(A) | 이름(B) | 과목명(C) | 출석률(D)
+├── 탭: {과목명1}    → 이름(A) | 1회차(B) | ... | 12회차(M)
+└── 탭: {과목명2}    → 동일 구조
+```
 
-- 12회차 일괄 생성, 출석률 = 출석수/회차수×100 (수식)
+- **수강생 탭**: 전체 수강생 현황. 출석률(D열)은 종강 처리 시 `graduation.py`가 채움 (생성 시 빈칸).
+- **과목별 탭**: 이름ID·출석률 없음. OCR 기록 범위: B열(1회차)~M열(12회차). 출석="O", 결석="".
+- **PDF**: 과목별 A4 가로 PDF. NanumGothic 12pt, 페이지 분할. Drive 출석부 폴더에 업로드.
 - 신청서의 `등록상태`가 체크된 수강자만 포함
 
 ---
@@ -312,16 +335,19 @@ Google Sheets 파일 1개, 과목별 시트탭.
 
 ### n8n 배치 파이프라인 상세
 
-**P3. 종강 처리** (on-demand, 관리자 요청, Phase 3 백로그)
+**P3. 종강 처리** (on-demand, ✅ 구현 완료 — `graduation.py`)
 ```
 트리거: 관리자가 챗봇에서 "🎓 종강 처리" Starter 버튼 클릭
-1. Agent: 회차 확인 → 관리자 확정
-2. 해당 회차 출석부에서 과목별 출석률 집계
-3. 수강기록 시트에 append (수강생 × 과목)
-4. 회원관리 시트 재집계 (수강count, 출석률, 마지막수강회차)
-5. 준회원 → 회원 일괄 강등
-6. (1회차 종강 시) 정회원 만료 대상 → 회원 강등 (강사/사무처 예외)
-7. 종강 보고서 생성
+전제: 출석 체크(OCR)가 모든 과목에 대해 완료된 상태
+1. 회차 확인 → 관리자 확정
+2. 출석 체크 완료 확인 → 관리자 확정
+3. 과목별 탭에서 O/빈칸 직접 카운트 → 출석률 집계
+4. 수강생 탭 출석률(D열) 업데이트
+5. 수강기록 탭에 append (수강생 × 과목)
+6. 회원목록 재집계 (수강count, 출석률(누적), 마지막수강회차)
+7. 준회원 → 회원 일괄 강등 (매 종강 시)
+8. (1학기 종강 시) 정회원 → 회원 강등 (예외여부=TRUE 제외)
+9. 회원기록 탭에 강등 이력 append
 ```
 
 **P4. DB → Sheets 동기화** (scheduled, 비활성)
@@ -337,7 +363,9 @@ n8n/P4_daily_sync.json — 비즈니스 테이블 제거로 실질적으로 무�
 | Raw → Sheets | 입금 대조 시 | 배움숲 엑셀 → 통합 신청서 (수강 유형) |
 | Raw → Sheets | 입금 대조 시 | Drive 신청서 → 통합 신청서 (신규가입/정회원 유형) |
 | Raw → Sheets | 입금 대조 시 | 은행 입금내역 → 통합 신청서 입금현황 반영 |
-| Sheets → Sheets | 출석부 생성 시 | 신청서 등록상태 체크된 행 → 출석부 시트 생성 |
+| Sheets → Sheets | 출석부 생성 시 | 신청서 등록상태 체크된 행 → 출석부 시트 생성 + PDF |
+| Image → Sheets | 출석 체크 시 | 종이 출석부 사진 → Claude Vision OCR → 과목별 탭 O/빈칸 |
+| Sheets → Sheets | 종강 처리 시 | 과목별 탭 출석률 집계 → 수강기록 append → 회원목록 재집계 → 등급 강등 |
 
 ### 신청자 목록 (배움숲 다운로드 원본, SoT)
 
@@ -444,31 +472,30 @@ TERM_SEASONS = {1: "겨울", 2: "봄", 3: "여름", 4: "가을"}
 
 ### 영속 리소스 (config.py에 상수로 정의)
 
-| Resource | 상수명 | Type | ID | 시트 탭명 |
-|----------|--------|------|----|----------|
-| 회원관리 | `MEMBERS_SHEET_ID` | Spreadsheet | `193r34mtLHd0-oX7MKJOWq1Ane9iBfbBZB5yYf78R3Bo` | `회원관리` |
-| 수강기록 | `RECORDS_SHEET_ID` | Spreadsheet | `1cKolq6Mr-5u65nQDeMq8z4DsFWpHTLVthkAvyt4Rb6s` | `수강기록` |
+| Resource | 상수명 | Type | ID | 탭명 |
+|----------|--------|------|----|------|
+| 회원관리 (3탭) | `MEMBERS_SHEET_ID` | Spreadsheet | `193r34mtLHd0-oX7MKJOWq1Ane9iBfbBZB5yYf78R3Bo` | `회원목록`, `회원기록`, `수강기록` |
 | Root folder | `ROOT_FOLDER_ID` | Shared Drive root | `0AANInBeWsB7dUk9PVA` | — |
 | 회원 폴더 | `MEMBERS_FOLDER_ID` | Drive folder | `12xm3vG4w5nOPTwoWgmyGCpz939KvJ93e` | — |
 | 학사운영 folder | `OPERATIONS_FOLDER_ID` | Drive folder | `1WuqNFt-g5qhnY1nMk0a8dsowZHKQVRMm` | — |
-| 신규가입 신청서 폴더 | `MEMBER_SIGNUP_FOLDER_ID` | Drive folder | `10ZL8rD9j7OyyZOihfyJ6GRTzmBrTBgWe` | — |
-| 정회원가입 신청서 폴더 | `FULLMEMBER_SIGNUP_FOLDER_ID` | Drive folder | `17tsWfYwIRgHHcT1DQEj8Sqa4ys6pe0Vy` | — |
+| 신규가입 신청서 폴더 | `MEMBER_SIGNUP_FOLDER_ID` | Drive folder | ASIS/TOBE 전환 (config.py 참조) | — |
+| 정회원가입 신청서 폴더 | `FULLMEMBER_SIGNUP_FOLDER_ID` | Drive folder | ASIS/TOBE 전환 (config.py 참조) | — |
 
-회원관리/수강기록 시트는 `03 회원과 강사/회원(회원명단/가입서/정회원)/` 폴더에 위치한다 (Shared Drive 루트가 아님).
+회원관리 시트는 `03 회원과 강사/회원(회원명단/가입서/정회원)/` 폴더에 위치한다 (Shared Drive 루트가 아님).
+신청서 폴더는 현재 관리자 개인 드라이브(ASIS)에 위치하며, 공유 드라이브(TOBE)로 이전 시 `config.py`에서 상수 전환.
 
 ### 회원 폴더 내부 구조 (03 회원과 강사/회원/)
 
 ```
 회원(회원명단/가입서/정회원)/
-├── 회원관리 (Google Sheets)          ← 데이터 테이블 (영속)
-├── 수강기록 (Google Sheets)          ← 데이터 테이블 (영속)
+├── 회원관리 (Google Sheets)          ← 3탭: 회원목록, 회원기록, 수강기록 (영속)
 ├── 신규가입 신청서/                   ← 연도별 Google Forms 응답 xlsx
 ├── 정회원가입 신청서/                 ← 연도별 Google Forms 응답 xlsx
 ├── 연회비/                           ← 연회비 기록
 └── 운영자료/                         ← 홍보물, 양식, 과거 작업 파일
 ```
 
-**신청서 파일 탐색**: 신규가입/정회원 신청서는 연도별로 새 Google Form을 생성하므로 파일 ID가 고정이 아님. 챗봇 `signup_loader.py`에서 Drive 폴더 탐색 → Spreadsheet mimeType 필터 → 파일명에 회차 문자열(예: "2026-2") 매칭으로 자동화.
+**신청서 파일 탐색**: 신규가입/정회원 신청서는 연도별로 새 Google Form을 생성하므로 파일 ID가 고정이 아님. 챗봇 `signup_loader.py`에서 Drive 폴더 탐색 → Spreadsheet mimeType 필터 → 파일명에 **연도 문자열**(예: "2026") 매칭으로 자동화. 탭명 `Form Responses 1` 우선 시도. 헤더는 키워드 부분 일치(`_get_value_by_keyword`)로 매핑.
 
 ### 회차별 리소스 (런타임에 동적 탐색 — config.py에 없음)
 
@@ -568,8 +595,11 @@ DATABASE_URL=                   # Railway가 자동 주입 (PostgreSQL 연결 �
 - 입금 대조 파이프라인: 신청자 목록 SoT, 적요+의뢰인 기반 매칭, 6가지 상태 코드
 - Excel 파싱 (`app/services/excel.py`): 입금내역 + 신청자 목록(HTML .xls, BeautifulSoup)
 - 규칙 기반 매칭 (`app/utils/matching.py`)
-- 출석부 생성 (`app/chains/attendance.py`): 과목별 시트탭, 출석률 수식
-- 회원관리/수강기록 업데이트, 동적 Drive 폴더 탐색
+- 출석부 생성 (`app/chains/attendance.py`): 수강생 탭 + 과목별 탭 + 인쇄용 PDF (NanumGothic)
+- 출석 체크 OCR (`app/chains/ocr.py`): Claude Vision, 과목별 탭 B:M 쓰기
+- 종강 처리 (`app/chains/graduation.py`): 출석률 집계, 수강기록 append, 회원목록 재집계, 등급 강등
+- 회원관리 3탭 구조 (회원목록/회원기록/수강기록), 동적 Drive 폴더 탐색
+- 신청서 upsert (기존 행 보존, 새 key만 추가), 입금 시 회원기록 자동 기록
 - Action 버튼, AskActionMessage, 세션 상태 머신
 - cl.Step 진행 상황 표시 (각 파이프라인 단계별 expandable indicator)
 - 입금 대조 결과 즉시 자동 반영 (확인 단계 제거, 숫자 요약 한 줄)
@@ -610,15 +640,22 @@ DATABASE_URL=                   # Railway가 자동 주입 (PostgreSQL 연결 �
 - `signup_loader.py`: Drive에서 파싱 결과만 반환 (DB INSERT 제거)
 - n8n P4: 비즈니스 테이블 없으므로 비활성 유지, 추후 제거 검토
 
-### Phase 3 — 기능 확장 📋 백로그
+### Phase 3 — 기능 확장
 
-- 종강 처리 (on-demand): 출석률 계산, 수강기록 추가, 등급 강등, Master 재집계, 보고서 작성
-- 출석 체크 (OCR): Claude Vision으로 종이 출석부 디지털화
+**✅ 완료:**
+- ~~종강 처리~~ — 출석률 집계, 수강기록 추가, 등급 강등, 회원목록 재집계, 회원기록 기록
+- ~~출석 체크 (OCR)~~ — Claude Vision으로 종이 출석부 디지털화 → 과목별 탭 O/빈칸
+- ~~과목별 출석부 PDF 생성~~ — A4 가로, NanumGothic 12pt, Drive 업로드
+- ~~Theme/CSS 커스터마이징~~ — Palette C 마을회관 + Noto Sans KR 타이포그래피
+- ~~신청서 upsert~~ — 기존 행 보존, 새 key만 추가
+- ~~회원기록 자동 기록~~ — 입금 대조 시 등급 변경 이력 자동 append
+- ~~가입 신청서 키워드 매칭~~ — 연도별 검색, Form Responses 1 탭, 헤더 부분 일치
+
+**📋 백로그:**
 - 계획서 검토: PDF 파싱 → 오탈자/말투 수정 → 배움숲 멘트 생성
 - Google OAuth 인증 (Workspace 도메인 제한)
-- 과목별 출석부 PDF 생성 (A4 프린트용)
-- ~~Theme/CSS 커스터마이징~~ ✅ 완료 (Palette C 마을회관 + Noto Sans KR 타이포그래피)
 - Chainlit UI 커스터마이징 (chainlit.md 웰컴 화면)
+- 가입 신청서 폴더 공유 드라이브 이전 (config.py ASIS→TOBE 전환)
 
 ## 코딩 규칙
 
