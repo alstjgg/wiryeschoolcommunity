@@ -45,6 +45,11 @@ button {
   letter-spacing: 0.015em;
 }
 
+/* ── Issue 2: 다크모드 토글 버튼 숨기기 (light 모드 고정) ── */
+#theme-toggle {
+  display: none !important;
+}
+
 /* ── Issue 1: Chainlit 기본 로고 숨기기 (추후 logo_light.png로 교체 예정) ── */
 img.logo {
   display: none !important;
