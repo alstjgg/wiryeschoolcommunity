@@ -38,10 +38,13 @@ button {
   font-size: 1rem;                    /* 16px 최소 */
   letter-spacing: 0.015em;
   font-weight: 500;
+  min-height: 48px;                   /* 55세+ 클릭 타겟 */
 }
 
 /* ── 사이드바 ── */
 [class*="sidebar"] {
+  font-size: 1rem;                    /* 16px */
+  line-height: 1.6;
   letter-spacing: 0.015em;
 }
 
