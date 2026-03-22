@@ -61,6 +61,12 @@ div[data-step-type="assistant_message"] button.border-input {
   border: 1px solid #DED7CA !important;
 }
 
+/* ── Issue 4: 사용자 메시지 버블 — primary 배경 + 흰 텍스트 ── */
+div[data-step-type="user_message"] .bg-accent {
+  background-color: #7A5234 !important;
+  color: #FFFFFF !important;
+}
+
 /* ── Issue 2: 다크모드 토글 버튼 숨기기 (light 모드 고정) ── */
 #theme-toggle {
   display: none !important;
