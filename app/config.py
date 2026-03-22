@@ -37,10 +37,23 @@ TERM_SEASONS = {1: "겨울", 2: "봄", 3: "여름", 4: "가을"}
 ROOT_FOLDER_ID = "0AANInBeWsB7dUk9PVA"
 OPERATIONS_FOLDER_ID = "1WuqNFt-g5qhnY1nMk0a8dsowZHKQVRMm"  # 02 학사운영
 MEMBERS_FOLDER_ID = "12xm3vG4w5nOPTwoWgmyGCpz939KvJ93e"  # 03 회원과 강사/회원(회원명단/가입서/정회원) — 회원관리·수강기록 소재
-MEMBERS_SHEET_ID = "193r34mtLHd0-oX7MKJOWq1Ane9iBfbBZB5yYf78R3Bo"  # 회원관리 시트
-RECORDS_SHEET_ID = "1cKolq6Mr-5u65nQDeMq8z4DsFWpHTLVthkAvyt4Rb6s"  # 수강기록 시트
+MEMBERS_SHEET_ID = "193r34mtLHd0-oX7MKJOWq1Ane9iBfbBZB5yYf78R3Bo"  # 회원관리 시트 (3탭: 회원목록, 회원기록, 수강기록)
 MEMBER_SIGNUP_FOLDER_ID = "10ZL8rD9j7OyyZOihfyJ6GRTzmBrTBgWe"  # 신규가입 신청서 폴더
 FULLMEMBER_SIGNUP_FOLDER_ID = "17tsWfYwIRgHHcT1DQEj8Sqa4ys6pe0Vy"  # 정회원가입 신청서 폴더
+
+# 회원관리 파일 내 탭명 (3탭 구조)
+MEMBERS_TAB = "회원목록"          # 현재 상태 스냅샷
+MEMBER_RECORDS_TAB = "회원기록"   # 등급 변경 이력
+COURSE_RECORDS_TAB = "수강기록"   # 수강 이력
+
+# 가입 신청서 응답 시트 탭명 (구글폼 기본값)
+SIGNUP_SHEET_TAB = "Form Responses 1"
+
+# 회원기록 헤더
+MEMBER_RECORD_HEADER = ["이름ID", "이름", "변경일시", "변경전등급", "변경후등급", "사유", "관련회차"]
+
+# 수강기록 헤더
+COURSE_RECORD_HEADER = ["이름ID", "회차", "과목명", "출석률"]
 
 # LLM 설정
 LLM_MODEL = "claude-sonnet-4-20250514"

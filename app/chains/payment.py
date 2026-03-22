@@ -13,10 +13,12 @@ from app.config import (
     ANTHROPIC_API_KEY, LLM_MODEL,
     MEMBERS_SHEET_ID, COURSE_KEYWORDS,
     TUITION_FEE, MEMBERSHIP_FEE, FULL_MEMBERSHIP_FEE,
+    MEMBERS_TAB, MEMBER_RECORDS_TAB, COURSE_RECORDS_TAB,
+    MEMBER_RECORD_HEADER, COURSE_RECORD_HEADER,
 )
 from app.services.google_auth import get_drive_service, get_sheets_service
 from app.services.google_drive import find_spreadsheet_by_name, find_or_create_folder
-from app.services.google_sheets import read_sheet, write_sheet
+from app.services.google_sheets import read_sheet, write_sheet, append_sheet
 
 
 # =========================================== 통합 신청서 시트 관리 ====
@@ -24,7 +26,7 @@ from app.services.google_sheets import read_sheet, write_sheet
 APPLICATION_HEADER = [
     "이름ID", "이름", "유형", "과목명", "예상금액",
     "입금현황", "등록상태", "입금시간", "입금자명(적요)",
-    "전화번호", "주소", "생년월일", "성별", "신청일",
+    "전화번호", "주소", "신청일",
     "시작회차", "종료회차",
 ]
 
@@ -66,8 +68,6 @@ def build_applications(
             "입금자명(적요)": "",
             "전화번호": a.get("전화번호", ""),
             "주소": a.get("주소", ""),
-            "생년월일": a.get("생년월일", ""),
-            "성별": a.get("성별", ""),
             "신청일": a.get("신청일", ""),
             "시작회차": "",
             "종료회차": "",
@@ -108,20 +108,33 @@ def write_applications_sheet(
     term_folder_id: str,
     applications: list[dict],
 ) -> str:
-    """통합 신청서를 Google Sheets에 저장.
+    """통합 신청서 upsert — 기존 행 보존, 새 key만 추가.
 
-    회차 폴더 → '신청서' 서브폴더 → '신청서' 시트.
-    기존 시트가 있으면 덮어쓰기, 없으면 생성.
+    Key: (이름ID, 유형, 과목명) — 이 조합이 같으면 이미 처리된 건으로 스킵.
     Returns: spreadsheet_id
     """
     subfolder = find_or_create_folder(term_folder_id, "신청서")
     folder_id = subfolder["id"]
+    existing_file = find_spreadsheet_by_name(folder_id, "신청서")
 
-    existing = find_spreadsheet_by_name(folder_id, "신청서")
-    rows = [APPLICATION_HEADER] + [_app_to_row(a) for a in applications]
+    if existing_file:
+        spreadsheet_id = existing_file["id"]
 
-    if existing:
-        spreadsheet_id = existing["id"]
+        # 기존 행 로드 및 key set 구성
+        existing_apps = read_applications_sheet(spreadsheet_id)
+        existing_keys = {
+            (a["이름ID"], a["유형"], a.get("과목명", ""))
+            for a in existing_apps
+        }
+
+        # 새 건 중 기존에 없는 것만 필터
+        new_apps = [
+            a for a in applications
+            if (a["이름ID"], a["유형"], a.get("과목명", "")) not in existing_keys
+        ]
+
+        merged = existing_apps + new_apps
+        rows = [APPLICATION_HEADER] + [_app_to_row(a) for a in merged]
         write_sheet(spreadsheet_id, "신청서!A1", rows)
     else:
         # 새 시트 생성
@@ -152,7 +165,9 @@ def write_applications_sheet(
             },
         ).execute()
 
+        rows = [APPLICATION_HEADER] + [_app_to_row(a) for a in applications]
         write_sheet(spreadsheet_id, "신청서!A1", rows)
+        merged = applications
 
     # 필터 + 등록상태 체크박스 설정
     sheets_svc = get_sheets_service()
@@ -183,7 +198,7 @@ def write_applications_sheet(
                     "range": {
                         "sheetId": sheet_id,
                         "startRowIndex": 1,
-                        "endRowIndex": 1 + len(applications),
+                        "endRowIndex": 1 + len(merged),
                         "startColumnIndex": _COL["등록상태"],
                         "endColumnIndex": _COL["등록상태"] + 1,
                     },
@@ -204,7 +219,7 @@ def write_applications_sheet(
 
 def read_applications_sheet(spreadsheet_id: str) -> list[dict]:
     """신청서 시트에서 전체 행을 dict 리스트로 읽기"""
-    rows = read_sheet(spreadsheet_id, "신청서!A1:P5000")
+    rows = read_sheet(spreadsheet_id, "신청서!A1:N5000")
     if not rows or len(rows) < 2:
         return []
     header = rows[0]
@@ -227,8 +242,8 @@ def update_applications_sheet(
 # ================================================= 회원관리 시트 ====
 
 def load_members_from_sheet() -> list[dict]:
-    """회원관리 시트에서 전체 회원 로드"""
-    rows = read_sheet(MEMBERS_SHEET_ID, "회원관리!A1:J2000")
+    """회원목록 탭에서 전체 회원 로드"""
+    rows = read_sheet(MEMBERS_SHEET_ID, f"{MEMBERS_TAB}!A1:I2000")
     if not rows or len(rows) < 2:
         return []
     header = rows[0]
@@ -236,24 +251,47 @@ def load_members_from_sheet() -> list[dict]:
 
 
 def update_members_sheet(members: list[dict]) -> None:
-    """회원관리 시트 전체 덮어쓰기"""
-    header = ["이름ID", "이름", "성별", "전화번호", "주소", "나이", "등급",
-              "수강count", "출석률(누적)", "마지막수강회차"]
+    """회원목록 탭 전체 덮어쓰기"""
+    header = [
+        "이름ID", "이름", "전화번호", "주소", "등급", "예외여부",
+        "수강count", "출석률(누적)", "마지막수강회차",
+    ]
     rows = [header]
     for m in members:
         rows.append([
             m.get("이름ID", ""),
             m.get("이름", ""),
-            m.get("성별", ""),
             m.get("전화번호", ""),
             m.get("주소", ""),
-            m.get("나이", ""),
             m.get("등급", "회원"),
+            m.get("예외여부", ""),
             m.get("수강count", "0"),
             m.get("출석률(누적)", ""),
             m.get("마지막수강회차", ""),
         ])
-    write_sheet(MEMBERS_SHEET_ID, "회원관리!A1", rows)
+    write_sheet(MEMBERS_SHEET_ID, f"{MEMBERS_TAB}!A1", rows)
+
+
+def append_member_records(records: list[dict]) -> None:
+    """회원기록 탭에 등급 변경 이력 append."""
+    if not records:
+        return
+    rows = [
+        [r.get(col, "") for col in MEMBER_RECORD_HEADER]
+        for r in records
+    ]
+    append_sheet(MEMBERS_SHEET_ID, f"{MEMBER_RECORDS_TAB}!A1", rows)
+
+
+def append_course_records(records: list[dict]) -> None:
+    """수강기록 탭에 수강 이력 append."""
+    if not records:
+        return
+    rows = [
+        [r.get(col, "") for col in COURSE_RECORD_HEADER]
+        for r in records
+    ]
+    append_sheet(MEMBERS_SHEET_ID, f"{COURSE_RECORDS_TAB}!A1", rows)
 
 
 # ======================================= 입금 매칭 관련 함수 ====

@@ -2,6 +2,7 @@
 
 import json
 import sys
+from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -25,6 +26,7 @@ from app.chains.payment import (
     run_llm_matching,
     find_unpaid,
     format_results,
+    append_member_records,
 )
 from app.chains.attendance import create_attendance_sheet
 from app.config import ANTHROPIC_API_KEY, LLM_MODEL
@@ -458,6 +460,38 @@ async def write_payment_results(
             if app_sheet_id and applications:
                 update_applications_sheet(app_sheet_id, applications)
                 step.output = f"입금현황 **{len(applications)}건** 반영 완료"
+
+                # 회원기록 자동 기록
+                term_id = (cl.user_session.get("term") or {}).get("term_id", "")
+                records_to_log = []
+                now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+                for app in applications:
+                    if app.get("입금현황") != "✅정상":
+                        continue
+                    if app["유형"] == "신규가입":
+                        records_to_log.append({
+                            "이름ID": app["이름ID"], "이름": app["이름"],
+                            "변경일시": now_str,
+                            "변경전등급": "(신규)", "변경후등급": "회원",
+                            "사유": "신규가입", "관련회차": term_id,
+                        })
+                    elif app["유형"] == "수강":
+                        records_to_log.append({
+                            "이름ID": app["이름ID"], "이름": app["이름"],
+                            "변경일시": now_str,
+                            "변경전등급": "회원", "변경후등급": "준회원",
+                            "사유": "수강료입금", "관련회차": term_id,
+                        })
+                    elif app["유형"] == "정회원":
+                        records_to_log.append({
+                            "이름ID": app["이름ID"], "이름": app["이름"],
+                            "변경일시": now_str,
+                            "변경전등급": "회원", "변경후등급": "정회원",
+                            "사유": "정회원비입금", "관련회차": term_id,
+                        })
+                if records_to_log:
+                    append_member_records(records_to_log)
+                    step.output += f", 회원기록 {len(records_to_log)}건 기록"
             else:
                 step.output = "시트 정보가 없어 반영하지 못했습니다."
 
