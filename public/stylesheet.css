@@ -44,3 +44,29 @@ button {
 [class*="sidebar"] {
   letter-spacing: 0.015em;
 }
+
+/* ── Issue 1: 첫 화면 로고를 앱 이름으로 교체 ── */
+img.logo {
+  display: none !important;
+}
+
+/* 로고 부모 컨테이너에 텍스트 삽입 */
+img.logo + *,
+img.logo {
+  /* fallback: parent handles text */
+}
+
+/* 로고 이미지의 부모에서 텍스트 표시 */
+div:has(> img.logo) {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+div:has(> img.logo)::after {
+  content: "위례인생학교 업무 도우미";
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: hsl(18 18% 15%);
+  letter-spacing: 0.02em;
+}
