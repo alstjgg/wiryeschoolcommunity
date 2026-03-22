@@ -29,7 +29,13 @@ from app.chains.payment import (
     append_member_records,
 )
 from app.chains.attendance import create_attendance_sheet
-from app.config import ANTHROPIC_API_KEY, LLM_MODEL
+from app.chains.ocr import (
+    load_course_students,
+    process_attendance_image,
+    write_attendance_to_sheet,
+)
+from app.chains.graduation import run_graduation
+from app.config import ANTHROPIC_API_KEY, LLM_MODEL, MEMBERS_SHEET_ID
 from app.services.excel import parse_bank_statement, parse_applicant_list
 from app.services.google_drive import find_term_folder
 from app.services.signup_loader import (
@@ -93,6 +99,10 @@ async def set_starters():
             message="출석 체크를 시작합니다.",
         ),
         cl.Starter(
+            label="🎓 종강 처리",
+            message="종강 처리를 시작합니다.",
+        ),
+        cl.Starter(
             label="📝 계획서 검토",
             message="강의 계획서를 검토합니다.",
         ),
@@ -134,6 +144,23 @@ async def on_message(message: cl.Message):
                 "회차를 인식하지 못했어요. 다시 입력해주세요.\n예) 2026-1, 겨울학기"
             ).send()
         return
+    if session_state == "awaiting_ocr_image":
+        if message.elements:
+            await handle_ocr_image(message)
+        else:
+            await handle_mid_flow_text(message, "awaiting_ocr_image")
+        return
+    if session_state == "awaiting_graduation_term_input":
+        term = parse_term_input(message.content)
+        if term:
+            cl.user_session.set("term", term)
+            cl.user_session.set("state", "idle")
+            await _confirm_ocr_done_before_graduation(term)
+        else:
+            await cl.Message(
+                "회차를 인식하지 못했어요. 다시 입력해주세요.\n예) 2026-1, 겨울학기"
+            ).send()
+        return
 
     # Starter 버튼 메시지 라우팅
     if message.content == "입금 대조를 시작합니다.":
@@ -141,7 +168,9 @@ async def on_message(message: cl.Message):
     elif message.content == "출석부를 생성합니다.":
         await start_attendance_flow(message)
     elif message.content == "출석 체크를 시작합니다.":
-        await cl.Message("출석 체크 기능은 준비 중입니다.").send()
+        await start_ocr_flow(message)
+    elif message.content == "종강 처리를 시작합니다.":
+        await start_graduation_flow(message)
     elif message.content == "강의 계획서를 검토합니다.":
         await cl.Message("계획서 검토 기능은 준비 중입니다.").send()
     else:
@@ -248,6 +277,10 @@ def _get_resume_prompt(state: str) -> str:
         ),
         "awaiting_payment_file": (
             "계속 진행하려면 입금내역 파일(.xls 또는 .xlsx)을 업로드해주세요.\n"
+            "취소하려면 '취소'라고 입력하세요."
+        ),
+        "awaiting_ocr_image": (
+            "계속 진행하려면 출석부 사진을 업로드해주세요.\n"
             "취소하려면 '취소'라고 입력하세요."
         ),
     }
@@ -779,12 +812,380 @@ async def do_create_attendance():
     cl.user_session.set("state", "idle")
 
 
+# ===================================================== 출석 체크(OCR) 플로우 =====
+
+async def start_ocr_flow(message):
+    """출석 체크 시작 — 회차 확인 → 종강 여부 확인 → 사진 업로드"""
+    term = cl.user_session.get("term") or get_current_term()
+    cl.user_session.set("term", term)
+
+    res = await cl.AskActionMessage(
+        content=(
+            f"**{term['term_name']}** 출석 체크를 시작합니다.\n\n"
+            "출석 체크는 **종강 후** 진행하는 작업입니다.\n"
+            "해당 회차의 강좌가 종강되었는지 확인해주세요."
+        ),
+        actions=[
+            cl.Action(name="ocr_confirm", label="✅ 종강 완료, 시작합니다",
+                      payload={"value": "confirm"}),
+            cl.Action(name="ocr_cancel", label="❌ 취소",
+                      payload={"value": "cancel"}),
+        ],
+    ).send()
+
+    value = (res or {}).get("payload", {}).get("value")
+    if value == "confirm":
+        await _resolve_attendance_sheet_id(term)
+        await _ask_for_ocr_image(term)
+    else:
+        await cl.Message("출석 체크가 취소되었습니다.").send()
+        await send_default_actions()
+
+
+async def _resolve_attendance_sheet_id(term: dict):
+    """세션에 attendance_sheet_id가 없으면 Drive에서 탐색하여 세션에 저장"""
+    if cl.user_session.get("attendance_sheet_id"):
+        return
+
+    term_folder_id = cl.user_session.get("term_folder_id")
+    if not term_folder_id:
+        term_folder = find_term_folder(term["term_id"])
+        if term_folder:
+            term_folder_id = term_folder["id"]
+            cl.user_session.set("term_folder_id", term_folder_id)
+
+    if term_folder_id:
+        from app.services.google_drive import (
+            find_or_create_folder, find_spreadsheet_by_name,
+        )
+        att_folder = find_or_create_folder(term_folder_id, "출석부")
+        att_file = find_spreadsheet_by_name(att_folder["id"], "출석부")
+        if att_file:
+            cl.user_session.set("attendance_sheet_id", att_file["id"])
+
+
+async def _ask_for_ocr_image(term: dict):
+    """출석부 사진 업로드 요청"""
+    await cl.Message(
+        content=(
+            f"**{term['term_name']}** 출석부 사진을 업로드해주세요.\n\n"
+            "**촬영 방법**:\n"
+            "- 한 과목의 출석부 전체가 나오도록 촬영해주세요.\n"
+            "- 이름과 회차 칸이 모두 선명하게 보여야 합니다.\n\n"
+            "사진과 함께 **과목명**을 입력해주세요.\n"
+            "예) `경제뉴스 기초 출석부입니다` + 사진 첨부\n\n"
+            "취소하려면 '취소'라고 입력하세요."
+        )
+    ).send()
+    cl.user_session.set("state", "awaiting_ocr_image")
+
+
+async def handle_ocr_image(message: cl.Message):
+    """출석부 사진 수신 → OCR → 결과 확인 → 시트 반영"""
+    file_element = message.elements[0]
+    term = cl.user_session.get("term") or get_current_term()
+    attendance_sheet_id = cl.user_session.get("attendance_sheet_id")
+
+    if not attendance_sheet_id:
+        await cl.Message(
+            "출석부 시트를 찾을 수 없습니다.\n"
+            "출석부 생성이 먼저 완료되어야 합니다."
+        ).send()
+        cl.user_session.set("state", "idle")
+        await send_default_actions()
+        return
+
+    # 메시지 텍스트에서 과목명 추출
+    course_name = _extract_course_name(message.content, attendance_sheet_id)
+    if not course_name:
+        await cl.Message(
+            "과목명을 인식하지 못했습니다.\n"
+            "예) `경제뉴스 기초 출석부입니다` 처럼 과목명을 함께 입력해주세요."
+        ).send()
+        return  # 상태 유지 — 다시 사진 업로드 요청
+
+    try:
+        async with cl.Step(name="📸 출석부 이미지 분석") as step:
+            with open(file_element.path, "rb") as f:
+                image_bytes = f.read()
+            students = load_course_students(attendance_sheet_id, course_name)
+            if not students:
+                step.output = f"'{course_name}' 탭을 찾을 수 없습니다."
+                await cl.Message(
+                    f"출석부 시트에서 **{course_name}** 과목을 찾을 수 없습니다.\n"
+                    "과목명을 정확히 입력해주세요."
+                ).send()
+                return
+            step.output = f"**{course_name}** 수강생 **{len(students)}명** 확인"
+
+        async with cl.Step(name="🤖 출석 인식") as step:
+            ocr_result = await process_attendance_image(
+                image_bytes, course_name, students
+            )
+            recognized = len(ocr_result["results"])
+            unrecognized = len(ocr_result["unrecognized"])
+            step.output = f"인식 **{recognized}명** / 미인식 **{unrecognized}명**"
+
+        # 결과 미리보기 (최대 10명)
+        preview_lines = [f"**{course_name}** 출석 인식 결과 (일부):\n"]
+        for r in ocr_result["results"][:10]:
+            attended = sum(1 for v in r["출석"].values() if v == "O")
+            preview_lines.append(f"- {r['이름']}: {attended}회 출석")
+        if len(ocr_result["results"]) > 10:
+            preview_lines.append(
+                f"... 외 {len(ocr_result['results']) - 10}명"
+            )
+        if ocr_result["unrecognized"]:
+            preview_lines.append(
+                f"\n⚠️ 이미지에서 찾지 못한 수강생: "
+                f"{', '.join(ocr_result['unrecognized'])}"
+            )
+
+        res = await cl.AskActionMessage(
+            content="\n".join(preview_lines) + "\n\n출석부 시트에 반영할까요?",
+            actions=[
+                cl.Action(name="ocr_apply", label="✅ 반영하기",
+                          payload={"value": "apply"}),
+                cl.Action(name="ocr_retry", label="🔄 이 과목 다시 찍기",
+                          payload={"value": "retry"}),
+                cl.Action(name="ocr_finish", label="✅ 출석 체크 완료",
+                          payload={"value": "finish"}),
+            ],
+        ).send()
+
+        value = (res or {}).get("payload", {}).get("value")
+
+        if value == "apply":
+            async with cl.Step(name="💾 출석부 시트 반영") as step:
+                updated = write_attendance_to_sheet(
+                    attendance_sheet_id, course_name,
+                    ocr_result["results"], students
+                )
+                step.output = f"**{updated}명** 반영 완료"
+
+            await cl.Message(
+                f"**{course_name}** 출석 체크가 반영되었습니다."
+            ).send()
+            cl.user_session.set("current_ocr_course", "")
+            await _ask_continue_ocr(term)
+
+        elif value == "retry":
+            await cl.Message(
+                f"**{course_name}** 출석부를 다시 촬영하여 업로드해주세요."
+            ).send()
+            cl.user_session.set("current_ocr_course", course_name)
+
+        else:  # finish 또는 타임아웃
+            await cl.Message(
+                "출석 체크를 완료합니다.\n"
+                "모든 과목의 출석 체크가 완료되면 종강 처리를 진행하세요."
+            ).send()
+            cl.user_session.set("state", "idle")
+            await send_default_actions("ocr")
+
+    except Exception as e:
+        await cl.Message(f"출석 체크 중 오류: {str(e)}").send()
+        await send_default_actions()
+
+
+async def _ask_continue_ocr(term: dict):
+    """다른 과목 출석 체크 계속 여부 확인"""
+    res = await cl.AskActionMessage(
+        content="다른 과목의 출석부도 처리하시겠어요?",
+        actions=[
+            cl.Action(name="ocr_next", label="📸 다른 과목 처리",
+                      payload={"value": "next"}),
+            cl.Action(name="ocr_done", label="✅ 모두 완료",
+                      payload={"value": "done"}),
+        ],
+    ).send()
+
+    value = (res or {}).get("payload", {}).get("value")
+    if value == "next":
+        await _ask_for_ocr_image(term)
+    else:
+        await cl.Message(
+            "출석 체크가 완료되었습니다.\n"
+            "모든 과목의 출석 체크가 끝났으면 종강 처리를 진행하세요."
+        ).send()
+        cl.user_session.set("state", "idle")
+        await send_default_actions("ocr")
+
+
+def _extract_course_name(text: str, attendance_sheet_id: str) -> str:
+    """메시지 텍스트에서 출석부 과목 탭명을 추출.
+
+    세션에 저장된 current_ocr_course가 있으면 우선 사용.
+    없으면 출석부 시트 탭명과 COURSE_KEYWORDS 기반으로 매칭.
+    """
+    saved = cl.user_session.get("current_ocr_course", "")
+    if saved:
+        return saved
+
+    if not text:
+        return ""
+
+    from app.services.google_auth import get_sheets_service
+    from app.config import COURSE_KEYWORDS
+
+    svc = get_sheets_service()
+    meta = svc.spreadsheets().get(spreadsheetId=attendance_sheet_id).execute()
+    course_tabs = [
+        s["properties"]["title"]
+        for s in meta.get("sheets", [])
+        if s["properties"]["title"] != "수강생"
+    ]
+
+    # 정확 매칭 우선
+    for tab in course_tabs:
+        if tab in text:
+            return tab
+
+    # 키워드 매칭
+    for kw, full_name in COURSE_KEYWORDS.items():
+        if kw in text and full_name in course_tabs:
+            return full_name
+
+    return ""
+
+
+# ===================================================== 종강 처리 플로우 =====
+
+async def start_graduation_flow(message):
+    """종강 처리 시작 — 회차 확인 → 출석 체크 완료 확인 → 처리 실행"""
+    term = cl.user_session.get("term") or get_current_term()
+    cl.user_session.set("term", term)
+
+    res = await cl.AskActionMessage(
+        content=f"**{term['term_name']}** 종강 처리를 시작할까요?",
+        actions=[
+            cl.Action(name="grad_confirm", label="✅ 맞습니다",
+                      payload={"value": "confirm"}),
+            cl.Action(name="grad_other_term", label="📅 다른 회차에요",
+                      payload={"value": "other"}),
+            cl.Action(name="grad_cancel", label="❌ 취소",
+                      payload={"value": "cancel"}),
+        ],
+    ).send()
+
+    value = (res or {}).get("payload", {}).get("value")
+    if value == "confirm":
+        await _confirm_ocr_done_before_graduation(term)
+    elif value == "other":
+        cl.user_session.set("state", "awaiting_graduation_term_input")
+        await cl.Message(
+            "어떤 회차인지 알려주세요.\n예) 2026-1, 겨울학기, 2026년 겨울"
+        ).send()
+    else:
+        await cl.Message("종강 처리가 취소되었습니다.").send()
+        await send_default_actions()
+
+
+async def _confirm_ocr_done_before_graduation(term: dict):
+    """종강 처리 전 출석 체크 완료 확인"""
+    await _resolve_attendance_sheet_id(term)
+    attendance_sheet_id = cl.user_session.get("attendance_sheet_id")
+
+    sheet_link = (
+        f"[출석부 시트 열기](https://docs.google.com/spreadsheets/d/"
+        f"{attendance_sheet_id})"
+        if attendance_sheet_id else "출석부 시트"
+    )
+
+    res = await cl.AskActionMessage(
+        content=(
+            f"종강 처리 전 아래 사항을 확인해주세요.\n\n"
+            f"1. ✅ 모든 강좌의 출석 체크(사진 → OCR)가 완료되었습니다.\n"
+            f"2. ✅ {sheet_link}에서 과목별 탭의 출석 데이터가 올바르게 "
+            f"입력되었습니다.\n\n"
+            "확인 후 종강 처리를 시작합니다."
+        ),
+        actions=[
+            cl.Action(name="grad_start", label="✅ 확인했습니다, 시작합니다",
+                      payload={"value": "start"}),
+            cl.Action(name="grad_not_ready", label="❌ 아직 출석 체크가 안 됐어요",
+                      payload={"value": "not_ready"}),
+        ],
+    ).send()
+
+    value = (res or {}).get("payload", {}).get("value")
+    if value == "start":
+        await _run_graduation_process(term)
+    else:
+        await cl.Message(
+            "출석 체크를 먼저 완료해주세요.\n"
+            "'✅ 출석 체크' 버튼으로 과목별 출석부 사진을 처리한 뒤 "
+            "종강 처리를 진행하세요."
+        ).send()
+        await send_default_actions()
+
+
+async def _run_graduation_process(term: dict):
+    """종강 처리 실행"""
+    term_id = term["term_id"]
+    attendance_sheet_id = cl.user_session.get("attendance_sheet_id")
+
+    if not attendance_sheet_id:
+        await cl.Message(
+            "출석부 시트를 찾을 수 없습니다.\n"
+            "출석부 생성 및 출석 체크가 완료되었는지 확인해주세요."
+        ).send()
+        await send_default_actions()
+        return
+
+    try:
+        async with cl.Step(name="📊 출석률 집계") as step:
+            from app.chains.graduation import load_attendance_results
+            results = load_attendance_results(attendance_sheet_id)
+            step.output = f"총 **{len(results)}건** (수강생 × 과목) 집계 완료"
+
+        if not results:
+            await cl.Message(
+                "출석 데이터가 없습니다. "
+                "출석 체크(OCR)가 완료되었는지 확인해주세요."
+            ).send()
+            await send_default_actions()
+            return
+
+        async with cl.Step(name="💾 수강기록 저장 + 등급 강등") as step:
+            summary = await run_graduation(term_id, attendance_sheet_id)
+            step.output = (
+                f"수강기록 **{summary['course_records_added']}건** 추가, "
+                f"준회원 강등 **{summary['junior_demoted']}명**"
+                + (f", 정회원 강등 **{summary['full_demoted']}명**"
+                   if summary["full_demoted"] else "")
+            )
+
+        members_link = (
+            f"https://docs.google.com/spreadsheets/d/{MEMBERS_SHEET_ID}"
+        )
+
+        result_msg = (
+            f"## {term['term_name']} 종강 처리 완료\n\n"
+            f"- 수강기록 추가: **{summary['course_records_added']}건**\n"
+            f"- 준회원 → 회원 강등: **{summary['junior_demoted']}명**\n"
+        )
+        if summary["full_demoted"]:
+            result_msg += (
+                f"- 정회원 → 회원 강등: **{summary['full_demoted']}명**\n"
+            )
+        result_msg += f"\n[회원관리 시트 열기]({members_link})"
+
+        await cl.Message(content=result_msg).send()
+        await send_default_actions("graduation")
+
+    except Exception as e:
+        await cl.Message(f"종강 처리 중 오류: {str(e)}").send()
+        await send_default_actions()
+
+
 # ===================================================== LLM 의도 분류 =====
 
 INTENT_LABELS = {
     "payment": "입금 대조",
     "attendance": "출석부 생성",
     "ocr": "출석 체크",
+    "graduation": "종강 처리",
     "plan": "계획서 검토",
 }
 
@@ -804,6 +1205,7 @@ async def classify_intent_llm(text: str) -> dict:
 - payment: 입금 대조, 입금 확인, 입금 처리, 입금 매칭
 - attendance: 출석부 생성, 출석부 만들기, 출석부
 - ocr: 출석 체크, 출석 확인, OCR, 사진으로 출석
+- graduation: 종강 처리, 종강, 학기 마무리, 출석률 계산, 등급 강등
 - plan: 계획서 검토, 강의 계획서, 강의계획서
 - question: 위 작업에 대한 질문이나 설명 요청, 또는 위 어디에도 해당 안 되는 내용. "~이 뭐야?", "~가 뭔가요?", "~는 어떻게 해?", "~를 설명해줘" 처럼 정보를 얻으려는 의도이면 무조건 question으로 분류. 작업을 직접 실행하려는 의도가 명확할 때만 payment/attendance/ocr/plan으로 분류.
 
@@ -883,7 +1285,9 @@ async def _route_to_workflow(intent: str, term_text: str | None):
     elif intent == "attendance":
         await start_attendance_flow(None)
     elif intent == "ocr":
-        await cl.Message("출석 체크 기능은 준비 중입니다.").send()
+        await start_ocr_flow(None)
+    elif intent == "graduation":
+        await start_graduation_flow(None)
     elif intent == "plan":
         await cl.Message("계획서 검토 기능은 준비 중입니다.").send()
 
@@ -899,6 +1303,7 @@ async def send_default_actions(completed: str | None = None):
         ("payment", "💰 입금 대조"),
         ("attendance", "📋 출석부 생성"),
         ("ocr", "✅ 출석 체크"),
+        ("graduation", "🎓 종강 처리"),
         ("plan", "📝 계획서 검토"),
         ("question", "❓ 질문하기"),
     ]
@@ -927,8 +1332,12 @@ async def on_default_attendance(action: cl.Action):
 
 @cl.action_callback("default_ocr")
 async def on_default_ocr(action: cl.Action):
-    await cl.Message("출석 체크 기능은 준비 중입니다.").send()
-    await send_default_actions()
+    await start_ocr_flow(None)
+
+
+@cl.action_callback("default_graduation")
+async def on_default_graduation(action: cl.Action):
+    await start_graduation_flow(None)
 
 
 @cl.action_callback("default_plan")
