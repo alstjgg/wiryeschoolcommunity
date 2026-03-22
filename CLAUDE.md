@@ -117,21 +117,31 @@ if res and res.get("value") == "confirm":
 **주의**: `--accent`에 진한 색을 넣으면 입력창과 유저 메시지 버블이 어두워져 텍스트를 읽을 수 없음. 반드시 밝은 색 유지.
 
 주요 색상 (HEX):
-- Primary: `#7A5234` (따뜻한 테라코타) — 버튼/강조
-- Accent: `#E8D8C4` (라이트 웜 피치) — 입력창/유저 메시지
+- Primary: `#7A5234` (따뜻한 테라코타) — 버튼/강조, 유저 메시지 버블 배경 (CSS 오버라이드)
+- Accent: `#E8D8C4` (라이트 웜 피치) — 입력창 배경 (theme.json `--accent`)
 - Background: `#FAF6EF` (따뜻한 오프화이트)
 - Foreground: `#2C2520` (따뜻한 차콜)
+- Border: `#DED7CA` — Starter/Action 버튼 테두리
+
+**CSS 오버라이드** (`stylesheet.css`에서 theme.json 위에 강제 적용):
+- 유저 메시지 버블: `--accent` 대신 `#7A5234` 배경 + 흰 텍스트 (`div[data-step-type="user_message"] .bg-accent`)
+- Starter 버튼: `#DED7CA` 테두리 + `#FEFCF8` 배경 + 호버 시 `#EAE2D4` 배경 (`#starters button`)
+- Action 버튼: `#DED7CA` 테두리 (`div[data-step-type="assistant_message"] button.border-input`)
+- 다크모드 토글: 숨김 (`#theme-toggle`)
+- Chainlit 기본 로고: 숨김 (`img.logo`), 추후 `public/logo_light.png`로 교체 예정
 
 설정 파일:
 - `public/theme.json` — 전체 색상 팔레트 (HSL), 폰트 설정, Google Fonts URL
-- `public/stylesheet.css` — 타이포그래피 (본문 18px, line-height 1.7)
+- `public/stylesheet.css` — 타이포그래피 + UI 오버라이드 (버튼 테두리, 유저 메시지, 로고, 다크모드 토글)
 - `.chainlit/config.toml` — `custom_css = "/public/stylesheet.css"`, `default_theme = "light"`
 
 ### 타이포그래피
 
 - **폰트**: Noto Sans KR (400/500/700), `theme.json`의 `custom_fonts`로 로딩
 - **본문**: 18px (`1.125rem`), line-height 1.7, letter-spacing 0.01em
-- **버튼**: 16px 최소, font-weight 500
+- **버튼**: 16px 최소, font-weight 500, min-height 48px (55세+ 클릭 타겟)
+- **사이드바**: 16px, line-height 1.6
+- **입력창**: 18px, line-height 1.7 (본문과 동일)
 - **16px 미만 텍스트 금지** (타임스탬프 14px만 예외)
 - **빨간 텍스트 금지** — 색상 대신 아이콘 + Bold로 강조
 
@@ -652,6 +662,8 @@ DATABASE_URL=                   # Railway가 자동 주입 (PostgreSQL 연결 �
 - ~~가입 신청서 키워드 매칭~~ — 연도별 검색, Form Responses 1 탭, 헤더 부분 일치
 
 **📋 백로그:**
+- 첫 화면 로고+타이틀 PNG 이미지 제작 (`public/logo_light.png` → CSS 워크어라운드 제거)
+- Accent 색상(#2B7A6E 틸) 적용 위치 결정 (현재 미사용)
 - 계획서 검토: PDF 파싱 → 오탈자/말투 수정 → 배움숲 멘트 생성
 - Google OAuth 인증 (Workspace 도메인 제한)
 - Chainlit UI 커스터마이징 (chainlit.md 웰컴 화면)
