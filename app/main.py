@@ -179,7 +179,7 @@ async def start_payment_flow_with_term(term: dict):
 
     value = (res or {}).get("payload", {}).get("value")
     if value == "confirm":
-        await _ask_for_applicants_file()
+        await _ask_to_confirm_signup_files(term)
     elif value == "other":
         cl.user_session.set("state", "awaiting_term_input")
         await cl.Message(
@@ -243,6 +243,45 @@ def _get_resume_prompt(state: str) -> str:
     return prompts.get(state, "계속 진행하려면 파일을 업로드해주세요.\n취소하려면 '취소'라고 입력하세요.")
 
 
+async def _ask_to_confirm_signup_files(term: dict):
+    """신청서 파일이 올바른 위치에 있는지 관리자에게 확인"""
+    year = term["year"]
+    res = await cl.AskActionMessage(
+        content=(
+            f"입금 대조 전, **{year}년** 가입 신청서 응답 파일 위치를 확인해주세요.\n\n"
+            f"**확인 위치**:\n"
+            f"- 신규가입 신청서: `03 회원과 강사 > 회원 > 신규가입 신청서/`\n"
+            f"- 정회원가입 신청서: `03 회원과 강사 > 회원 > 정회원가입 신청서/`\n\n"
+            f"신청서가 없거나 이번 회차에 해당 없으면 건너뛰기를 선택하세요."
+        ),
+        actions=[
+            cl.Action(
+                name="signup_ready",
+                label="✅ 확인했습니다",
+                payload={"value": "ready"},
+            ),
+            cl.Action(
+                name="signup_skip",
+                label="⏭️ 해당 없음 / 건너뛰기",
+                payload={"value": "skip"},
+            ),
+            cl.Action(
+                name="signup_cancel",
+                label="❌ 취소",
+                payload={"value": "cancel"},
+            ),
+        ],
+    ).send()
+
+    value = (res or {}).get("payload", {}).get("value")
+    if value in ("ready", "skip"):
+        await _ask_for_applicants_file()
+    else:
+        await cl.Message("입금 대조가 취소되었습니다.").send()
+        cl.user_session.set("state", "idle")
+        await send_default_actions()
+
+
 async def _ask_for_applicants_file():
     """신청자 목록 파일 업로드 요청"""
     term = cl.user_session.get("term")
@@ -279,7 +318,7 @@ async def handle_applicants_file(message: cl.Message):
             step.output = f"수강 신청자 **{len(applicants)}명** 확인 ({len(courses)}개 과목)"
 
         # Step 2-3: Drive에서 신규가입/정회원가입 신청서 자동 로드 (기존 cl.Step 사용)
-        member_records, fullmember_records = await _load_signup_data(term_id)
+        member_records, fullmember_records = await _load_signup_data(str(term["year"]))
 
         # Step 4: 통합 신청서 생성 + Sheets 저장
         async with cl.Step(name="📝 통합 신청서 생성") as step:
@@ -331,7 +370,7 @@ async def handle_applicants_file(message: cl.Message):
         cl.user_session.set("state", "idle")
 
 
-async def _load_signup_data(term_id: str) -> tuple[list[dict], list[dict]]:
+async def _load_signup_data(year: str) -> tuple[list[dict], list[dict]]:
     """Drive에서 신규가입·정회원가입 신청서를 자동 로드.
 
     파일을 못 찾으면 경고만 표시하고 빈 리스트 반환.
@@ -342,7 +381,7 @@ async def _load_signup_data(term_id: str) -> tuple[list[dict], list[dict]]:
 
     # 신규가입 신청서
     async with cl.Step(name="📋 신규가입 신청서 로드") as step:
-        result = load_member_signups_from_drive(term_id)
+        result = load_member_signups_from_drive(year)
         if result["found"] and not result["error"]:
             member_records = result["records"]
             step.output = (
@@ -354,7 +393,7 @@ async def _load_signup_data(term_id: str) -> tuple[list[dict], list[dict]]:
 
     # 정회원가입 신청서
     async with cl.Step(name="📋 정회원가입 신청서 로드") as step:
-        result = load_fullmember_signups_from_drive(term_id)
+        result = load_fullmember_signups_from_drive(year)
         if result["found"] and not result["error"]:
             fullmember_records = result["records"]
             step.output = (

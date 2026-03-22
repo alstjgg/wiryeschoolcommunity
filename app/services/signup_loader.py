@@ -2,23 +2,33 @@
 
 Drive 폴더 탐색 → Sheets 읽기 → 이름ID 생성 → dict 리스트 반환.
 DB에는 쓰지 않음 — 호출자(payment flow)가 통합 신청서 Sheets에 기록.
+
+헤더 매핑: 구글폼 응답 시트의 헤더가 매년 달라질 수 있으므로
+키워드 부분 일치(_get_value_by_keyword)로 필수 컬럼을 추출한다.
 """
 
 import re
 
-from app.config import MEMBER_SIGNUP_FOLDER_ID, FULLMEMBER_SIGNUP_FOLDER_ID
+from app.config import (
+    MEMBER_SIGNUP_FOLDER_ID,
+    FULLMEMBER_SIGNUP_FOLDER_ID,
+    SIGNUP_SHEET_TAB,
+)
 from app.services.google_drive import list_files
 from app.services.google_sheets import read_sheet
 
 
-def _find_signup_sheet(folder_id: str, term_id: str) -> dict | None:
-    """폴더 내에서 파일명에 회차 문자열(예: "2026-2")이 포함된 Spreadsheet를 찾는다."""
+def _find_signup_sheet(folder_id: str, year: str) -> dict | None:
+    """폴더 내에서 파일명에 연도 문자열(예: "2026")이 포함된 Spreadsheet를 찾는다.
+
+    신규가입/정회원 신청서는 연도별로 관리되므로 연도 문자열로 탐색.
+    """
     files = list_files(
         folder_id,
         mime_type="application/vnd.google-apps.spreadsheet",
     )
     for f in files:
-        if term_id in f["name"]:
+        if year in f["name"]:
             return f
     return None
 
@@ -28,44 +38,51 @@ def _extract_phone_digits(raw: str) -> str:
     return re.sub(r"[^0-9]", "", raw)
 
 
-def _calc_term(year: int, month: int) -> tuple[int, str]:
-    """날짜 기반 회차 번호 + term_id 계산"""
-    if month <= 3:
-        term_num = 1
-    elif month <= 6:
-        term_num = 2
-    elif month <= 9:
-        term_num = 3
-    else:
-        term_num = 4
-    return term_num, f"{year}-{term_num}"
+def _get_value_by_keyword(data: dict, keywords: list[str]) -> str:
+    """헤더 키에 keyword가 포함된 컬럼 값을 반환.
+
+    헤더가 "1.이름", "3. 연락처 (01023456789)" 처럼 번호+설명 형태이거나
+    매년 변경될 수 있으므로 정확한 키 매칭 대신 부분 일치를 사용한다.
+    여러 keyword 중 하나라도 포함되면 해당 컬럼의 첫 번째 매칭 값을 반환.
+    """
+    for key in data:
+        for kw in keywords:
+            if kw in key:
+                return (data[key] or "").strip()
+    return ""
 
 
 def _read_sheet_flexible(sheet_id: str) -> list[list[str]]:
-    """시트 읽기 — '시트1' 탭명 시도, 실패 시 범위 없이 재시도"""
-    try:
-        return read_sheet(sheet_id, "시트1!A1:Z5000")
-    except Exception:
+    """시트 읽기 — 구글폼 기본 탭명 우선 시도"""
+    for tab in [SIGNUP_SHEET_TAB, "시트1", "Sheet1"]:
         try:
-            return read_sheet(sheet_id, "A1:Z5000")
+            rows = read_sheet(sheet_id, f"{tab}!A1:Z5000")
+            if rows:
+                return rows
         except Exception:
-            return []
+            continue
+    return []
 
 
-def load_member_signups_from_drive(term_id: str) -> dict:
-    """Drive에서 회원 가입 신청서를 찾아 파싱 결과를 반환.
+def load_member_signups_from_drive(year: str) -> dict:
+    """Drive에서 신규가입 신청서를 찾아 파싱 결과를 반환.
+
+    탐색 기준: 폴더 내 파일명에 year (예: "2026") 포함 여부.
+    탭명: "Form Responses 1" 우선 시도.
+    헤더 매핑: 키워드 부분 일치 (헤더가 매년 바뀔 수 있음).
+    필수 컬럼: 이름, 연락처, 주소, Timestamp.
 
     Returns: {"found": bool, "file_name": str|None, "count": int,
               "records": list[dict], "error": str|None}
     """
-    sheet_file = _find_signup_sheet(MEMBER_SIGNUP_FOLDER_ID, term_id)
+    sheet_file = _find_signup_sheet(MEMBER_SIGNUP_FOLDER_ID, year)
     if not sheet_file:
         return {
             "found": False,
             "file_name": None,
             "count": 0,
             "records": [],
-            "error": f"신규가입 신청서 폴더에서 '{term_id}' 파일을 찾을 수 없습니다.",
+            "error": f"신규가입 신청서 폴더에서 '{year}년' 파일을 찾을 수 없습니다.",
         }
 
     rows = _read_sheet_flexible(sheet_file["id"])
@@ -83,20 +100,17 @@ def load_member_signups_from_drive(term_id: str) -> dict:
     for row in rows[1:]:
         data = dict(zip(header, row + [""] * (len(header) - len(row))))
 
-        # ⚠️ 아래 키 이름은 구글 설문 응답 시트의 실제 열 헤더로 변경하세요
-        name = (data.get("이름") or "").strip()
+        name = _get_value_by_keyword(data, ["이름", "성함"])
         phone = _extract_phone_digits(
-            data.get("전화번호") or data.get("연락처") or ""
+            _get_value_by_keyword(data, ["연락처", "전화번호"])
         )
+        address = _get_value_by_keyword(data, ["주소", "거주"])
+        signup_date = _get_value_by_keyword(data, ["Timestamp", "타임스탬프"])[:10]
+
         if not name or len(phone) < 4:
             continue
 
         name_id = name + phone[-4:]
-        signup_date = (data.get("타임스탬프") or "")[:10] or ""
-
-        from datetime import date
-        today = date.today()
-        _, join_term = _calc_term(today.year, today.month)
 
         records.append({
             "이름ID": name_id,
@@ -104,7 +118,7 @@ def load_member_signups_from_drive(term_id: str) -> dict:
             "유형": "신규가입",
             "과목명": "",
             "전화번호": phone,
-            "주소": (data.get("주소") or "").strip(),
+            "주소": address,
             "신청일": signup_date,
             "시작회차": "",
             "종료회차": "",
@@ -119,20 +133,24 @@ def load_member_signups_from_drive(term_id: str) -> dict:
     }
 
 
-def load_fullmember_signups_from_drive(term_id: str) -> dict:
-    """Drive에서 정회원 가입 신청서를 찾아 파싱 결과를 반환.
+def load_fullmember_signups_from_drive(year: str) -> dict:
+    """Drive에서 정회원가입 신청서를 찾아 파싱 결과를 반환.
+
+    탐색 기준: 폴더 내 파일명에 year (예: "2026") 포함 여부.
+    정회원 가입은 2~4학기(3월 중순~9월 말)에만 가능.
+    종료회차: 항상 다음 해 1학기 (예: 2026년 가입 → 2027-1).
 
     Returns: {"found": bool, "file_name": str|None, "count": int,
               "records": list[dict], "error": str|None}
     """
-    sheet_file = _find_signup_sheet(FULLMEMBER_SIGNUP_FOLDER_ID, term_id)
+    sheet_file = _find_signup_sheet(FULLMEMBER_SIGNUP_FOLDER_ID, year)
     if not sheet_file:
         return {
             "found": False,
             "file_name": None,
             "count": 0,
             "records": [],
-            "error": f"정회원가입 신청서 폴더에서 '{term_id}' 파일을 찾을 수 없습니다.",
+            "error": f"정회원가입 신청서 폴더에서 '{year}년' 파일을 찾을 수 없습니다.",
         }
 
     rows = _read_sheet_flexible(sheet_file["id"])
@@ -150,27 +168,18 @@ def load_fullmember_signups_from_drive(term_id: str) -> dict:
     for row in rows[1:]:
         data = dict(zip(header, row + [""] * (len(header) - len(row))))
 
-        name = (data.get("이름") or "").strip()
+        name = _get_value_by_keyword(data, ["이름", "성함"])
         phone = _extract_phone_digits(
-            data.get("전화번호") or data.get("연락처") or ""
+            _get_value_by_keyword(data, ["연락처", "전화번호"])
         )
+        address = _get_value_by_keyword(data, ["주소", "거주"])
+        signup_date = _get_value_by_keyword(data, ["Timestamp", "타임스탬프"])[:10]
+
         if not name or len(phone) < 4:
             continue
 
         name_id = name + phone[-4:]
-        signup_date = (data.get("타임스탬프") or "")[:10] or ""
-
-        from datetime import date
-        today = date.today()
-        year = today.year
-        term_num, join_term = _calc_term(year, today.month)
-
-        start_term = join_term
-        # 정회원 사이클: yy-2(봄) ~ (yy+1)-1(겨울)
-        if term_num == 1:
-            end_term = f"{year}-1"
-        else:
-            end_term = f"{year + 1}-1"
+        year_int = int(year)
 
         records.append({
             "이름ID": name_id,
@@ -178,10 +187,10 @@ def load_fullmember_signups_from_drive(term_id: str) -> dict:
             "유형": "정회원",
             "과목명": "",
             "전화번호": phone,
-            "주소": (data.get("주소") or "").strip(),
+            "주소": address,
             "신청일": signup_date,
-            "시작회차": start_term,
-            "종료회차": end_term,
+            "시작회차": f"{year_int}-2",
+            "종료회차": f"{year_int + 1}-1",
         })
 
     return {
