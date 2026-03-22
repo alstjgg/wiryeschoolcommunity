@@ -123,6 +123,17 @@ async def on_message(message: cl.Message):
     if session_state == "awaiting_term_input":
         await handle_term_input(message)
         return
+    if session_state == "awaiting_attendance_term_input":
+        term = parse_term_input(message.content)
+        if term:
+            cl.user_session.set("term", term)
+            cl.user_session.set("state", "idle")
+            await _do_attendance_preflight(term)
+        else:
+            await cl.Message(
+                "회차를 인식하지 못했어요. 다시 입력해주세요.\n예) 2026-1, 겨울학기"
+            ).send()
+        return
 
     # Starter 버튼 메시지 라우팅
     if message.content == "입금 대조를 시작합니다.":
@@ -574,31 +585,61 @@ async def write_payment_results(
 # ===================================================== 출석부 생성 플로우 =====
 
 async def start_attendance_flow(message: cl.Message | None):
-    """출석부 생성 — Starter 버튼 또는 워크플로우 라우팅에서 진입"""
-    term = cl.user_session.get("term") or get_current_term()
-    cl.user_session.set("term", term)
+    """출석부 생성 진입 — 세션에 term이 없으면 회차 먼저 확인"""
+    term = cl.user_session.get("term")
 
+    if not term:
+        # 별도 세션 진입: 회차 추측 → 확인
+        term = get_current_term()
+        cl.user_session.set("term", term)
+        res = await cl.AskActionMessage(
+            content=f"**{term['term_name']}** 출석부를 생성할까요?",
+            actions=[
+                cl.Action(name="att_confirm_term", label="✅ 맞습니다",
+                          payload={"value": "confirm"}),
+                cl.Action(name="att_other_term", label="📅 다른 회차에요",
+                          payload={"value": "other"}),
+                cl.Action(name="att_cancel_term", label="❌ 취소",
+                          payload={"value": "cancel"}),
+            ],
+        ).send()
+        value = (res or {}).get("payload", {}).get("value")
+        if value == "confirm":
+            await _do_attendance_preflight(term)
+        elif value == "other":
+            cl.user_session.set("state", "awaiting_attendance_term_input")
+            await cl.Message(
+                "어떤 회차인지 알려주세요.\n예) 2026-1, 2026년 겨울, 겨울학기"
+            ).send()
+        else:
+            await cl.Message("출석부 생성이 취소되었습니다.").send()
+            await send_default_actions()
+    else:
+        # 동일 세션(입금 대조 직후): 회차 확인 없이 바로 진행
+        await _do_attendance_preflight(term)
+
+
+async def _do_attendance_preflight(term: dict):
+    """출석부 생성 전 사전 확인 — 3단계 완료 확인 + 회차 폴더 탐색"""
     msg = cl.Message(content=f"**{term['term_name']}** 출석부 생성을 준비하는 중...")
     await msg.send()
 
     try:
-        # 회차 폴더 탐색
         term_folder_id = cl.user_session.get("term_folder_id")
         if not term_folder_id:
             term_folder = find_term_folder(term["term_id"])
             if not term_folder:
                 msg.content = (
                     f"Drive에서 **{term['term_name']}** 폴더를 찾을 수 없습니다.\n"
-                    f"학사운영(연도별) → {term['year']} → {term['term_id']}... 폴더가 있는지 확인해주세요."
+                    f"학사운영 → {term['year']} → 회차 폴더가 있는지 확인해주세요."
                 )
                 await msg.update()
+                await send_default_actions()
                 return
             term_folder_id = term_folder["id"]
             cl.user_session.set("term_folder_id", term_folder_id)
 
-        # 신청서 시트 확인
         app_sheet_id = cl.user_session.get("applications_sheet_id")
-
         if app_sheet_id:
             confirm_content = (
                 "출석부 생성 전 아래 3단계가 완료되었는지 확인해주세요.\n\n"
@@ -620,16 +661,10 @@ async def start_attendance_flow(message: cl.Message | None):
         res = await cl.AskActionMessage(
             content=confirm_content,
             actions=[
-                cl.Action(
-                    name="confirm_attendance",
-                    label="✅ 등록 완료, 출석부 생성",
-                    payload={"value": "confirm"},
-                ),
-                cl.Action(
-                    name="cancel_attendance",
-                    label="❌ 아직 안 했어요",
-                    payload={"value": "cancel"},
-                ),
+                cl.Action(name="confirm_attendance", label="✅ 등록 완료, 출석부 생성",
+                          payload={"value": "confirm"}),
+                cl.Action(name="cancel_attendance", label="❌ 아직 안 했어요",
+                          payload={"value": "cancel"}),
             ],
         ).send()
 
@@ -641,18 +676,15 @@ async def start_attendance_flow(message: cl.Message | None):
                     "아직 완료되지 않은 단계가 있다면 아래 순서로 진행해주세요.\n\n"
                     "**1단계** — 신청서 시트에서 입금현황 확인\n"
                     f"→ [신청서 시트 열기](https://docs.google.com/spreadsheets/d/{app_sheet_id})\n\n"
-                    "**2단계** — 배움숲 포탈에서 수강 등록 처리\n"
-                    "→ 배움숲 포탈 접속 → 수강신청관리 → 등록 처리\n\n"
-                    "**3단계** — 신청서 시트로 돌아와 등록상태 열의 체크박스 클릭\n\n"
-                    "3단계까지 완료되면 '📋 출석부 생성' 버튼을 다시 눌러주세요."
+                    "**2단계** — 배움숲 포탈 접속 → 수강신청관리 → 등록 처리\n\n"
+                    "**3단계** — 신청서 시트로 돌아와 등록상태 열 체크박스 클릭\n\n"
+                    "완료 후 '📋 출석부 생성' 버튼을 다시 눌러주세요."
                 )
             else:
                 guide = (
-                    "아직 완료되지 않은 단계가 있다면 아래 순서로 진행해주세요.\n\n"
-                    "**1단계** — 입금 대조를 먼저 진행해주세요.\n"
-                    "**2단계** — 배움숲 포탈에서 수강 등록 처리\n"
-                    "**3단계** — 신청서 시트의 등록상태 열 체크박스 클릭\n\n"
-                    "완료 후 '📋 출석부 생성' 버튼을 다시 눌러주세요."
+                    "입금 대조를 먼저 진행해주세요.\n"
+                    "입금 대조 → 배움숲 등록 → 등록상태 체크박스 클릭 후\n"
+                    "'📋 출석부 생성' 버튼을 눌러주세요."
                 )
             await cl.Message(guide).send()
             await send_default_actions()
@@ -664,58 +696,80 @@ async def start_attendance_flow(message: cl.Message | None):
 
 
 async def do_create_attendance():
-    """출석부 생성 실행"""
+    """출석부 생성 실행 — 수강생 확인 → 시트 생성 → PDF 생성 → 최종 안내"""
     term = cl.user_session.get("term") or get_current_term()
     term_folder_id = cl.user_session.get("term_folder_id")
     app_sheet_id = cl.user_session.get("applications_sheet_id")
 
-    if not term_folder_id:
+    if not term_folder_id or not app_sheet_id:
         await cl.Message(
-            "회차 폴더 정보를 찾을 수 없습니다. 입금 대조를 먼저 완료해주세요."
+            "회차 폴더 또는 신청서 시트 정보가 없습니다. 입금 대조를 먼저 완료해주세요."
         ).send()
-        return
-
-    if not app_sheet_id:
-        await cl.Message(
-            "신청서 시트 정보를 찾을 수 없습니다. 입금 대조를 먼저 완료해주세요."
-        ).send()
+        await send_default_actions()
         return
 
     try:
+        # Step 1: 등록 수강생 확인
         async with cl.Step(name="📊 등록 수강생 확인") as step:
             from app.chains.attendance import load_registered_students
             registered = load_registered_students(app_sheet_id)
-            courses = set(s.get("과목명", "") for s in registered if s.get("과목명"))
+            course_set = {s.get("과목명", "") for s in registered if s.get("과목명")}
             step.output = (
-                f"등록상태 체크된 수강생 **{len(registered)}명** ({len(courses)}개 과목)"
+                f"등록상태 체크된 수강생 **{len(registered)}명** ({len(course_set)}개 과목)"
             )
 
         if not registered:
             await cl.Message(
-                "등록상태가 체크된 수강생이 없습니다. "
-                "배움숲에서 등록 처리 후 신청서 시트에 등록상태를 체크해주세요."
+                "등록상태가 체크된 수강생이 없습니다.\n"
+                "배움숲 등록 처리 후 신청서 시트에 등록상태를 체크해주세요."
             ).send()
-            cl.user_session.set("state", "idle")
+            await send_default_actions()
             return
 
-        async with cl.Step(name="📋 출석부 시트 생성") as step:
+        # 중간 안내: 과목수 / 수강생수
+        await cl.Message(
+            f"**{term['term_name']}**에 총 **{len(course_set)}개** 강의를 확인했습니다. "
+            f"수강생은 총 **{len(registered)}명**입니다.\n\n"
+            "출석부 시트와 인쇄용 PDF를 생성합니다..."
+        ).send()
+
+        # Step 2: 출석부 시트 + PDF 생성
+        async with cl.Step(name="📋 출석부 생성") as step:
             result = await create_attendance_sheet(
                 term["term_id"], term_folder_id, app_sheet_id
             )
+            pdf_count = sum(1 for v in result["pdf_urls"].values() if v)
             step.output = (
-                f"과목별 시트탭 **{len(result['courses'])}개** 생성, "
-                f"수강생 **{result['total_students']}명**, 출석률 수식 삽입"
+                f"수강생 탭 + 과목별 탭 **{len(result['courses'])}개** 생성, "
+                f"PDF **{pdf_count}개** 업로드 완료"
             )
+            cl.user_session.set("attendance_sheet_id", result["spreadsheet_id"])
+
+        # 최종 안내
+        pdf_lines = []
+        for course in result["courses"]:
+            url = result["pdf_urls"].get(course)
+            if url:
+                pdf_lines.append(f"  - [{course}]({url})")
+            else:
+                pdf_lines.append(f"  - {course} (PDF 생성 실패)")
+
+        pdf_section = "\n\n**과목별 인쇄용 PDF**:\n" + "\n".join(pdf_lines)
 
         await cl.Message(
             content=(
-                f"## 출석부 생성 완료\n\n"
-                f"- 과목 수: {len(result['courses'])}개\n"
-                f"- 총 수강생: {result['total_students']}명\n"
-                f"- 과목: {', '.join(result['courses'])}\n\n"
-                f"[출석부 열기]({result['spreadsheet_url']})"
+                f"[{term['term_name']} 출석부 폴더]({result['attendance_folder_url']})에 "
+                f"과목별 출석부를 생성했습니다.\n\n"
+                f"- 과목 수: **{len(result['courses'])}개**\n"
+                f"- 총 수강생: **{result['total_students']}명**\n\n"
+                f"[출석부 시트 열기]({result['spreadsheet_url']})"
+                f"{pdf_section}\n\n"
+                "과목별 PDF를 출력하여 강사에게 전달해주세요.\n"
+                "수강생들은 매 강의 시 해당 회차 칸에 사인하며 출석을 확인합니다.\n"
+                "종강 후 출석 체크(사진 촬영 → OCR)를 진행해주세요."
             )
         ).send()
+
         await send_default_actions("attendance")
 
     except Exception as e:

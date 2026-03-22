@@ -14,6 +14,9 @@ xlrd==2.0.1
 # HTML parsing (배움숲 신청자 목록)
 beautifulsoup4==4.12.3
 
+# PDF generation (출석부 인쇄용)
+reportlab==4.2.5
+
 # Utilities
 python-dotenv==1.1.0
 
