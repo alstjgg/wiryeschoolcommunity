@@ -309,7 +309,7 @@ async def handle_applicants_file(message: cl.Message):
 
     try:
         # Step 1: 신청자 목록 파싱
-        async with cl.Step(name="📊 신청자 목록 분석") as step:
+        async with cl.Step(name="📊 신청자 목록 분석", type="tool") as step:
             with open(file_element.path, "rb") as f:
                 file_bytes = f.read()
             applicants = parse_applicant_list(file_bytes)
@@ -328,7 +328,7 @@ async def handle_applicants_file(message: cl.Message):
         fullmember_records = cl.user_session.get("fullmember_records", [])
 
         # Step 3: 통합 신청서 생성 + Sheets 저장
-        async with cl.Step(name="📝 통합 신청서 생성") as step:
+        async with cl.Step(name="📝 통합 신청서 생성", type="tool") as step:
             applications = build_applications(
                 applicants, member_records, fullmember_records, term_id=term_id,
             )
@@ -391,7 +391,7 @@ async def _load_signup_data(year: str) -> tuple[list[dict], list[dict]]:
     fullmember_records = []
 
     # 신규가입 신청서
-    async with cl.Step(name="📋 신규가입 신청서 로드") as step:
+    async with cl.Step(name="📋 신규가입 신청서 로드", type="tool") as step:
         result = load_member_signups_from_drive(year)
         if result["found"] and not result["error"]:
             member_records = result["records"]
@@ -403,7 +403,7 @@ async def _load_signup_data(year: str) -> tuple[list[dict], list[dict]]:
             step.output = f"⚠️ {result['error']} (입금 대조는 계속 진행합니다)"
 
     # 정회원가입 신청서
-    async with cl.Step(name="📋 정회원가입 신청서 로드") as step:
+    async with cl.Step(name="📋 정회원가입 신청서 로드", type="tool") as step:
         result = load_fullmember_signups_from_drive(year)
         if result["found"] and not result["error"]:
             fullmember_records = result["records"]
@@ -423,7 +423,7 @@ async def handle_payment_file(message: cl.Message):
 
     try:
         # Step 1: 입금내역 파싱
-        async with cl.Step(name="💰 입금내역 분석") as step:
+        async with cl.Step(name="💰 입금내역 분석", type="tool") as step:
             with open(file_element.path, "rb") as f:
                 file_bytes = f.read()
             transactions = parse_bank_statement(file_bytes)
@@ -468,7 +468,7 @@ async def handle_payment_file(message: cl.Message):
                 logger.warning("deposits INSERT failed (non-critical): %s", e)
 
         # Step 2: 회원 정보 로드 + 면제 처리 (정회원 + 강사/사무처)
-        async with cl.Step(name="👥 회원 정보 로드") as step:
+        async with cl.Step(name="👥 회원 정보 로드", type="tool") as step:
             members = await load_members_from_sheet()
             exception_ids = get_exception_ids(term_id) if term_id else set()
             exempted = apply_exemptions(applications, members, exception_ids)
@@ -483,7 +483,7 @@ async def handle_payment_file(message: cl.Message):
             step.output = ", ".join(parts)
 
         # Step 3: 규칙 기반 매칭
-        async with cl.Step(name="🔍 규칙 기반 매칭") as step:
+        async with cl.Step(name="🔍 규칙 기반 매칭", type="tool") as step:
             all_results, unmatched = run_code_matching(transactions, students)
             code_matched = sum(1 for r in all_results if r["상태"] == "✅정상")
             step.output = f"✅ {code_matched}건 매칭 / 🔶 {len(unmatched)}건 미매칭"
@@ -491,7 +491,7 @@ async def handle_payment_file(message: cl.Message):
         # Step 4: LLM 매칭 (미매칭 건이 있을 때만)
         llm_unmatched = [r for r in unmatched if r["상태"] != "⏭️스킵"]
         if llm_unmatched:
-            async with cl.Step(name="🤖 AI 매칭") as step:
+            async with cl.Step(name="🤖 AI 매칭", type="tool") as step:
                 await run_llm_matching(llm_unmatched, students)
                 llm_resolved = sum(
                     1 for r in llm_unmatched if r["상태"] != "🔶확인필요"
@@ -534,7 +534,7 @@ async def handle_payment_file(message: cl.Message):
                 app.setdefault("processed_at", now)
 
         # Step 5: 등급 전환 cascade (신규가입 → 정회원 → 수강)
-        async with cl.Step(name="🔄 등급 전환") as step:
+        async with cl.Step(name="🔄 등급 전환", type="tool") as step:
             grade_changes = apply_grade_cascade(
                 applications, members, term_id, exception_ids,
             )
@@ -600,7 +600,7 @@ async def write_payment_results(
         applications = cl.user_session.get("applications", [])
         members = cl.user_session.get("members", [])
 
-        async with cl.Step(name="💾 신청서 업데이트") as step:
+        async with cl.Step(name="💾 신청서 업데이트", type="tool") as step:
             if applications:
                 term_id = (cl.user_session.get("term") or {}).get("term_id", "")
                 await update_applications_sheet(
@@ -898,7 +898,7 @@ async def do_create_attendance():
 
     try:
         # Step 1: 등록 수강생 확인
-        async with cl.Step(name="📊 등록 수강생 확인") as step:
+        async with cl.Step(name="📊 등록 수강생 확인", type="tool") as step:
             from app.chains.attendance import load_registered_students
             att_term_id = (cl.user_session.get("term") or {}).get("term_id", "")
             registered = await load_registered_students(
@@ -925,7 +925,7 @@ async def do_create_attendance():
         ).send()
 
         # Step 2: 출석부 시트 + PDF 생성
-        async with cl.Step(name="📋 출석부 생성") as step:
+        async with cl.Step(name="📋 출석부 생성", type="tool") as step:
             result = await create_attendance_sheet(
                 term["term_id"], term_folder_id, app_sheet_id
             )
@@ -1073,7 +1073,7 @@ async def handle_ocr_image(message: cl.Message):
         return  # 상태 유지 — 다시 사진 업로드 요청
 
     try:
-        async with cl.Step(name="📸 출석부 이미지 분석") as step:
+        async with cl.Step(name="📸 출석부 이미지 분석", type="tool") as step:
             with open(file_element.path, "rb") as f:
                 image_bytes = f.read()
             ocr_term_id = (cl.user_session.get("term") or {}).get("term_id", "")
@@ -1089,7 +1089,7 @@ async def handle_ocr_image(message: cl.Message):
                 return
             step.output = f"**{course_name}** 수강생 **{len(students)}명** 확인"
 
-        async with cl.Step(name="🤖 출석 인식") as step:
+        async with cl.Step(name="🤖 출석 인식", type="tool") as step:
             ocr_result = await process_attendance_image(
                 image_bytes, course_name, students
             )
@@ -1147,7 +1147,7 @@ async def on_ocr_apply(action: cl.Action):
         await _ask_for_ocr_image(term)
         return
 
-    async with cl.Step(name="💾 출석부 시트 반영") as step:
+    async with cl.Step(name="💾 출석부 시트 반영", type="tool") as step:
         updated = await write_attendance_to_sheet(
             attendance_sheet_id, course_name,
             ocr_result["results"], students,
@@ -1358,7 +1358,7 @@ async def _run_graduation_process(term: dict):
         return
 
     try:
-        async with cl.Step(name="📊 출석률 집계") as step:
+        async with cl.Step(name="📊 출석률 집계", type="tool") as step:
             from app.chains.graduation import load_attendance_results
             grad_term_id = (cl.user_session.get("term") or {}).get("term_id", "")
             results = await load_attendance_results(
@@ -1374,7 +1374,7 @@ async def _run_graduation_process(term: dict):
             await send_default_actions()
             return
 
-        async with cl.Step(name="💾 수강기록 저장 + 등급 강등") as step:
+        async with cl.Step(name="💾 수강기록 저장 + 등급 강등", type="tool") as step:
             summary = await run_graduation(term_id, attendance_sheet_id)
             step.output = (
                 f"수강기록 **{summary['course_records_added']}건** 추가, "

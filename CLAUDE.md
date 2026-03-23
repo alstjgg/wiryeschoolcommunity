@@ -72,15 +72,15 @@ else:
 대상 사용자(55세+, 비개발자)를 위한 Chainlit 기능 활용 방침.
 
 ### Step — 중간 진행 상황 공유
-복잡한 작업에서 각 단계를 관리자에게 시각적으로 보여줌. "지금 뭘 하고 있는지" 피드백이 신뢰 구축에 핵심.
+복잡한 작업에서 각 단계를 관리자에게 시각적으로 보여줌. "지금 뭘 하고 있는지" 피드백이 신뢰 구축에 핵심. `cot = "tool_call"` 설정으로 `type="tool"` Step만 UI에 표시됨 — **반드시 `type="tool"` 지정**.
 ```python
-@cl.step(name="📊 데이터 읽기")
-async def read_data():
+async with cl.Step(name="📊 데이터 읽기", type="tool") as step:
     ...  # 관리자에게 "수강생 시트를 읽고 있어요..." 표시
+    step.output = "수강생 **85명** 로드 완료"
 
-@cl.step(name="🔍 입금 매칭 중")
-async def match_payments():
+async with cl.Step(name="🔍 입금 매칭 중", type="tool") as step:
     ...  # "85건 중 78건 매칭 완료..." 중간 결과 표시
+    step.output = "✅ 78건 매칭 / 🔶 7건 미매칭"
 ```
 
 ### Action — 사용자 선택지 제공 (non-blocking)
