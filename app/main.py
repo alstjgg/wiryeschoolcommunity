@@ -768,84 +768,114 @@ async def _do_attendance_preflight(term: dict):
 
 
 async def _check_processing_gate(term: dict, app_sheet_id: str | None) -> bool:
-    """처리상태 gate — 미처리 건이 있으면 출석부 생성을 차단.
+    """처리상태 gate — 신청기록 + 미확인입금 양쪽의 미처리 건이 있으면 출석부 생성 차단.
 
-    신청기록의 처리상태가 NULL 또는 보류인 건이 있으면 차단.
-    DB 모드: 회원관리 파일(MEMBERS_SHEET_ID)의 '신청기록' 탭에서 읽기 + term_id 필터.
-    Sheets 모드: 회차별 '신청서' 탭에서 읽기.
+    DB 모드: 회원관리 파일(MEMBERS_SHEET_ID)의 신청기록/미확인입금 탭 + term_id 필터.
+    Sheets 모드: 회차별 신청서 탭 (미확인입금은 DB 모드 전용).
     Returns: True이면 진행 가능, False이면 차단됨 (메시지 표시 완료).
     """
-    # TODO: 미확인입금(deposits) 시트 체크 추가 — deposits 테이블 활용 시 구현
-    # 현재는 신청기록(applications)의 처리상태만 체크
-
-    from app.config import USE_DB_SOT, MEMBERS_SHEET_ID
+    from app.config import (
+        USE_DB_SOT, MEMBERS_SHEET_ID, APPLICATIONS_TAB, UNMATCHED_DEPOSITS_TAB,
+    )
     term_id = term.get("term_id", "")
 
-    # DB 모드: 회원관리 파일의 '신청기록' 탭, Sheets 모드: 회차별 '신청서' 탭
+    def _read_unprocessed(sid: str, tab: str, col_range: str) -> list[dict]:
+        """시트 탭에서 처리상태가 미입력/보류인 행만 반환."""
+        result = []
+        if not sid:
+            return result
+        rows = read_sheet(sid, f"{tab}!{col_range}")
+        if not rows or len(rows) < 2:
+            return result
+        header = rows[0]
+        for row in rows[1:]:
+            data = dict(zip(header, row + [""] * (len(header) - len(row))))
+            if term_id and data.get("회차", "").strip() != term_id:
+                continue
+            status = data.get("처리상태", "").strip()
+            if not status or status == "보류":
+                result.append(data)
+        return result
+
     if USE_DB_SOT:
-        sheet_id = MEMBERS_SHEET_ID
-        tab = "신청기록"
+        apps_sheet_id = MEMBERS_SHEET_ID
+        apps_tab = APPLICATIONS_TAB
     else:
-        sheet_id = app_sheet_id
-        tab = "신청서"
+        apps_sheet_id = app_sheet_id
+        apps_tab = "신청서"
 
-    unprocessed_apps = []
-    if sheet_id:
-        rows = read_sheet(sheet_id, f"{tab}!A1:L5000")
-        if rows and len(rows) >= 2:
-            header = rows[0]
-            for row in rows[1:]:
-                data = dict(zip(header, row + [""] * (len(header) - len(row))))
-                # DB 모드: 전 회차 누적이므로 현재 회차만 필터
-                if USE_DB_SOT and term_id and data.get("회차", "").strip() != term_id:
-                    continue
-                처리상태 = data.get("처리상태", "").strip()
-                if not 처리상태 or 처리상태 == "보류":
-                    unprocessed_apps.append(data)
-
-    if not unprocessed_apps:
-        return True  # gate 통과
-
-    # 차단: 미처리 건 상세 안내
-    app_lines = []
-    for a in unprocessed_apps[:5]:
-        name = a.get("이름", "?")
-        course = a.get("과목명", "")
-        status = a.get("입금현황", "")
-        처리상태 = a.get("처리상태", "").strip() or "미입력"
-        label = f"{name}({course})" if course else name
-        app_lines.append(f"  - {label} — 입금현황: {status}, 처리상태: {처리상태}")
-    if len(unprocessed_apps) > 5:
-        app_lines.append(f"  - ... 외 {len(unprocessed_apps) - 5}건")
-
-    sheet_link = (
-        f"\n\n[신청기록 시트 열기](https://docs.google.com/spreadsheets/d/{sheet_id})"
-        if sheet_id else ""
+    unprocessed_apps = _read_unprocessed(apps_sheet_id, apps_tab, "A1:L5000")
+    unprocessed_deposits = (
+        _read_unprocessed(MEMBERS_SHEET_ID, UNMATCHED_DEPOSITS_TAB, "A1:G5000")
+        if USE_DB_SOT else []
     )
 
-    msg_content = (
-        f"**{term.get('term_name', '')}** 출석부 생성을 위해 처리가 필요한 건이 있습니다.\n\n"
-        f"**신청기록 미처리: {len(unprocessed_apps)}건**\n"
-        + "\n".join(app_lines)
-        + f"\n\n모든 건의 처리상태를 입력해주세요 (등록완료/환불완료/취소완료).{sheet_link}"
-    )
+    while True:
+        if not unprocessed_apps and not unprocessed_deposits:
+            return True
 
-    res = await cl.AskActionMessage(
-        content=msg_content,
-        actions=[
-            cl.Action(name="recheck_gate", label="🔄 다시 확인",
-                      payload={"value": "recheck"}),
-            cl.Action(name="cancel_gate", label="❌ 취소",
-                      payload={"value": "cancel"}),
-        ],
-    ).send()
+        sections = []
+        if unprocessed_apps:
+            lines = []
+            for a in unprocessed_apps[:5]:
+                name = a.get("이름", "?")
+                course = a.get("과목명", "")
+                label = f"{name}({course})" if course else name
+                ps = a.get("처리상태", "").strip() or "미입력"
+                lines.append(f"  - {label} — 입금현황: {a.get('입금현황', '')}, 처리상태: {ps}")
+            if len(unprocessed_apps) > 5:
+                lines.append(f"  - ... 외 {len(unprocessed_apps) - 5}건")
+            sections.append(
+                f"**신청기록 미처리: {len(unprocessed_apps)}건**\n"
+                + "\n".join(lines)
+                + "\n  → 신청기록 시트에서 처리상태를 입력해주세요"
+            )
 
-    if res and res.get("payload", {}).get("value") == "recheck":
-        # 재귀적으로 다시 확인
-        return await _check_processing_gate(term, app_sheet_id)
+        if unprocessed_deposits:
+            lines = []
+            for d in unprocessed_deposits[:5]:
+                ps = d.get("처리상태", "").strip() or "미입력"
+                lines.append(f"  - 입금자 {d.get('입금자명', '?')} / {d.get('입금액', '')}원 — 처리상태: {ps}")
+            if len(unprocessed_deposits) > 5:
+                lines.append(f"  - ... 외 {len(unprocessed_deposits) - 5}건")
+            sections.append(
+                f"**미확인입금 미처리: {len(unprocessed_deposits)}건**\n"
+                + "\n".join(lines)
+                + "\n  → 미확인입금 시트에서 처리상태를 입력해주세요"
+            )
 
-    await send_default_actions()
-    return False
+        link_id = MEMBERS_SHEET_ID if USE_DB_SOT else apps_sheet_id
+        sheet_link = (
+            f"\n\n[회원관리 시트 열기](https://docs.google.com/spreadsheets/d/{link_id})"
+            if link_id else ""
+        )
+
+        msg_content = (
+            f"**{term.get('term_name', '')}** 출석부 생성을 위해 처리가 필요한 건이 있습니다.\n\n"
+            + "\n\n".join(sections)
+            + f"\n\n모든 건의 처리상태를 입력해주세요 (등록완료/환불완료/취소완료).{sheet_link}"
+        )
+
+        res = await cl.AskActionMessage(
+            content=msg_content,
+            actions=[
+                cl.Action(name="recheck_gate", label="🔄 다시 확인",
+                          payload={"value": "recheck"}),
+                cl.Action(name="cancel_gate", label="❌ 취소",
+                          payload={"value": "cancel"}),
+            ],
+        ).send()
+
+        if res and res.get("payload", {}).get("value") == "recheck":
+            unprocessed_apps = _read_unprocessed(apps_sheet_id, apps_tab, "A1:L5000")
+            unprocessed_deposits = (
+                _read_unprocessed(MEMBERS_SHEET_ID, UNMATCHED_DEPOSITS_TAB, "A1:G5000")
+                if USE_DB_SOT else []
+            )
+            continue
+
+        await send_default_actions()
+        return False
 
 
 async def do_create_attendance():

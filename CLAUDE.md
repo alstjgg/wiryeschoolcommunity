@@ -471,7 +471,7 @@ Sync-2 (n8n/sync_webhook.json): 웹훅 즉시 push — 챗봇이 DB 쓰기 후 n
 13. **Agent**: 숫자 요약 (✅ 78건 🔶 5건 ...) + 미확인입금 안내 + 시트 링크 + "처리상태를 입력해주세요" + 기본 Action 버튼 7개 (`send_default_actions`)
 14. **관리자**: 신청기록/미확인입금 시트에서 입금현황 확인 → 배움숲 포탈에서 수강 등록 → 처리상태 '등록완료' 입력
 15. **관리자**: '출석부 생성' 클릭
-16. **Agent**: 처리상태 gate check (NULL/보류 건이 있으면 차단 + 상세 안내) → 관리자 확인
+16. **Agent**: 처리상태 gate check (신청기록 + 미확인입금 양쪽에서 NULL/보류 건이 있으면 차단 + 상세 안내) → 관리자 확인
 17. **Agent**: 신청기록에서 처리상태='등록완료'인 수강생만 → 출석부 생성 (과목별 필터 자동 설정) → 기본 Action 버튼
 
 ### 입금 매칭 로직
@@ -723,7 +723,7 @@ DATABASE_URL=                   # Railway가 자동 주입 (PostgreSQL 연결 �
 - 신청서 upsert — 기존 행 보존, 새 key만 추가
 - 등급 전환 cascade (`apply_grade_cascade`) — 입금 대조 시 자동 실행, idempotent
 - 입금내역 원본 저장 + 매칭 추적 (`deposits` 테이블) — `match_status`/`matched_name_ids` 업데이트, 미확인입금 시트 연동
-- 출석부 생성 처리상태 gate — 미처리 건 차단 + 상세 안내 (DB 모드: `MEMBERS_SHEET_ID`/`신청기록` 탭)
+- 출석부 생성 처리상태 gate — 신청기록 + 미확인입금 양쪽 미처리 건 차단 + 상세 안내 (DB 모드: `MEMBERS_SHEET_ID`의 `신청기록`·`미확인입금` 탭)
 - 신청기록 통합 — DB 모드에서 회차별 "신청서" 파일 제거, 회원관리 파일 `신청기록` 탭에 전 회차 통합
 - 피드백 수집 — Chainlit thumbs up/down → PostgreSQL feedbacks 테이블
 - Starter 버튼 정비 — 작업 순서 정렬 (7개), CSS min-width/flex 레이아웃

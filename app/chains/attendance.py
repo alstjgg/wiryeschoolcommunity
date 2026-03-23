@@ -65,11 +65,11 @@ def _load_registered_from_sheets(
     DB 모드: 회원관리 파일(MEMBERS_SHEET_ID)의 '신청기록' 탭에서 읽기 + term_id 필터.
     Sheets 모드: 회차별 '신청서' 탭에서 읽기.
     """
-    from app.config import MEMBERS_SHEET_ID
+    from app.config import MEMBERS_SHEET_ID, APPLICATIONS_TAB
 
     if USE_DB_SOT:
         sheet_id = MEMBERS_SHEET_ID
-        tab = "신청기록"
+        tab = APPLICATIONS_TAB
     else:
         sheet_id = applications_sheet_id
         tab = "신청서"
@@ -100,14 +100,14 @@ async def _load_registered_from_db(
     DB 모드: 회원관리 파일(MEMBERS_SHEET_ID)의 '신청기록' 탭에서 처리상태 읽기.
     """
     from app.services import db
-    from app.config import MEMBERS_SHEET_ID
+    from app.config import MEMBERS_SHEET_ID, APPLICATIONS_TAB
 
     apps = await db.load_applications(term_id)
 
     # Sheets에서 처리상태 컬럼만 읽기
     if USE_DB_SOT:
         sheet_id = MEMBERS_SHEET_ID
-        tab = "신청기록"
+        tab = APPLICATIONS_TAB
     else:
         sheet_id = applications_sheet_id
         tab = "신청서"

@@ -43,15 +43,17 @@ TERM_SEASONS = {1: "겨울", 2: "봄", 3: "여름", 4: "가을"}
 ROOT_FOLDER_ID = "0AANInBeWsB7dUk9PVA"
 OPERATIONS_FOLDER_ID = "1WuqNFt-g5qhnY1nMk0a8dsowZHKQVRMm"  # 02 학사운영
 MEMBERS_FOLDER_ID = "12xm3vG4w5nOPTwoWgmyGCpz939KvJ93e"  # 03 회원과 강사/회원(회원명단/가입서/정회원) — 회원관리·수강기록 소재
-MEMBERS_SHEET_ID = "193r34mtLHd0-oX7MKJOWq1Ane9iBfbBZB5yYf78R3Bo"  # 회원관리 시트 (3탭: 회원목록, 회원기록, 수강기록)
+MEMBERS_SHEET_ID = "193r34mtLHd0-oX7MKJOWq1Ane9iBfbBZB5yYf78R3Bo"  # 회원관리 시트 (5탭: 회원목록, 회원기록, 수강기록, 신청기록, 미확인입금)
 # 가입 신청서 폴더 (공유 드라이브)
 MEMBER_SIGNUP_FOLDER_ID = "10ZL8rD9j7OyyZOihfyJ6GRTzmBrTBgWe"
 FULLMEMBER_SIGNUP_FOLDER_ID = "17tsWfYwIRgHHcT1DQEj8Sqa4ys6pe0Vy"
 
-# 회원관리 파일 내 탭명 (3탭 구조)
-MEMBERS_TAB = "회원목록"          # 현재 상태 스냅샷
-MEMBER_RECORDS_TAB = "회원기록"   # 등급 변경 이력
-COURSE_RECORDS_TAB = "수강기록"   # 수강 이력
+# 회원관리 파일 내 탭명 (5탭 구조: 회원목록, 회원기록, 수강기록, 신청기록, 미확인입금)
+MEMBERS_TAB = "회원목록"              # 현재 상태 스냅샷
+MEMBER_RECORDS_TAB = "회원기록"       # 등급 변경 이력
+COURSE_RECORDS_TAB = "수강기록"       # 수강 이력
+APPLICATIONS_TAB = "신청기록"         # 전 회차 누적 신청서
+UNMATCHED_DEPOSITS_TAB = "미확인입금"  # 매칭 안 된 입금 건
 
 # 가입 신청서 응답 시트 탭명 (구글폼 기본값)
 SIGNUP_SHEET_TAB = "Form Responses 1"
