@@ -100,6 +100,7 @@ async def set_starters():
         cl.Starter(label="📋 출석부 생성", message="출석부를 생성합니다."),
         cl.Starter(label="✅ 출석 체크", message="출석 체크를 시작합니다."),
         cl.Starter(label="🎓 종강 처리", message="종강 처리를 시작합니다."),
+        cl.Starter(label="📊 보고서 생성", message="보고서를 생성합니다."),
         cl.Starter(label="❓ 질문하기", message="업무 관련 질문이 있습니다."),
     ]
 
@@ -164,6 +165,9 @@ async def on_message(message: cl.Message):
         await start_graduation_flow(message)
     elif message.content == "강의 계획서를 검토합니다.":
         await cl.Message("계획서 검토 기능은 준비 중입니다.").send()
+        await send_default_actions()
+    elif message.content == "보고서를 생성합니다.":
+        await start_report_flow()
     else:
         # LLM 의도 분류 → 워크플로우 or Q&A
         intent_result = await classify_intent_llm(message.content)
@@ -1143,6 +1147,12 @@ def _extract_course_name(text: str, attendance_sheet_id: str) -> str:
 
 # ===================================================== 종강 처리 플로우 =====
 
+async def start_report_flow():
+    """보고서 생성 — 미구현 placeholder"""
+    await cl.Message("보고서 기능은 아직 준비 중입니다.").send()
+    await send_default_actions()
+
+
 async def start_graduation_flow(message):
     """종강 처리 시작 — 회차 확인 → 출석 체크 완료 확인 → 처리 실행"""
     term = cl.user_session.get("term") or get_current_term()
@@ -1404,6 +1414,7 @@ async def send_default_actions(completed: str | None = None):
         ("attendance", "📋 출석부 생성"),
         ("ocr", "✅ 출석 체크"),
         ("graduation", "🎓 종강 처리"),
+        ("report", "📊 보고서 생성"),
         ("question", "❓ 질문하기"),
     ]
     actions = []
@@ -1443,6 +1454,11 @@ async def on_default_graduation(action: cl.Action):
 async def on_default_plan(action: cl.Action):
     await cl.Message("계획서 검토 기능은 준비 중입니다.").send()
     await send_default_actions()
+
+
+@cl.action_callback("default_report")
+async def on_default_report(action: cl.Action):
+    await start_report_flow()
 
 
 @cl.action_callback("default_question")
