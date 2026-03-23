@@ -303,6 +303,135 @@ def _append_course_records_to_sheets(records: list[dict]) -> None:
     append_sheet(MEMBERS_SHEET_ID, f"{COURSE_RECORDS_TAB}!A1", rows)
 
 
+# ============================================ Grade Cascade (등급 전환) ====
+
+def apply_grade_cascade(
+    applications: list[dict],
+    members: list[dict],
+    term_id: str = "",
+) -> list[dict]:
+    """확정된 입금 건에 대해 등급 전환을 순서대로 적용. Idempotent.
+
+    호출할 때마다 전체를 재평가. 이미 처리된 건은 skip.
+
+    3-Pass 순서:
+      Pass 1: 신규가입 confirmed → 비회원을 회원으로 등록
+      Pass 2: 정회원 confirmed → 회원을 정회원으로 승급
+      Pass 3: 수강 → 정회원이면 면제, 아니면 준회원 승급
+
+    Args:
+        applications: 통합 신청서 리스트 (in-place 수정됨)
+        members: 회원목록 리스트 (in-place 수정됨)
+        term_id: 관련 회차
+
+    Returns: 등급 변경 기록 리스트 (회원기록 탭에 append할 데이터)
+    """
+    from datetime import datetime
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    # 이름ID → member dict 매핑
+    member_map: dict[str, dict] = {m["이름ID"]: m for m in members}
+    changes: list[dict] = []
+
+    # Pass 1: 신규가입 → 회원 등록
+    for app in applications:
+        if app.get("유형") != "신규가입":
+            continue
+        if app.get("입금현황") != "✅정상":
+            continue
+        name_id = app["이름ID"]
+        if name_id in member_map:
+            continue  # 이미 회원
+
+        # 비회원 → 회원 등록
+        new_member = {
+            "이름ID": name_id,
+            "이름": app["이름"],
+            "전화번호": app.get("전화번호", ""),
+            "주소": app.get("주소", ""),
+            "등급": "회원",
+            "예외여부": "",
+            "수강count": "0",
+            "출석률(누적)": "",
+            "마지막수강회차": "",
+        }
+        member_map[name_id] = new_member
+        members.append(new_member)
+        changes.append({
+            "이름ID": name_id, "이름": app["이름"],
+            "변경일시": now_str,
+            "변경전등급": "(신규)", "변경후등급": "회원",
+            "사유": "신규가입", "관련회차": term_id,
+        })
+
+    # Pass 2: 정회원 → 정회원 승급
+    for app in applications:
+        if app.get("유형") != "정회원":
+            continue
+        if app.get("입금현황") != "✅정상":
+            continue
+        name_id = app["이름ID"]
+        member = member_map.get(name_id)
+
+        if not member:
+            # 회원이 아님 — 신규가입 먼저 필요
+            app["입금현황"] = "🔶확인필요"
+            app["확인사유"] = "회원 아님 — 신규가입 먼저 필요"
+            continue
+
+        if member.get("등급") == "정회원":
+            continue  # 이미 정회원
+
+        prev_grade = member.get("등급", "회원")
+        member["등급"] = "정회원"
+        changes.append({
+            "이름ID": name_id, "이름": app["이름"],
+            "변경일시": now_str,
+            "변경전등급": prev_grade, "변경후등급": "정회원",
+            "사유": "정회원비입금", "관련회차": term_id,
+        })
+
+    # Pass 3: 수강 → 면제 or 준회원 승급
+    for app in applications:
+        if app.get("유형") != "수강":
+            continue
+        name_id = app["이름ID"]
+        member = member_map.get(name_id)
+
+        # 정회원이면 수강료 면제 (기존 ✅정상도 💎면제로 변환)
+        if member and member.get("등급") == "정회원":
+            if app.get("입금현황") != "💎면제":
+                app["입금현황"] = "💎면제"
+            continue
+
+        # 정회원 신청 중 + 정회원비 미입금 → 보류
+        has_pending_full = any(
+            a.get("유형") == "정회원"
+            and a.get("이름ID") == name_id
+            and a.get("입금현황") not in ("✅정상", "💎면제")
+            for a in applications
+        )
+        if has_pending_full and app.get("입금현황") == "✅정상":
+            app["입금현황"] = "🔶확인필요"
+            app["확인사유"] = "정회원 신청 중 — 수강비만 입금됨"
+            continue
+
+        # 일반 수강료 매칭 확정 → 준회원 승급
+        if app.get("입금현황") == "✅정상" and member:
+            current_grade = member.get("등급", "")
+            if current_grade not in ("준회원", "정회원"):
+                member["등급"] = "준회원"
+                changes.append({
+                    "이름ID": name_id, "이름": app["이름"],
+                    "변경일시": now_str,
+                    "변경전등급": current_grade or "회원",
+                    "변경후등급": "준회원",
+                    "사유": "수강료입금", "관련회차": term_id,
+                })
+
+    return changes
+
+
 # ==================================== 공개 API (DB/Sheets dual-write) ====
 
 async def write_applications_sheet(

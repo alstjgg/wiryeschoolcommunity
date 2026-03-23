@@ -21,8 +21,10 @@ from app.chains.payment import (
     apply_exemptions,
     applications_to_students,
     apply_matching_results,
+    apply_grade_cascade,
     update_applications_sheet,
     load_members_from_sheet,
+    update_members_sheet,
     run_llm_matching,
     find_unpaid,
     format_results,
@@ -481,6 +483,16 @@ async def handle_payment_file(message: cl.Message):
             cl.user_session.set("state", "idle")
             return
 
+        # Step 1.5: 입금내역 DB 저장 (USE_DB_SOT 모드)
+        term_id = (cl.user_session.get("term") or {}).get("term_id", "")
+        from app.config import USE_DB_SOT
+        if USE_DB_SOT and term_id:
+            try:
+                from app.services import db
+                await db.insert_deposits(term_id, transactions)
+            except Exception as e:
+                logger.warning("deposits INSERT failed (non-critical): %s", e)
+
         # Step 2: 회원 정보 로드 + 정회원 면제 처리
         async with cl.Step(name="👥 회원 정보 로드") as step:
             members = await load_members_from_sheet()
@@ -510,11 +522,21 @@ async def handle_payment_file(message: cl.Message):
         # 매칭 결과를 applications에 반영
         apply_matching_results(applications, all_results)
 
+        # Step 5: 등급 전환 cascade (신규가입 → 정회원 → 수강)
+        async with cl.Step(name="🔄 등급 전환") as step:
+            grade_changes = apply_grade_cascade(applications, members, term_id)
+            if grade_changes:
+                step.output = f"등급 변경 **{len(grade_changes)}건** 처리"
+            else:
+                step.output = "등급 변경 없음"
+
         cl.user_session.set("applications", applications)
         cl.user_session.set("matched_results", all_results)
+        cl.user_session.set("members", members)
+        cl.user_session.set("grade_changes", grade_changes)
 
         # 즉시 시트에 자동 반영
-        await write_payment_results(all_results, exempted)
+        await write_payment_results(all_results, exempted, grade_changes)
 
     except Exception as e:
         await cl.Message(f"입금 대조 중 오류가 발생했습니다: {str(e)}").send()
@@ -537,11 +559,13 @@ async def handle_term_input(message: cl.Message):
 async def write_payment_results(
     matched_results: list[dict] | None = None,
     exempted: list[dict] | None = None,
+    grade_changes: list[dict] | None = None,
 ):
     """매칭 결과를 신청서 Sheets에 자동 반영 → 요약 + 다음 단계 Action 제공"""
     try:
         app_sheet_id = cl.user_session.get("applications_sheet_id")
         applications = cl.user_session.get("applications", [])
+        members = cl.user_session.get("members", [])
 
         async with cl.Step(name="💾 신청서 시트 업데이트") as step:
             if app_sheet_id and applications:
@@ -551,36 +575,13 @@ async def write_payment_results(
                 )
                 step.output = f"입금현황 **{len(applications)}건** 반영 완료"
 
-                # 회원기록 자동 기록
-                records_to_log = []
-                now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
-                for app in applications:
-                    if app.get("입금현황") != "✅정상":
-                        continue
-                    if app["유형"] == "신규가입":
-                        records_to_log.append({
-                            "이름ID": app["이름ID"], "이름": app["이름"],
-                            "변경일시": now_str,
-                            "변경전등급": "(신규)", "변경후등급": "회원",
-                            "사유": "신규가입", "관련회차": term_id,
-                        })
-                    elif app["유형"] == "수강":
-                        records_to_log.append({
-                            "이름ID": app["이름ID"], "이름": app["이름"],
-                            "변경일시": now_str,
-                            "변경전등급": "회원", "변경후등급": "준회원",
-                            "사유": "수강료입금", "관련회차": term_id,
-                        })
-                    elif app["유형"] == "정회원":
-                        records_to_log.append({
-                            "이름ID": app["이름ID"], "이름": app["이름"],
-                            "변경일시": now_str,
-                            "변경전등급": "회원", "변경후등급": "정회원",
-                            "사유": "정회원비입금", "관련회차": term_id,
-                        })
-                if records_to_log:
-                    await append_member_records(records_to_log)
-                    step.output += f", 회원기록 {len(records_to_log)}건 기록"
+                # 회원기록 + 회원목록 저장 (cascade 결과)
+                if grade_changes is None:
+                    grade_changes = cl.user_session.get("grade_changes", [])
+                if grade_changes:
+                    await append_member_records(grade_changes)
+                    await update_members_sheet(members)
+                    step.output += f", 등급변경 {len(grade_changes)}건 기록"
             else:
                 step.output = "시트 정보가 없어 반영하지 못했습니다."
 
@@ -616,8 +617,10 @@ async def write_payment_results(
 
         # DB→Sheets 동기화 트리거 (fire-and-forget)
         from app.services.n8n import trigger_sheets_sync
+        term_id = (cl.user_session.get("term") or {}).get("term_id", "")
         await trigger_sheets_sync("applications", {"term_id": term_id})
         await trigger_sheets_sync("members", {"term_id": term_id})
+        await trigger_sheets_sync("deposits", {"term_id": term_id})
 
     except Exception as e:
         await cl.Message(f"저장 중 오류: {str(e)}").send()
