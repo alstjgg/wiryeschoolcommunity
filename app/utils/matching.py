@@ -76,6 +76,10 @@ def detect_special_type(적요: str, amount: int) -> str | None:
     if "가입" in text and amount == MEMBERSHIP_FEE:
         return "가입비"
 
+    # 가입비+정회원비 합산 (13만)
+    if amount == MEMBERSHIP_FEE + FULL_MEMBERSHIP_FEE:
+        return "가입비+정회원"
+
     # 정회원비 — 금액 일치 또는 텍스트 포함
     if amount == FULL_MEMBERSHIP_FEE or "정회원" in text:
         return "정회원"
@@ -93,6 +97,10 @@ def classify_amount(amount: int) -> str:
         return "수강료+가입비(3만)"
     elif amount == TUITION_FEE * 2:
         return "2과목(4만)"
+    elif amount == FULL_MEMBERSHIP_FEE:
+        return "정회원비(12만)"
+    elif amount == MEMBERSHIP_FEE + FULL_MEMBERSHIP_FEE:
+        return "가입비+정회원비(13만)"
     elif amount > TUITION_FEE * 2:
         return f"다과목/합산({amount // 10000}만)"
     else:
@@ -136,12 +144,14 @@ def match_transaction(
         result["메모"] = "취소/대기 건"
         return result
 
-    # 가입비 또는 정회원비 → 이름 매칭은 계속하되 ✅정상 불가
+    # 가입비/정회원비 → 이름 매칭은 계속하되 cascade에서 처리
     force_review: str | None = None
     if special == "가입비":
-        force_review = "가입비만 납부 — 수강료 별도 확인 필요"
+        force_review = "가입비 납부"
     elif special == "정회원":
-        force_review = "정회원비 납부 — 회원관리 등급 수동 업데이트 필요"
+        force_review = "정회원비 납부"
+    elif special == "가입비+정회원":
+        force_review = "가입비+정회원비 합산 납부"
 
     # 2. 이름 추출 (적요 + 의뢰인만 사용)
     student_names = list({s["이름"] for s in students})

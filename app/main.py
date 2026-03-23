@@ -40,6 +40,7 @@ from app.chains.graduation import run_graduation
 from app.config import ANTHROPIC_API_KEY, LLM_MODEL, MEMBERS_SHEET_ID
 from app.services.excel import parse_bank_statement, parse_applicant_list
 from app.services.google_drive import find_term_folder
+from app.services.google_sheets import read_sheet
 from app.services.signup_loader import (
     load_member_signups_from_drive,
     load_fullmember_signups_from_drive,
@@ -593,13 +594,20 @@ async def write_payment_results(
         needs_check = sum(
             1 for r in matched_results if r["상태"] == "🔶확인필요"
         )
-        check_note = (
-            "\n\n🔶 확인이 필요한 건이 있습니다. 신청서 시트에서 직접 확인해주세요."
-            if needs_check else ""
+        unmatched_count = sum(
+            1 for r in matched_results
+            if r["상태"] in ("🔶확인필요", "❌미매칭") and r.get("상태") != "⏭️스킵"
         )
 
+        notes = []
+        if needs_check:
+            notes.append("🔶 확인이 필요한 건이 있습니다. 신청기록 시트에서 직접 확인해주세요.")
+        if unmatched_count:
+            notes.append(f"💳 미확인입금 **{unmatched_count}건**이 있습니다. 미확인입금 시트에서 확인해주세요.")
+        check_note = "\n\n" + "\n".join(notes) if notes else ""
+
         sheet_link = (
-            f"\n\n[신청서 시트 열기](https://docs.google.com/spreadsheets/d/{app_sheet_id})"
+            f"\n\n[신청기록 시트 열기](https://docs.google.com/spreadsheets/d/{app_sheet_id})"
             if app_sheet_id else ""
         )
 
@@ -607,7 +615,7 @@ async def write_payment_results(
             content=(
                 f"입금 대조가 완료되었습니다.\n\n"
                 f"{summary_line}{check_note}\n\n"
-                f"신청서 시트에서 입금현황을 확인하시고, "
+                f"신청기록 시트에서 입금현황을 확인하시고, "
                 f"배움숲 포탈에서 수강 등록을 처리한 뒤\n"
                 f"처리상태를 입력해주세요.{sheet_link}"
             ),
@@ -716,7 +724,10 @@ async def _do_attendance_preflight(term: dict):
         ).send()
 
         if res and res.get("payload", {}).get("value") == "confirm":
-            await do_create_attendance()
+            # 처리상태 gate check
+            gate_ok = await _check_processing_gate(term, app_sheet_id)
+            if gate_ok:
+                await do_create_attendance()
         else:
             if app_sheet_id:
                 guide = (
@@ -740,6 +751,71 @@ async def _do_attendance_preflight(term: dict):
         msg.content = f"출석부 생성 준비 중 오류: {str(e)}"
         await msg.update()
         await send_default_actions()
+
+
+async def _check_processing_gate(term: dict, app_sheet_id: str | None) -> bool:
+    """처리상태 gate — 미처리 건이 있으면 출석부 생성을 차단.
+
+    신청기록의 처리상태가 NULL 또는 보류인 건이 있으면 차단.
+    Returns: True이면 진행 가능, False이면 차단됨 (메시지 표시 완료).
+    """
+    term_id = term.get("term_id", "")
+
+    # Sheets에서 처리상태 읽기 (DB/Sheets 공통 — 처리상태는 Sheets가 SoT)
+    unprocessed_apps = []
+    if app_sheet_id:
+        rows = read_sheet(app_sheet_id, "신청서!A1:L5000")
+        if rows and len(rows) >= 2:
+            header = rows[0]
+            for row in rows[1:]:
+                data = dict(zip(header, row + [""] * (len(header) - len(row))))
+                처리상태 = data.get("처리상태", "").strip()
+                if not 처리상태 or 처리상태 == "보류":
+                    unprocessed_apps.append(data)
+
+    if not unprocessed_apps:
+        return True  # gate 통과
+
+    # 차단: 미처리 건 상세 안내
+    app_lines = []
+    for a in unprocessed_apps[:5]:
+        name = a.get("이름", "?")
+        course = a.get("과목명", "")
+        status = a.get("입금현황", "")
+        처리상태 = a.get("처리상태", "").strip() or "미입력"
+        label = f"{name}({course})" if course else name
+        app_lines.append(f"  - {label} — 입금현황: {status}, 처리상태: {처리상태}")
+    if len(unprocessed_apps) > 5:
+        app_lines.append(f"  - ... 외 {len(unprocessed_apps) - 5}건")
+
+    sheet_link = (
+        f"\n\n[신청기록 시트 열기](https://docs.google.com/spreadsheets/d/{app_sheet_id})"
+        if app_sheet_id else ""
+    )
+
+    msg_content = (
+        f"**{term.get('term_name', '')}** 출석부 생성을 위해 처리가 필요한 건이 있습니다.\n\n"
+        f"**신청기록 미처리: {len(unprocessed_apps)}건**\n"
+        + "\n".join(app_lines)
+        + f"\n\n모든 건의 처리상태를 입력해주세요 (등록완료/환불완료/취소완료).{sheet_link}"
+    )
+
+    res = await cl.AskActionMessage(
+        content=msg_content,
+        actions=[
+            cl.Action(name="recheck_gate", label="🔄 다시 확인",
+                      payload={"value": "recheck"}),
+            cl.Action(name="cancel_gate", label="❌ 취소",
+                      payload={"value": "cancel"}),
+        ],
+    ).send()
+
+    if res and res.get("payload", {}).get("value") == "recheck":
+        # 재귀적으로 다시 확인
+        return await _check_processing_gate(term, app_sheet_id)
+
+    await send_default_actions()
+    return False
 
 
 async def do_create_attendance():

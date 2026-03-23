@@ -129,6 +129,12 @@ def test_classify_combined():
 def test_classify_two_courses():
     assert classify_amount(40000) == "2과목(4만)"
 
+def test_classify_fullmembership_fee():
+    assert classify_amount(120000) == "정회원비(12만)"
+
+def test_classify_signup_plus_fullmembership():
+    assert classify_amount(130000) == "가입비+정회원비(13만)"
+
 def test_classify_multi_course():
     result = classify_amount(60000)
     assert "6만" in result
