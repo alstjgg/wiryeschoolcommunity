@@ -1,16 +1,17 @@
-"""입금 대조 파이프라인 — Google Sheets SoT
+"""입금 대조 파이프라인 — Dual-Write (DB primary + Sheets secondary)
 
-SoT: Google Sheets (통합 신청서, 회원관리)
-PostgreSQL은 채팅 기록 전용 (chat_data_layer.py).
+USE_DB_SOT=true: PostgreSQL이 SoT, Sheets는 관리자 view용 secondary write.
+USE_DB_SOT=false: 기존 Sheets SoT 동작 유지 (폴백).
 """
 
 import json
+import logging
 
 from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import SystemMessage, HumanMessage
 
 from app.config import (
-    ANTHROPIC_API_KEY, LLM_MODEL,
+    ANTHROPIC_API_KEY, LLM_MODEL, USE_DB_SOT,
     MEMBERS_SHEET_ID, COURSE_KEYWORDS,
     TUITION_FEE, MEMBERSHIP_FEE, FULL_MEMBERSHIP_FEE,
     MEMBERS_TAB, MEMBER_RECORDS_TAB, COURSE_RECORDS_TAB,
@@ -19,6 +20,8 @@ from app.config import (
 from app.services.google_auth import get_drive_service, get_sheets_service
 from app.services.google_drive import find_spreadsheet_by_name, find_or_create_folder
 from app.services.google_sheets import read_sheet, write_sheet, append_sheet
+
+logger = logging.getLogger(__name__)
 
 
 # =========================================== 통합 신청서 시트 관리 ====
@@ -104,40 +107,32 @@ def build_applications(
     return apps
 
 
-def write_applications_sheet(
+# ============================================ Sheets 전용 헬퍼 (내부) ====
+
+def _write_applications_to_sheets(
     term_folder_id: str,
     applications: list[dict],
 ) -> str:
-    """통합 신청서 upsert — 기존 행 보존, 새 key만 추가.
-
-    Key: (이름ID, 유형, 과목명) — 이 조합이 같으면 이미 처리된 건으로 스킵.
-    Returns: spreadsheet_id
-    """
+    """Sheets에 통합 신청서 upsert. Returns spreadsheet_id."""
     subfolder = find_or_create_folder(term_folder_id, "신청서")
     folder_id = subfolder["id"]
     existing_file = find_spreadsheet_by_name(folder_id, "신청서")
 
     if existing_file:
         spreadsheet_id = existing_file["id"]
-
-        # 기존 행 로드 및 key set 구성
-        existing_apps = read_applications_sheet(spreadsheet_id)
+        existing_apps = _read_applications_from_sheets(spreadsheet_id)
         existing_keys = {
             (a["이름ID"], a["유형"], a.get("과목명", ""))
             for a in existing_apps
         }
-
-        # 새 건 중 기존에 없는 것만 필터
         new_apps = [
             a for a in applications
             if (a["이름ID"], a["유형"], a.get("과목명", "")) not in existing_keys
         ]
-
         merged = existing_apps + new_apps
         rows = [APPLICATION_HEADER] + [_app_to_row(a) for a in merged]
         write_sheet(spreadsheet_id, "신청서!A1", rows)
     else:
-        # 새 시트 생성
         drive = get_drive_service()
         file_metadata = {
             "name": "신청서",
@@ -149,7 +144,6 @@ def write_applications_sheet(
         ).execute()
         spreadsheet_id = file["id"]
 
-        # 기본 탭 이름 변경
         sheets_svc = get_sheets_service()
         meta = sheets_svc.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
         default_sheet_id = meta["sheets"][0]["properties"]["sheetId"]
@@ -217,32 +211,29 @@ def write_applications_sheet(
     return spreadsheet_id
 
 
-def read_applications_sheet(spreadsheet_id: str) -> list[dict]:
-    """신청서 시트에서 전체 행을 dict 리스트로 읽기"""
+def _read_applications_from_sheets(spreadsheet_id: str) -> list[dict]:
+    """Sheets에서 신청서 읽기."""
     rows = read_sheet(spreadsheet_id, "신청서!A1:N5000")
     if not rows or len(rows) < 2:
         return []
     header = rows[0]
-    result = []
-    for row in rows[1:]:
-        data = dict(zip(header, row + [""] * (len(header) - len(row))))
-        result.append(data)
-    return result
+    return [
+        dict(zip(header, row + [""] * (len(header) - len(row))))
+        for row in rows[1:]
+    ]
 
 
-def update_applications_sheet(
+def _update_applications_in_sheets(
     spreadsheet_id: str,
     applications: list[dict],
 ) -> None:
-    """매칭 결과가 반영된 applications를 시트에 다시 쓴다."""
+    """Sheets에 매칭 결과 덮어쓰기."""
     rows = [APPLICATION_HEADER] + [_app_to_row(a) for a in applications]
     write_sheet(spreadsheet_id, "신청서!A1", rows)
 
 
-# ================================================= 회원관리 시트 ====
-
-def load_members_from_sheet() -> list[dict]:
-    """회원목록 탭에서 전체 회원 로드"""
+def _load_members_from_sheets() -> list[dict]:
+    """Sheets에서 회원목록 로드."""
     rows = read_sheet(MEMBERS_SHEET_ID, f"{MEMBERS_TAB}!A1:I2000")
     if not rows or len(rows) < 2:
         return []
@@ -250,8 +241,8 @@ def load_members_from_sheet() -> list[dict]:
     return [dict(zip(header, r + [""] * (len(header) - len(r)))) for r in rows[1:]]
 
 
-def update_members_sheet(members: list[dict]) -> None:
-    """회원목록 탭 전체 덮어쓰기"""
+def _update_members_in_sheets(members: list[dict]) -> None:
+    """Sheets에 회원목록 덮어쓰기."""
     header = [
         "이름ID", "이름", "전화번호", "주소", "등급", "예외여부",
         "수강count", "출석률(누적)", "마지막수강회차",
@@ -272,8 +263,8 @@ def update_members_sheet(members: list[dict]) -> None:
     write_sheet(MEMBERS_SHEET_ID, f"{MEMBERS_TAB}!A1", rows)
 
 
-def append_member_records(records: list[dict]) -> None:
-    """회원기록 탭에 등급 변경 이력 append."""
+def _append_member_records_to_sheets(records: list[dict]) -> None:
+    """Sheets에 회원기록 append."""
     if not records:
         return
     rows = [
@@ -283,8 +274,8 @@ def append_member_records(records: list[dict]) -> None:
     append_sheet(MEMBERS_SHEET_ID, f"{MEMBER_RECORDS_TAB}!A1", rows)
 
 
-def append_course_records(records: list[dict]) -> None:
-    """수강기록 탭에 수강 이력 append."""
+def _append_course_records_to_sheets(records: list[dict]) -> None:
+    """Sheets에 수강기록 append."""
     if not records:
         return
     rows = [
@@ -292,6 +283,139 @@ def append_course_records(records: list[dict]) -> None:
         for r in records
     ]
     append_sheet(MEMBERS_SHEET_ID, f"{COURSE_RECORDS_TAB}!A1", rows)
+
+
+# ==================================== 공개 API (DB/Sheets dual-write) ====
+
+async def write_applications_sheet(
+    term_folder_id: str,
+    applications: list[dict],
+    term_id: str = "",
+) -> str:
+    """통합 신청서 upsert.
+
+    DB 모드: DB에 upsert + Sheets에도 write (관리자 view + 등록상태 체크박스).
+    Sheets 모드: Sheets에만 write.
+    Returns: spreadsheet_id
+    """
+    if USE_DB_SOT and term_id:
+        from app.services import db
+        try:
+            await db.upsert_applications(term_id, applications)
+        except Exception as e:
+            logger.error("DB write failed, falling back to Sheets only: %s", e)
+
+    # Sheets write는 항상 실행 (관리자 view + 등록상태 체크박스 필요)
+    return _write_applications_to_sheets(term_folder_id, applications)
+
+
+async def read_applications_sheet(
+    spreadsheet_id: str,
+    term_id: str = "",
+) -> list[dict]:
+    """신청서 읽기.
+
+    DB 모드: DB에서 읽기 (빠름).
+    Sheets 모드: Sheets에서 읽기.
+    """
+    if USE_DB_SOT and term_id:
+        from app.services import db
+        try:
+            return await db.load_applications(term_id)
+        except Exception as e:
+            logger.error("DB read failed, falling back to Sheets: %s", e)
+
+    return _read_applications_from_sheets(spreadsheet_id)
+
+
+async def update_applications_sheet(
+    spreadsheet_id: str,
+    applications: list[dict],
+    term_id: str = "",
+) -> None:
+    """매칭 결과 반영.
+
+    DB 모드: DB에 upsert + Sheets에도 write.
+    Sheets 모드: Sheets에만 write.
+    """
+    if USE_DB_SOT and term_id:
+        from app.services import db
+        try:
+            await db.upsert_applications(term_id, applications)
+        except Exception as e:
+            logger.error("DB write failed, falling back to Sheets only: %s", e)
+
+    _update_applications_in_sheets(spreadsheet_id, applications)
+
+
+async def load_members_from_sheet() -> list[dict]:
+    """회원목록 로드.
+
+    DB 모드: DB에서 읽기.
+    Sheets 모드: Sheets에서 읽기.
+    """
+    if USE_DB_SOT:
+        from app.services import db
+        try:
+            return await db.load_members()
+        except Exception as e:
+            logger.error("DB read failed, falling back to Sheets: %s", e)
+
+    return _load_members_from_sheets()
+
+
+async def update_members_sheet(members: list[dict]) -> None:
+    """회원목록 덮어쓰기.
+
+    DB 모드: DB에 upsert + Sheets에도 write.
+    Sheets 모드: Sheets에만 write.
+    """
+    if USE_DB_SOT:
+        from app.services import db
+        try:
+            await db.upsert_members(members)
+        except Exception as e:
+            logger.error("DB write failed, falling back to Sheets only: %s", e)
+
+    _update_members_in_sheets(members)
+
+
+async def append_member_records(records: list[dict]) -> None:
+    """회원기록 등급 변경 이력 append.
+
+    DB 모드: DB에 insert + Sheets에도 append.
+    Sheets 모드: Sheets에만 append.
+    """
+    if not records:
+        return
+
+    if USE_DB_SOT:
+        from app.services import db
+        try:
+            await db.insert_member_records(records)
+        except Exception as e:
+            logger.error("DB write failed, falling back to Sheets only: %s", e)
+
+    _append_member_records_to_sheets(records)
+
+
+async def append_course_records(records: list[dict]) -> None:
+    """수강기록 수강 이력 append.
+
+    DB 모드: DB에 insert + Sheets에도 append.
+    Sheets 모드: Sheets에만 append.
+    """
+    if not records:
+        return
+
+    if USE_DB_SOT:
+        from app.services import db
+        try:
+            await db.insert_course_records(records)
+        except Exception as e:
+            logger.error("DB write failed, falling back to Sheets only: %s", e)
+
+    _append_course_records_to_sheets(records)
 
 
 # ======================================= 입금 매칭 관련 함수 ====

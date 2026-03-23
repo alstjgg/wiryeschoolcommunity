@@ -1,0 +1,124 @@
+{
+  "name": "Sync-2: DB→Sheets Webhook Push",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "sheets-sync",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "id": "webhook-trigger",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [200, 300]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "rules": [
+            { "value": "applications", "outputIndex": 0 },
+            { "value": "members", "outputIndex": 1 },
+            { "value": "graduation", "outputIndex": 2 },
+            { "value": "attendance", "outputIndex": 3 }
+          ]
+        },
+        "dataPropertyName": "type",
+        "fallbackOutput": "extra"
+      },
+      "id": "switch-type",
+      "name": "Switch by Type",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [420, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT term_id, name_id, name, type, course_name, expected_amount, payment_status, registration_status, payment_time, payer_name, phone, address, applied_at, start_term, end_term FROM applications WHERE term_id = '{{ $json.term_id }}' ORDER BY id",
+        "options": {}
+      },
+      "id": "read-applications",
+      "name": "Read Applications",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [640, 140],
+      "credentials": { "postgres": { "id": "j1PLbiwu8dCOVpl5", "name": "Postgres account" } }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT name_id, name, phone, address, grade, is_exception, course_count, avg_attendance, last_term FROM members ORDER BY name_id",
+        "options": {}
+      },
+      "id": "read-members",
+      "name": "Read Members",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [640, 300],
+      "credentials": { "postgres": { "id": "j1PLbiwu8dCOVpl5", "name": "Postgres account" } }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT name_id, name, changed_at, grade_from, grade_to, reason, term_id FROM member_records ORDER BY created_at",
+        "options": {}
+      },
+      "id": "read-member-records",
+      "name": "Read Member Records",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [640, 460],
+      "credentials": { "postgres": { "id": "j1PLbiwu8dCOVpl5", "name": "Postgres account" } }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT name_id, term_id, course_name, attendance FROM course_records ORDER BY created_at",
+        "options": {}
+      },
+      "id": "read-course-records",
+      "name": "Read Course Records",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [640, 620],
+      "credentials": { "postgres": { "id": "j1PLbiwu8dCOVpl5", "name": "Postgres account" } }
+    },
+    {
+      "parameters": {},
+      "id": "noop-attendance",
+      "name": "Attendance (TODO)",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [640, 780]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [{ "node": "Switch by Type", "type": "main", "index": 0 }]
+      ]
+    },
+    "Switch by Type": {
+      "main": [
+        [{ "node": "Read Applications", "type": "main", "index": 0 }],
+        [{ "node": "Read Members", "type": "main", "index": 0 }],
+        [
+          { "node": "Read Members", "type": "main", "index": 0 },
+          { "node": "Read Member Records", "type": "main", "index": 0 },
+          { "node": "Read Course Records", "type": "main", "index": 0 }
+        ],
+        [{ "node": "Attendance (TODO)", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "settings": { "executionOrder": "v1" },
+  "meta": {
+    "instanceId": "wiryeschool-chatbot"
+  },
+  "tags": [
+    { "name": "sync" },
+    { "name": "db-to-sheets" }
+  ]
+}

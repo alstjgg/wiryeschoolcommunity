@@ -12,9 +12,11 @@
 - **LLM 프레임워크**: LangChain (LLM 호출 래퍼로만 사용)
 - **채팅 UI**: Chainlit (WebSocket 기반, Conversation Starter 버튼 지원)
 - **LLM**: Claude API (Anthropic) — 한국어 + Vision
-- **데이터 SoT**: Google Sheets (비즈니스 데이터) + Google Drive (파일 저장)
-- **데이터베이스**: PostgreSQL (Railway) — 채팅 기록(chat_data_layer.py) 전용
-- **배치 파이프라인**: n8n (Railway, 당장 비활성 — P4만 유지, 추후 제거 검토)
+- **데이터 SoT**: Dual-Write 모드 (`USE_DB_SOT` 플래그)
+  - `USE_DB_SOT=true`: PostgreSQL이 SoT, Google Sheets는 관리자 view (n8n으로 동기화)
+  - `USE_DB_SOT=false` (기본): Google Sheets가 SoT (기존 동작)
+- **데이터베이스**: PostgreSQL (Railway) — 채팅 기록(chat_data_layer.py) + 비즈니스 데이터(db.py)
+- **배치 파이프라인**: n8n (Railway) — DB→Sheets 동기화 (Sync-1 일일 전체, Sync-2 웹훅 즉시)
 - **Google 인증**: Service Account + Domain-wide Delegation
 - **배포**: Railway (Git push 자동 배포)
 - **RAG 없음**: Context Injection (시스템 프롬프트에 비즈니스 컨텍스트 직접 주입)
@@ -163,26 +165,29 @@ wiryeschoolcommunity/
 │   ├── BUSINESS_CONTEXT.md      # Context Injection 소스 텍스트
 │   └── PLANNED_DRIVE_STRUCTURE.md  # Google Drive 확정 구조 + 폴더 ID 참조
 ├── n8n/                         # n8n 워크플로우 JSON (n8n UI에서 import 용)
-│   └── P4_daily_sync.json       # DB → Sheets 일일 동기화 (P1/P2는 챗봇 코드로 이동)
+│   ├── sync_daily.json          # Sync-1: DB → Sheets 일일 전체 push (매일 06:00)
+│   └── sync_webhook.json        # Sync-2: DB → Sheets 웹훅 즉시 push
 ├── app/
 │   ├── main.py                  # Chainlit 엔트리포인트 + 세션 상태 라우터 + LLM 의도 분류 + mid-flow 인터럽트 처리
-│   ├── config.py                # 환경 변수, 상수, 영속 Google IDs, COURSE_KEYWORDS
+│   ├── config.py                # 환경 변수, 상수, 영속 Google IDs, COURSE_KEYWORDS, USE_DB_SOT
 │   ├── context/
 │   │   ├── business.py          # 정적 비즈니스 컨텍스트 dict + 시스템 프롬프트
 │   │   └── term.py              # 현재 회차 자동 판별 + 자유 텍스트 회차 파싱 (parse_term_input)
 │   ├── chains/
 │   │   ├── qa.py                # 질의 응답 체인
-│   │   ├── payment.py           # 입금 대조 파이프라인 (신청자 로드, 코드 매칭, LLM 폴백, 시트 기록, 회원기록)
-│   │   ├── attendance.py        # 출석부 생성 (수강생 탭 + 과목별 탭 + PDF 생성/업로드)
-│   │   ├── ocr.py               # 출석 체크 OCR (Claude Vision, 과목 탭 B:M 쓰기)
-│   │   └── graduation.py        # 종강 처리 (출석률 집계, 수강기록, 회원목록 재집계, 등급 강등)
+│   │   ├── payment.py           # 입금 대조 파이프라인 (dual-write: DB+Sheets, 매칭, 회원기록)
+│   │   ├── attendance.py        # 출석부 생성 (dual-write, 등록상태는 Sheets에서 읽기)
+│   │   ├── ocr.py               # 출석 체크 OCR (dual-write: DB+Sheets, Claude Vision)
+│   │   └── graduation.py        # 종강 처리 (dual-write, 출석률 집계, 등급 강등)
 │   ├── services/
 │   │   ├── google_auth.py       # Google API 인증 (SA 파일 + JSON 환경변수 이중 지원)
 │   │   ├── google_drive.py      # Drive API 래퍼 + 동적 폴더 탐색 (find_term_folder 등)
-│   │   ├── google_sheets.py     # Sheets API 래퍼 (SoT 읽기/쓰기)
+│   │   ├── google_sheets.py     # Sheets API 래퍼 (읽기/쓰기)
 │   │   ├── excel.py             # Excel 파싱 (입금내역 .xls/.xlsx + 신청자 목록 HTML .xls)
 │   │   ├── signup_loader.py     # Drive에서 신규가입/정회원가입 신청서 로드 → 파싱 결과 반환
-│   │   └── chat_data_layer.py   # Chainlit 채팅 기록 PostgreSQL 영속성 (BaseDataLayer 구현)
+│   │   ├── chat_data_layer.py   # Chainlit 채팅 기록 PostgreSQL 영속성 (BaseDataLayer 구현)
+│   │   ├── db.py                # 비즈니스 데이터 PostgreSQL CRUD (asyncpg, 6 테이블)
+│   │   └── n8n.py               # n8n 웹훅 트리거 (DB→Sheets 동기화 fire-and-forget)
 │   └── utils/
 │       ├── __init__.py
 │       └── matching.py          # 이름/강좌 추출, 규칙 기반 입금 매칭
@@ -209,6 +214,8 @@ GOOGLE_SA_KEY_PATH=sa-key.json  # Service Account JSON 키 파일 경로 (로컬
 GOOGLE_SA_KEY_JSON=             # Service Account JSON 문자열 (PaaS 배포용)
 GOOGLE_DELEGATED_USER=wirye@wiryeschoolcomunity.com  # Delegation 대상 (오타 아님, 실제 도메인)
 DATABASE_URL=                   # Railway 자동 주입 (PostgreSQL)
+USE_DB_SOT=false                # true=PostgreSQL SoT, false=Sheets SoT (기본)
+N8N_WEBHOOK_URL=                # n8n 웹훅 URL (DB→Sheets 동기화, 예: https://n8n-production-81b4.up.railway.app)
 ```
 
 n8n 환경 변수는 "인프라 구성 > n8n 배포 방법" 섹션 참조.
@@ -235,19 +242,46 @@ drive_service = build('drive', 'v3', credentials=credentials)
 
 ### 설계 원칙
 
-- **Google Sheets가 SoT** (Single Source of Truth). 관리자가 보는 것이 곧 데이터. 별도 동기화 레이어 없음.
-- **PostgreSQL은 채팅 기록 전용** (chat_data_layer.py). 비즈니스 데이터는 저장하지 않음.
+- **Dual-Write 모드** (`USE_DB_SOT` 환경변수로 전환):
+  - `USE_DB_SOT=true`: **PostgreSQL이 SoT**. 챗봇은 DB에서 읽고 DB+Sheets에 동시 쓰기. n8n이 DB→Sheets 동기화.
+  - `USE_DB_SOT=false` (기본): **Google Sheets가 SoT**. 기존 동작 유지. DB 쓰기 안 함.
+- **DB 실패 시 자동 폴백**: DB 읽기/쓰기 실패하면 Sheets로 폴백 + 로그 기록. 서비스 중단 없음.
+- **등록상태 예외**: 신청서의 `등록상태` 컬럼만 관리자가 Sheets에서 직접 편집. DB 모드에서도 이 컬럼은 Sheets에서 읽음.
+- **PostgreSQL**: 비즈니스 데이터 (`db.py`, 6 테이블) + 채팅 기록 (`chat_data_layer.py`).
 - **Google Drive는 파일 저장소**. Raw 엑셀, PDF, 출석부 등 파일 단위 자료 관리.
+- **이모지↔코드 변환**: DB에는 상태 코드(confirmed, not_paid 등) 저장. 앱 코드는 이모지(✅정상, ❌미입금 등) 사용. 변환은 `db.py` 경계에서 수행.
+
+### DB 스키마 (6 테이블)
+
+| 테이블 | PK / UK | 성격 |
+|--------|---------|------|
+| `members` | `name_id` (TEXT PK) | 회원 현재 상태 |
+| `member_records` | `id` (SERIAL) | 등급 변경 이력 |
+| `course_records` | `id` (SERIAL) | 수강 이력 |
+| `applications` | `(term_id, name_id, type, course_name)` UK | 통합 신청서 |
+| `attendance` | `(term_id, course_name, student_name)` UK | 출석 데이터 |
+| `feedbacks` | `id` (TEXT PK) | Chainlit thumbs up/down |
+
+스키마 DDL은 `db.py`의 `_BUSINESS_SCHEMA_SQL`에 정의. `get_pool()` 첫 호출 시 자동 생성.
+
+### n8n 동기화
+
+| 워크플로우 | 트리거 | 동작 |
+|-----------|--------|------|
+| Sync-1 (`sync_daily.json`) | 매일 06:00 | 전체 테이블 → Sheets 덮어쓰기 |
+| Sync-2 (`sync_webhook.json`) | 챗봇 웹훅 호출 | 변경된 시트만 즉시 업데이트 |
+
+웹훅 엔드포인트: `N8N_WEBHOOK_URL/webhook/sheets-sync` (POST, body: `{type, term_id, ...}`)
 
 ### 데이터 구조
 
-| 시트/탭 | 성격 | 저장소 | 설명 |
-|---------|------|--------|------|
-| **회원관리 → 회원목록** 탭 | Master (영속) | Google Sheets | 전체 회원 현재 상태 스냅샷 |
-| **회원관리 → 회원기록** 탭 | History (영속) | Google Sheets | 등급 변경 이력 (입금/종강 시 append) |
-| **회원관리 → 수강기록** 탭 | History (영속) | Google Sheets | 전체 수강 이력 (종강 시 append) |
-| **신청서** | Working (회차별) | Google Sheets | 통합 신청서 — 수강+신규가입+정회원 |
-| **출석부** | Working (회차별) | Google Sheets | 수강생 탭 + 과목별 탭, 12회차 출석 |
+| 시트/탭 | 성격 | DB 테이블 | Sheets 탭 | 설명 |
+|---------|------|-----------|-----------|------|
+| **회원목록** | Master (영속) | `members` | 회원관리 → 회원목록 | 전체 회원 현재 상태 스냅샷 |
+| **회원기록** | History (영속) | `member_records` | 회원관리 → 회원기록 | 등급 변경 이력 |
+| **수강기록** | History (영속) | `course_records` | 회원관리 → 수강기록 | 전체 수강 이력 |
+| **신청서** | Working (회차별) | `applications` | 회차폴더 → 신청서 | 통합 신청서 — 수강+신규가입+정회원 |
+| **출석부** | Working (회차별) | `attendance` | 회차폴더 → 출석부 | 수강생 탭 + 과목별 탭, 12회차 출석 |
 
 회원관리 시트(`MEMBERS_SHEET_ID`)는 3탭 구조: `회원목록`, `회원기록`, `수강기록`.
 탭명 상수: `MEMBERS_TAB`, `MEMBER_RECORDS_TAB`, `COURSE_RECORDS_TAB` (`config.py`).
@@ -318,16 +352,20 @@ Google Sheets 파일 1개. 수강생 탭 + 과목별 탭 + 과목별 인쇄용 P
 │                                                       │
 │  ┌──────────────┐        ┌──────────────────────┐    │
 │  │  Chainlit     │        │  PostgreSQL           │    │
-│  │  + LangChain  │───────→│  (채팅 기록 전용)     │    │
-│  │  (챗봇)       │        └──────────────────────┘    │
-│  └──────┬───────┘                                     │
-│         │                                             │
-└─────────┼─────────────────────────────────────────────┘
+│  │  + LangChain  │───────→│  (채팅 기록 +         │    │
+│  │  (챗봇)       │        │   비즈니스 데이터)     │    │
+│  └──────┬───────┘        └──────────┬───────────┘    │
+│         │                           │                 │
+│  ┌──────┴───────┐          ┌────────┴──────────┐     │
+│  │  n8n          │←─webhook─│  DB→Sheets Sync   │     │
+│  │  (동기화)     │          └──────────────────-┘     │
+│  └──────────────┘                                     │
+└───────────────────────────────────────────────────────┘
           │
           ▼
    ┌──────────────────────────────────────────────────────────┐
    │  Google Workspace                                         │
-   │  Drive (파일) + Sheets (SoT, 비즈니스 데이터) + Forms     │
+   │  Drive (파일) + Sheets (관리자 view, 등록상태 편집)       │
    └──────────────────────────────────────────────────────────┘
           │
           ▼
@@ -360,10 +398,10 @@ Google Sheets 파일 1개. 수강생 탭 + 과목별 탭 + 과목별 인쇄용 P
 9. 회원기록 탭에 강등 이력 append
 ```
 
-**P4. DB → Sheets 동기화** (scheduled, 비활성)
+**DB → Sheets 동기화** (n8n)
 ```
-n8n/P4_daily_sync.json — 비즈니스 테이블 제거로 실질적으로 무용.
-당장은 비활성 유지, 추후 제거 검토.
+Sync-1 (n8n/sync_daily.json): 매일 06:00 전체 push — members, member_records, course_records → Sheets 덮어쓰기
+Sync-2 (n8n/sync_webhook.json): 웹훅 즉시 push — 챗봇이 DB 쓰기 후 n8n 웹훅 호출 → 변경 시트만 업데이트
 ```
 
 ### 데이터 흐름 정리
@@ -638,17 +676,20 @@ DATABASE_URL=                   # Railway가 자동 주입 (PostgreSQL 연결 �
   - Google SA: `Google Service Account account` (id: `JtDg23azfbja0yi3`, key: `googleApi`)
 - P4 워크플로우로 정상 동작 검증 완료
 
-**2-1. PostgreSQL 스키마 설계** ❌ 폐기
-- 비즈니스 테이블 불필요 판단 → `db.py` 삭제. git 히스토리에 참조용으로 남음.
-- `chat_data_layer.py`: Chainlit 채팅 기록 PostgreSQL 영속성은 유지 (DATABASE_URL 자동 활성화)
+**2-1. PostgreSQL 비즈니스 스키마** ✅ 재도입 (Phase 2.5)
+- `app/services/db.py`: 6 테이블 (members, member_records, course_records, applications, attendance, feedbacks)
+- Dual-Write 모드: `USE_DB_SOT=true`이면 DB가 SoT, Sheets는 secondary write
+- `scripts/init_db_schema.py`: Railway PostgreSQL에 테이블 생성 완료
 
-**2-2. Sheets SoT 복귀 + 통합 신청서** ✅ 완료
-- PostgreSQL 비즈니스 테이블 제거 (`db.py` 삭제). DB는 채팅 기록 전용.
-- 3개 테이블(students, member_signups, fullmember_signups) → 1개 통합 신청서 시트로 변경
-- `payment.py`: Sheets 직접 읽기/쓰기 (DB 동기화 레이어 제거)
-- `attendance.py`: 신청서 시트에서 등록상태 체크된 행 필터
-- `signup_loader.py`: Drive에서 파싱 결과만 반환 (DB INSERT 제거)
-- n8n P4: 비즈니스 테이블 없으므로 비활성 유지, 추후 제거 검토
+**2-2. Dual-Write 마이그레이션** ✅ 완료
+- `payment.py`: 7개 함수 async 전환 + DB/Sheets dual-write + 폴백
+- `graduation.py`: 3개 함수 async 전환 + DB 읽기 + Sheets 쓰기
+- `attendance.py`: `load_registered_students` DB+Sheets 등록상태 머지
+- `ocr.py`: `load_course_students` + `write_attendance_to_sheet` dual-write
+- `main.py`: 모든 호출부 `await` + `term_id` 파라미터 추가
+- `app/services/n8n.py`: fire-and-forget 웹훅 트리거 (3곳에서 호출)
+- n8n 워크플로우 JSON: `sync_daily.json` (일일 06:00) + `sync_webhook.json` (즉시)
+- 91개 테스트 통과 (54 기존 + 37 신규 DB/dual-write 테스트)
 
 ### Phase 3 — 기능 확장
 
@@ -672,7 +713,7 @@ DATABASE_URL=                   # Railway가 자동 주입 (PostgreSQL 연결 �
 ## 코딩 규칙
 
 - 한국어 주석 OK, 변수명/함수명은 영문
-- **데이터 읽기/쓰기는 Google Sheets가 기본 (SoT)**. PostgreSQL은 채팅 기록 전용.
+- **데이터 읽기/쓰기는 `USE_DB_SOT` 플래그로 결정**. `true`=DB SoT (dual-write), `false`=Sheets SoT (기본). `db.py`의 CRUD 함수 사용.
 - LLM 호출은 최소화 — 코드로 처리 가능하면 코드로
 - 에러 시 사용자에게 한국어로 안내 메시지 반환
 - Docker 사용 안 함 (챗봇). n8n만 Docker 배포. Railway는 Procfile 기반 배포.

@@ -10,33 +10,24 @@
 
 import base64
 import json
+import logging
 
 from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import HumanMessage
 
-from app.config import ANTHROPIC_API_KEY, LLM_MODEL, MAX_SESSIONS
+from app.config import ANTHROPIC_API_KEY, LLM_MODEL, MAX_SESSIONS, USE_DB_SOT
 from app.services.google_sheets import read_sheet, write_sheet
 
+logger = logging.getLogger(__name__)
 
-def load_course_students(
+
+def _load_course_students_from_sheets(
     spreadsheet_id: str,
     course_name: str,
 ) -> list[dict]:
-    """출석부 시트에서 특정 과목 탭의 수강생 목록과 현재 출석 데이터를 로드.
-
-    과목별 탭 구조:
-      A열: 이름, B~M열: 1~12회차
-
-    Returns: [
-        {
-            "row_index": int,   # 시트 행 번호 (1-based, 헤더=1, 데이터 시작=2)
-            "이름": str,
-            "출석": {"1": "O", "2": "", ...}
-        }, ...
-    ]
-    """
-    col_count = 1 + MAX_SESSIONS  # A~M = 13컬럼
-    col_end = chr(ord("A") + col_count - 1)  # "M"
+    """Sheets에서 특정 과목 탭의 수강생 목록과 출석 데이터 로드."""
+    col_count = 1 + MAX_SESSIONS
+    col_end = chr(ord("A") + col_count - 1)
     rows = read_sheet(spreadsheet_id, f"{course_name}!A1:{col_end}500")
     if not rows or len(rows) < 2:
         return []
@@ -57,6 +48,59 @@ def load_course_students(
             "출석": attendance,
         })
     return students
+
+
+async def _load_course_students_from_db(
+    term_id: str,
+    course_name: str,
+) -> list[dict]:
+    """DB attendance 테이블에서 수강생 목록 로드."""
+    from app.services import db
+
+    rows = await db.load_attendance(term_id, course_name)
+    students = []
+    for i, r in enumerate(rows, start=2):
+        session_data = r.get("session_data", {})
+        attendance = {
+            str(j + 1): session_data.get(str(j + 1), "")
+            for j in range(MAX_SESSIONS)
+        }
+        students.append({
+            "row_index": i,
+            "이름": r["이름"],
+            "출석": attendance,
+        })
+    return students
+
+
+async def load_course_students(
+    spreadsheet_id: str,
+    course_name: str,
+    term_id: str = "",
+) -> list[dict]:
+    """출석부에서 특정 과목 탭의 수강생 목록과 현재 출석 데이터를 로드.
+
+    DB 모드: attendance 테이블에서 읽기.
+    Sheets 모드: 과목별 탭에서 직접 읽기.
+
+    Returns: [
+        {
+            "row_index": int,   # 시트 행 번호 (1-based, 헤더=1, 데이터 시작=2)
+            "이름": str,
+            "출석": {"1": "O", "2": "", ...}
+        }, ...
+    ]
+    """
+    if USE_DB_SOT and term_id:
+        try:
+            result = await _load_course_students_from_db(term_id, course_name)
+            if result:
+                return result
+            # DB에 데이터가 없으면 (첫 OCR 전) Sheets로 폴백
+        except Exception as e:
+            logger.error("DB read failed, falling back to Sheets: %s", e)
+
+    return _load_course_students_from_sheets(spreadsheet_id, course_name)
 
 
 async def process_attendance_image(
@@ -156,18 +200,21 @@ async def process_attendance_image(
         }
 
 
-def write_attendance_to_sheet(
+async def write_attendance_to_sheet(
     spreadsheet_id: str,
     course_name: str,
     ocr_results: list[dict],
     students: list[dict],
+    term_id: str = "",
 ) -> int:
-    """OCR 결과를 출석부 시트의 해당 과목 탭에 반영.
+    """OCR 결과를 출석부에 반영.
+
+    DB 모드: DB attendance 테이블에 upsert + Sheets에도 반영.
+    Sheets 모드: Sheets에만 반영.
 
     쓰기 범위: B{row}:M{row} (1회차~12회차, B열부터 시작)
     Returns: 업데이트된 수강생 수
     """
-    # 이름 → row_index 매핑
     name_to_row = {s["이름"]: s["row_index"] for s in students}
 
     col_end = chr(ord("B") + MAX_SESSIONS - 1)  # "M"
@@ -181,7 +228,17 @@ def write_attendance_to_sheet(
         row_index = name_to_row[name]
         attendance = result.get("출석", {})
 
-        # 1회차~12회차 값 리스트 (B열부터)
+        # DB 모드: attendance 테이블에 upsert
+        if USE_DB_SOT and term_id:
+            try:
+                from app.services import db
+                await db.upsert_attendance(
+                    term_id, course_name, name, attendance,
+                )
+            except Exception as e:
+                logger.error("DB write failed for %s: %s", name, e)
+
+        # Sheets에 항상 반영 (관리자 view)
         values = [attendance.get(str(i), "") for i in range(1, MAX_SESSIONS + 1)]
         range_notation = f"{course_name}!B{row_index}:{col_end}{row_index}"
         write_sheet(spreadsheet_id, range_notation, [values])

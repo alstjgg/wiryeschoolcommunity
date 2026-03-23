@@ -7,10 +7,11 @@
   탭 {과목}: 이름(A) | 1~12회차(B~M)
 """
 
+import logging
 from datetime import datetime
 
 from app.config import (
-    MEMBERS_SHEET_ID, MAX_SESSIONS,
+    MEMBERS_SHEET_ID, MAX_SESSIONS, USE_DB_SOT,
     MEMBERS_TAB, MEMBER_RECORDS_TAB, COURSE_RECORDS_TAB,
     MEMBER_RECORD_HEADER, COURSE_RECORD_HEADER,
 )
@@ -22,20 +23,13 @@ from app.chains.payment import (
     append_course_records,
 )
 
+logger = logging.getLogger(__name__)
+
 
 # =========================================== 출석률 집계 =====
 
-def load_attendance_results(spreadsheet_id: str) -> list[dict]:
-    """출석부 시트 전체에서 과목별 수강생 출석률을 집계.
-
-    과목별 탭 구조:
-      A열: 이름 (1행=헤더, 2행~=수강생)
-      B~M열: 1~12회차 (출석="O", 결석="")
-
-    수강생 탭은 건너뜀 (탭명으로 구분).
-
-    Returns: [{"이름": str, "과목명": str, "출석률": str}, ...]
-    """
+def _load_attendance_from_sheets(spreadsheet_id: str) -> list[dict]:
+    """출석부 Sheets에서 과목별 수강생 출석률을 집계."""
     from app.services.google_auth import get_sheets_service
     svc = get_sheets_service()
     meta = svc.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
@@ -58,7 +52,6 @@ def load_attendance_results(spreadsheet_id: str) -> list[dict]:
             if not name:
                 continue
 
-            # B~M 열 = index 1~12
             attended = sum(
                 1 for i in range(1, 1 + MAX_SESSIONS) if padded[i] == "O"
             )
@@ -76,25 +69,60 @@ def load_attendance_results(spreadsheet_id: str) -> list[dict]:
     return results
 
 
-def update_attendance_rates_in_sheet(
+async def _load_attendance_from_db(term_id: str) -> list[dict]:
+    """DB attendance 테이블에서 출석률 집계."""
+    from app.services import db
+
+    rows = await db.load_attendance(term_id)
+    results = []
+    for r in rows:
+        session_data = r.get("session_data", {})
+        if not session_data:
+            rate = r.get("출석률") or 0.0
+        else:
+            attended = sum(1 for v in session_data.values() if v == "O")
+            total = sum(1 for v in session_data.values() if v != "")
+            rate = round(attended / total * 100, 1) if total > 0 else 0.0
+
+        results.append({
+            "이름": r["이름"],
+            "과목명": r["과목명"],
+            "출석률": str(rate),
+        })
+    return results
+
+
+async def load_attendance_results(
+    spreadsheet_id: str,
+    term_id: str = "",
+) -> list[dict]:
+    """출석부에서 과목별 수강생 출석률을 집계.
+
+    DB 모드: attendance 테이블의 session_data에서 O/빈칸 카운트.
+    Sheets 모드: 과목별 탭에서 직접 읽기.
+    """
+    if USE_DB_SOT and term_id:
+        try:
+            return await _load_attendance_from_db(term_id)
+        except Exception as e:
+            logger.error("DB read failed, falling back to Sheets: %s", e)
+
+    return _load_attendance_from_sheets(spreadsheet_id)
+
+
+def _update_attendance_rates_in_sheets(
     spreadsheet_id: str,
     attendance_results: list[dict],
-    term_id: str,
 ) -> None:
-    """수강생 탭의 출석률(D열)을 집계 결과로 업데이트.
-
-    수강생 탭: 이름ID(A) | 이름(B) | 과목명(C) | 출석률(D)
-    (이름 + 과목명)으로 행을 찾아 출석률 기록.
-    """
+    """Sheets 수강생 탭의 출석률(D열) 업데이트."""
     rows = read_sheet(spreadsheet_id, "수강생!A1:D5000")
     if not rows or len(rows) < 2:
         return
 
-    # (이름, 과목명) → 행 인덱스 매핑 (1-based, 헤더=1)
     key_to_row: dict[tuple, int] = {}
     for i, row in enumerate(rows[1:], start=2):
         padded = row + [""] * (4 - len(row))
-        key_to_row[(padded[1], padded[2])] = i  # (이름, 과목명)
+        key_to_row[(padded[1], padded[2])] = i
 
     for r in attendance_results:
         key = (r["이름"], r["과목명"])
@@ -103,22 +131,57 @@ def update_attendance_rates_in_sheet(
             write_sheet(spreadsheet_id, f"수강생!D{row_idx}", [[r["출석률"]]])
 
 
+async def update_attendance_rates_in_sheet(
+    spreadsheet_id: str,
+    attendance_results: list[dict],
+    term_id: str,
+) -> None:
+    """수강생 탭의 출석률(D열)을 집계 결과로 업데이트.
+
+    DB 모드: attendance 테이블의 attendance_rate 업데이트 + Sheets도 업데이트.
+    Sheets 모드: Sheets에만 업데이트.
+    """
+    if USE_DB_SOT and term_id:
+        from app.services import db
+        try:
+            for r in attendance_results:
+                await db.update_attendance_rate(
+                    term_id, r["과목명"], r["이름"], float(r["출석률"]),
+                )
+        except Exception as e:
+            logger.error("DB write failed, falling back to Sheets only: %s", e)
+
+    _update_attendance_rates_in_sheets(spreadsheet_id, attendance_results)
+
+
 # ============================================= 회원목록 재집계 =====
 
-def recalculate_member_stats(members: list[dict]) -> list[dict]:
-    """수강기록 탭 전체를 읽어 회원목록의 누적 통계를 재집계.
-
-    수강count, 출석률(누적), 마지막수강회차를 갱신.
-    """
+def _recalculate_from_sheets(members: list[dict]) -> list[dict]:
+    """Sheets 수강기록 탭에서 재집계."""
     rows = read_sheet(MEMBERS_SHEET_ID, f"{COURSE_RECORDS_TAB}!A1:D10000")
     if not rows or len(rows) < 2:
         return members
 
     header = rows[0]
+    records = [
+        dict(zip(header, row + [""] * (len(header) - len(row))))
+        for row in rows[1:]
+    ]
+    return _apply_stats(members, records)
+
+
+async def _recalculate_from_db(members: list[dict]) -> list[dict]:
+    """DB course_records 테이블에서 재집계."""
+    from app.services import db
+    records = await db.load_course_records()
+    return _apply_stats(members, records)
+
+
+def _apply_stats(members: list[dict], records: list[dict]) -> list[dict]:
+    """수강기록 리스트로 회원목록 통계를 재집계. 공통 로직."""
     stats: dict[str, dict] = {}
 
-    for row in rows[1:]:
-        data = dict(zip(header, row + [""] * (len(header) - len(row))))
+    for data in records:
         name_id = data.get("이름ID", "")
         if not name_id:
             continue
@@ -128,7 +191,7 @@ def recalculate_member_stats(members: list[dict]) -> list[dict]:
         stats[name_id]["count"] += 1
         try:
             stats[name_id]["total_rate"] += float(data.get("출석률", 0))
-        except ValueError:
+        except (ValueError, TypeError):
             pass
         term = data.get("회차", "")
         if term > stats[name_id]["last_term"]:
@@ -146,6 +209,21 @@ def recalculate_member_stats(members: list[dict]) -> list[dict]:
             m["마지막수강회차"] = s["last_term"]
 
     return members
+
+
+async def recalculate_member_stats(members: list[dict]) -> list[dict]:
+    """수강기록에서 회원목록의 누적 통계를 재집계.
+
+    DB 모드: course_records 테이블에서 읽기.
+    Sheets 모드: 수강기록 탭에서 읽기.
+    """
+    if USE_DB_SOT:
+        try:
+            return await _recalculate_from_db(members)
+        except Exception as e:
+            logger.error("DB read failed, falling back to Sheets: %s", e)
+
+    return _recalculate_from_sheets(members)
 
 
 # ================================================= 등급 강등 =====
@@ -200,14 +278,16 @@ async def run_graduation(
     is_winter = term_id.endswith("-1")
 
     # 1. 출석률 집계 (과목별 탭 O/빈칸 직접 카운트)
-    attendance_results = load_attendance_results(attendance_sheet_id)
-
-    # 2. 수강생 탭 출석률 컬럼 업데이트
-    update_attendance_rates_in_sheet(
-        attendance_sheet_id, attendance_results, term_id
+    attendance_results = await load_attendance_results(
+        attendance_sheet_id, term_id=term_id,
     )
 
-    # 3. 이름ID 조회 (수강생 탭에서)
+    # 2. 수강생 탭 출석률 컬럼 업데이트
+    await update_attendance_rates_in_sheet(
+        attendance_sheet_id, attendance_results, term_id,
+    )
+
+    # 3. 이름ID 조회 (수강생 탭에서 — Sheets에만 있는 매핑)
     student_rows = read_sheet(attendance_sheet_id, "수강생!A1:D5000")
     name_to_id: dict[tuple, str] = {}
     if student_rows and len(student_rows) >= 2:
@@ -228,11 +308,11 @@ async def run_graduation(
             "출석률": r["출석률"],
         })
     if course_records:
-        append_course_records(course_records)
+        await append_course_records(course_records)
 
     # 5. 회원목록 재집계
-    members = load_members_from_sheet()
-    members = recalculate_member_stats(members)
+    members = await load_members_from_sheet()
+    members = await recalculate_member_stats(members)
 
     # 6. 등급 강등
     junior_demote, full_demote = get_members_to_demote(members, is_winter)
@@ -257,9 +337,9 @@ async def run_graduation(
         })
 
     # 7. 회원목록 + 회원기록 저장
-    update_members_sheet(members)
+    await update_members_sheet(members)
     if change_records:
-        append_member_records(change_records)
+        await append_member_records(change_records)
 
     return {
         "course_records_added": len(course_records),

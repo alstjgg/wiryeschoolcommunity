@@ -378,7 +378,9 @@ async def handle_applicants_file(message: cl.Message):
             app_sheet_id = None
             if term_folder_id:
                 try:
-                    app_sheet_id = write_applications_sheet(term_folder_id, applications)
+                    app_sheet_id = await write_applications_sheet(
+                        term_folder_id, applications, term_id=term_id,
+                    )
                     cl.user_session.set("applications_sheet_id", app_sheet_id)
                 except Exception as e:
                     await cl.Message(f"신청서 시트 생성 오류: {e}").send()
@@ -479,7 +481,7 @@ async def handle_payment_file(message: cl.Message):
 
         # Step 2: 회원 정보 로드 + 정회원 면제 처리
         async with cl.Step(name="👥 회원 정보 로드") as step:
-            members = load_members_from_sheet()
+            members = await load_members_from_sheet()
             exempted = apply_exemptions(applications, members)
             students = applications_to_students(applications)
             step.output = (
@@ -541,11 +543,13 @@ async def write_payment_results(
 
         async with cl.Step(name="💾 신청서 시트 업데이트") as step:
             if app_sheet_id and applications:
-                update_applications_sheet(app_sheet_id, applications)
+                term_id = (cl.user_session.get("term") or {}).get("term_id", "")
+                await update_applications_sheet(
+                    app_sheet_id, applications, term_id=term_id,
+                )
                 step.output = f"입금현황 **{len(applications)}건** 반영 완료"
 
                 # 회원기록 자동 기록
-                term_id = (cl.user_session.get("term") or {}).get("term_id", "")
                 records_to_log = []
                 now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
                 for app in applications:
@@ -573,7 +577,7 @@ async def write_payment_results(
                             "사유": "정회원비입금", "관련회차": term_id,
                         })
                 if records_to_log:
-                    append_member_records(records_to_log)
+                    await append_member_records(records_to_log)
                     step.output += f", 회원기록 {len(records_to_log)}건 기록"
             else:
                 step.output = "시트 정보가 없어 반영하지 못했습니다."
@@ -607,6 +611,11 @@ async def write_payment_results(
         ).send()
 
         await send_default_actions("payment")
+
+        # DB→Sheets 동기화 트리거 (fire-and-forget)
+        from app.services.n8n import trigger_sheets_sync
+        await trigger_sheets_sync("applications", {"term_id": term_id})
+        await trigger_sheets_sync("members", {"term_id": term_id})
 
     except Exception as e:
         await cl.Message(f"저장 중 오류: {str(e)}").send()
@@ -745,7 +754,10 @@ async def do_create_attendance():
         # Step 1: 등록 수강생 확인
         async with cl.Step(name="📊 등록 수강생 확인") as step:
             from app.chains.attendance import load_registered_students
-            registered = load_registered_students(app_sheet_id)
+            att_term_id = (cl.user_session.get("term") or {}).get("term_id", "")
+            registered = await load_registered_students(
+                app_sheet_id, term_id=att_term_id,
+            )
             course_set = {s.get("과목명", "") for s in registered if s.get("과목명")}
             step.output = (
                 f"등록상태 체크된 수강생 **{len(registered)}명** ({len(course_set)}개 과목)"
@@ -908,7 +920,10 @@ async def handle_ocr_image(message: cl.Message):
         async with cl.Step(name="📸 출석부 이미지 분석") as step:
             with open(file_element.path, "rb") as f:
                 image_bytes = f.read()
-            students = load_course_students(attendance_sheet_id, course_name)
+            ocr_term_id = (cl.user_session.get("term") or {}).get("term_id", "")
+            students = await load_course_students(
+                attendance_sheet_id, course_name, term_id=ocr_term_id,
+            )
             if not students:
                 step.output = f"'{course_name}' 탭을 찾을 수 없습니다."
                 await cl.Message(
@@ -957,15 +972,23 @@ async def handle_ocr_image(message: cl.Message):
 
         if value == "apply":
             async with cl.Step(name="💾 출석부 시트 반영") as step:
-                updated = write_attendance_to_sheet(
+                updated = await write_attendance_to_sheet(
                     attendance_sheet_id, course_name,
-                    ocr_result["results"], students
+                    ocr_result["results"], students,
+                    term_id=ocr_term_id,
                 )
                 step.output = f"**{updated}명** 반영 완료"
 
             await cl.Message(
                 f"**{course_name}** 출석 체크가 반영되었습니다."
             ).send()
+
+            # DB→Sheets 동기화 트리거 (fire-and-forget)
+            from app.services.n8n import trigger_sheets_sync
+            await trigger_sheets_sync("attendance", {
+                "term_id": ocr_term_id, "course_name": course_name,
+            })
+
             cl.user_session.set("current_ocr_course", "")
             await _ask_continue_ocr(term)
 
@@ -1136,7 +1159,10 @@ async def _run_graduation_process(term: dict):
     try:
         async with cl.Step(name="📊 출석률 집계") as step:
             from app.chains.graduation import load_attendance_results
-            results = load_attendance_results(attendance_sheet_id)
+            grad_term_id = (cl.user_session.get("term") or {}).get("term_id", "")
+            results = await load_attendance_results(
+                attendance_sheet_id, term_id=grad_term_id,
+            )
             step.output = f"총 **{len(results)}건** (수강생 × 과목) 집계 완료"
 
         if not results:
@@ -1173,6 +1199,10 @@ async def _run_graduation_process(term: dict):
 
         await cl.Message(content=result_msg).send()
         await send_default_actions("graduation")
+
+        # DB→Sheets 동기화 트리거 (fire-and-forget)
+        from app.services.n8n import trigger_sheets_sync
+        await trigger_sheets_sync("graduation", {"term_id": term_id})
 
     except Exception as e:
         await cl.Message(f"종강 처리 중 오류: {str(e)}").send()

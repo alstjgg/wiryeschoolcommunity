@@ -1,0 +1,130 @@
+{
+  "name": "Sync-1: DB→Sheets Daily Full Push",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [{ "triggerAtHour": 6 }]
+        }
+      },
+      "id": "cron-trigger",
+      "name": "Daily 06:00 KST",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [200, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT name_id, name, phone, address, grade, is_exception, course_count, avg_attendance, last_term FROM members ORDER BY name_id",
+        "options": {}
+      },
+      "id": "read-members",
+      "name": "Read Members",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [440, 160],
+      "credentials": { "postgres": { "id": "j1PLbiwu8dCOVpl5", "name": "Postgres account" } }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT name_id, name, changed_at, grade_from, grade_to, reason, term_id FROM member_records ORDER BY created_at",
+        "options": {}
+      },
+      "id": "read-member-records",
+      "name": "Read Member Records",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [440, 340],
+      "credentials": { "postgres": { "id": "j1PLbiwu8dCOVpl5", "name": "Postgres account" } }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT name_id, term_id, course_name, attendance FROM course_records ORDER BY created_at",
+        "options": {}
+      },
+      "id": "read-course-records",
+      "name": "Read Course Records",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [440, 520],
+      "credentials": { "postgres": { "id": "j1PLbiwu8dCOVpl5", "name": "Postgres account" } }
+    },
+    {
+      "parameters": {
+        "documentId": { "__rl": true, "mode": "id", "value": "193r34mtLHd0-oX7MKJOWq1Ane9iBfbBZB5yYf78R3Bo" },
+        "sheetName": { "__rl": true, "mode": "name", "value": "회원목록" },
+        "options": { "cellFormat": "USER_ENTERED" }
+      },
+      "id": "write-members-sheet",
+      "name": "Write Members Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [680, 160],
+      "credentials": { "googleApi": { "id": "JtDg23azfbja0yi3", "name": "Google Service Account account" } }
+    },
+    {
+      "parameters": {
+        "documentId": { "__rl": true, "mode": "id", "value": "193r34mtLHd0-oX7MKJOWq1Ane9iBfbBZB5yYf78R3Bo" },
+        "sheetName": { "__rl": true, "mode": "name", "value": "회원기록" },
+        "options": { "cellFormat": "USER_ENTERED" }
+      },
+      "id": "write-member-records-sheet",
+      "name": "Write Member Records Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [680, 340],
+      "credentials": { "googleApi": { "id": "JtDg23azfbja0yi3", "name": "Google Service Account account" } }
+    },
+    {
+      "parameters": {
+        "documentId": { "__rl": true, "mode": "id", "value": "193r34mtLHd0-oX7MKJOWq1Ane9iBfbBZB5yYf78R3Bo" },
+        "sheetName": { "__rl": true, "mode": "name", "value": "수강기록" },
+        "options": { "cellFormat": "USER_ENTERED" }
+      },
+      "id": "write-course-records-sheet",
+      "name": "Write Course Records Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [680, 520],
+      "credentials": { "googleApi": { "id": "JtDg23azfbja0yi3", "name": "Google Service Account account" } }
+    }
+  ],
+  "connections": {
+    "Daily 06:00 KST": {
+      "main": [
+        [
+          { "node": "Read Members", "type": "main", "index": 0 },
+          { "node": "Read Member Records", "type": "main", "index": 0 },
+          { "node": "Read Course Records", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Read Members": {
+      "main": [
+        [{ "node": "Write Members Sheet", "type": "main", "index": 0 }]
+      ]
+    },
+    "Read Member Records": {
+      "main": [
+        [{ "node": "Write Member Records Sheet", "type": "main", "index": 0 }]
+      ]
+    },
+    "Read Course Records": {
+      "main": [
+        [{ "node": "Write Course Records Sheet", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "settings": { "executionOrder": "v1" },
+  "meta": {
+    "instanceId": "wiryeschool-chatbot"
+  },
+  "tags": [
+    { "name": "sync" },
+    { "name": "db-to-sheets" },
+    { "name": "scheduled" }
+  ]
+}

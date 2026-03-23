@@ -1,20 +1,15 @@
-"""출석부 생성 파이프라인 — Google Sheets SoT + 인쇄용 PDF
+"""출석부 생성 파이프라인 — Dual-Write (DB + Sheets) + 인쇄용 PDF
 
 출석부 시트 구조:
   탭1 수강생: 이름ID, 이름, 과목명, 출석률 (종강 처리 시 출석률 채워짐)
   탭N {과목명}: 이름, 1회차~12회차 (OCR 기록용 + PDF 출력 원본)
 
-PDF 구조:
-  - 과목별 1개 PDF
-  - A4 가로(landscape)
-  - 컬럼: 이름 | 1회차 ~ 12회차
-  - 매 페이지 헤더 반복 (이름, 1회차~12회차)
-  - 상단: 과목명 + 회차 타이틀
-  - 하단: 페이지 번호
-  - 폰트: NanumGothic 12pt (노년층 고려)
+등록상태는 Sheets에서만 관리자가 편집 가능. DB 모드에서도 등록상태는
+Sheets에서 읽은 뒤 DB applications와 머지하여 필터링.
 """
 
 import io
+import logging
 from pathlib import Path
 
 from reportlab.lib.pagesizes import landscape, A4
@@ -26,10 +21,12 @@ from reportlab.lib.styles import ParagraphStyle
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 
-from app.config import MAX_SESSIONS
+from app.config import MAX_SESSIONS, USE_DB_SOT
 from app.services.google_auth import get_drive_service, get_sheets_service
 from app.services.google_drive import find_or_create_folder
 from app.services.google_sheets import read_sheet, write_sheet
+
+logger = logging.getLogger(__name__)
 
 
 # ================================================= 폰트 등록 =====
@@ -59,11 +56,8 @@ def _register_korean_font() -> tuple[str, str]:
 
 # ================================================= 수강생 로드 =====
 
-def load_registered_students(applications_sheet_id: str) -> list[dict]:
-    """신청서 시트에서 유형='수강' AND 등록상태=TRUE인 행 로드.
-
-    Returns: [{"이름ID": ..., "이름": ..., "과목명": ...}, ...]
-    """
+def _load_registered_from_sheets(applications_sheet_id: str) -> list[dict]:
+    """Sheets에서 유형='수강' AND 등록상태=TRUE인 행 로드."""
     rows = read_sheet(applications_sheet_id, "신청서!A1:N5000")
     if not rows or len(rows) < 2:
         return []
@@ -76,6 +70,57 @@ def load_registered_students(applications_sheet_id: str) -> list[dict]:
         if data.get("유형") == "수강" and is_registered:
             result.append(data)
     return result
+
+
+async def _load_registered_from_db(
+    term_id: str,
+    applications_sheet_id: str,
+) -> list[dict]:
+    """DB에서 수강 신청 로드 + Sheets에서 등록상태만 읽어서 머지.
+
+    등록상태는 관리자가 Sheets에서 직접 편집하므로 Sheets가 SoT.
+    """
+    from app.services import db
+
+    apps = await db.load_applications(term_id)
+
+    # Sheets에서 등록상태 컬럼만 읽기 (G열 = 7번째)
+    rows = read_sheet(applications_sheet_id, "신청서!A1:G5000")
+    reg_map: dict[tuple, bool] = {}
+    if rows and len(rows) >= 2:
+        header = rows[0]
+        for row in rows[1:]:
+            data = dict(zip(header, row + [""] * (len(header) - len(row))))
+            key = (data.get("이름ID", ""), data.get("유형", ""), data.get("과목명", ""))
+            등록상태 = data.get("등록상태", "").strip()
+            reg_map[key] = bool(등록상태 and 등록상태.upper() != "FALSE")
+
+    result = []
+    for a in apps:
+        if a.get("유형") != "수강":
+            continue
+        key = (a.get("이름ID", ""), a.get("유형", ""), a.get("과목명", ""))
+        if reg_map.get(key, False):
+            result.append(a)
+    return result
+
+
+async def load_registered_students(
+    applications_sheet_id: str,
+    term_id: str = "",
+) -> list[dict]:
+    """등록상태 체크된 수강생 로드.
+
+    DB 모드: DB에서 applications 읽기 + Sheets에서 등록상태 머지.
+    Sheets 모드: Sheets에서 전체 읽기.
+    """
+    if USE_DB_SOT and term_id:
+        try:
+            return await _load_registered_from_db(term_id, applications_sheet_id)
+        except Exception as e:
+            logger.error("DB read failed, falling back to Sheets: %s", e)
+
+    return _load_registered_from_sheets(applications_sheet_id)
 
 
 # ============================================= 출석부 시트 생성 =====
@@ -105,7 +150,9 @@ async def create_attendance_sheet(
             "pdf_urls": {course_name: url or None},
         }
     """
-    registered = load_registered_students(applications_sheet_id)
+    registered = await load_registered_students(
+        applications_sheet_id, term_id=term_id,
+    )
 
     if not registered:
         raise ValueError(
