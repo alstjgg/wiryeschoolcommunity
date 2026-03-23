@@ -52,6 +52,17 @@ from app.context.term import get_current_term, parse_term_input
 CANCEL_KEYWORDS = ["취소", "중단", "그만", "멈춰", "stop", "cancel", "안 할게", "안할게", "나가기"]
 
 
+@cl.on_chat_start
+async def on_chat_start():
+    """새 대화 시작 — 세션 초기화 + 준비 완료 메시지"""
+    cl.user_session.set("state", "idle")
+    await cl.Message(
+        content=(
+            "준비 완료! 아래 버튼을 클릭하거나 질문을 입력해주세요."
+        ),
+    ).send()
+
+
 @cl.on_chat_resume
 async def on_chat_resume(thread: dict):
     """과거 대화를 열었을 때 메시지 히스토리 복원"""
