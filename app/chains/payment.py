@@ -27,10 +27,9 @@ logger = logging.getLogger(__name__)
 # =========================================== 통합 신청서 시트 관리 ====
 
 APPLICATION_HEADER = [
-    "이름ID", "이름", "유형", "과목명", "예상금액",
-    "입금현황", "등록상태", "입금시간", "입금자명(적요)",
-    "전화번호", "주소", "신청일",
-    "시작회차", "종료회차",
+    "신청일", "회차", "이름ID", "이름", "유형", "과목명",
+    "예상금액", "입금시간", "입금자명(적요)", "입금현황",
+    "확인사유", "처리상태",
 ]
 
 # 컬럼 인덱스 (0-based)
@@ -46,6 +45,7 @@ def build_applications(
     applicants: list[dict],
     member_signups: list[dict],
     fullmember_signups: list[dict],
+    term_id: str = "",
 ) -> list[dict]:
     """수강 신청 + 신규가입 + 정회원가입을 통합 신청서 리스트로 합친다.
 
@@ -60,20 +60,20 @@ def build_applications(
             continue
         seen.add(key)
         apps.append({
+            "신청일": a.get("신청일", ""),
+            "회차": term_id,
             "이름ID": a["이름ID"],
             "이름": a["이름"],
             "유형": "수강",
             "과목명": a["강좌명"],
             "예상금액": str(TUITION_FEE),
-            "입금현황": "❌미입금",
-            "등록상태": "",
             "입금시간": "",
             "입금자명(적요)": "",
+            "입금현황": "❌미입금",
+            "확인사유": "",
+            "처리상태": "",
             "전화번호": a.get("전화번호", ""),
             "주소": a.get("주소", ""),
-            "신청일": a.get("신청일", ""),
-            "시작회차": "",
-            "종료회차": "",
         })
 
     for s in member_signups:
@@ -83,9 +83,11 @@ def build_applications(
         seen.add(key)
         apps.append({
             **s,
+            "회차": term_id,
             "예상금액": str(MEMBERSHIP_FEE),
             "입금현황": "❌미입금",
-            "등록상태": "",
+            "확인사유": "",
+            "처리상태": "",
             "입금시간": "",
             "입금자명(적요)": "",
         })
@@ -97,9 +99,11 @@ def build_applications(
         seen.add(key)
         apps.append({
             **f,
+            "회차": term_id,
             "예상금액": str(FULL_MEMBERSHIP_FEE),
             "입금현황": "❌미입금",
-            "등록상태": "",
+            "확인사유": "",
+            "처리상태": "",
             "입금시간": "",
             "입금자명(적요)": "",
         })
@@ -163,7 +167,7 @@ def _write_applications_to_sheets(
         write_sheet(spreadsheet_id, "신청서!A1", rows)
         merged = applications
 
-    # 필터 + 등록상태 체크박스 설정
+    # 필터 + 처리상태 드롭다운 설정
     sheets_svc = get_sheets_service()
     meta = sheets_svc.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
     sheet_id = next(
@@ -172,40 +176,54 @@ def _write_applications_to_sheets(
         if s["properties"]["title"] == "신청서"
     )
 
-    sheets_svc.spreadsheets().batchUpdate(
-        spreadsheetId=spreadsheet_id,
-        body={"requests": [
-            {
-                "setBasicFilter": {
-                    "filter": {
-                        "range": {
-                            "sheetId": sheet_id,
-                            "startRowIndex": 0,
-                            "startColumnIndex": 0,
-                            "endColumnIndex": len(APPLICATION_HEADER),
-                        }
-                    }
-                }
-            },
-            {
-                "repeatCell": {
+    requests = [
+        {
+            "setBasicFilter": {
+                "filter": {
                     "range": {
                         "sheetId": sheet_id,
-                        "startRowIndex": 1,
-                        "endRowIndex": 1 + len(merged),
-                        "startColumnIndex": _COL["등록상태"],
-                        "endColumnIndex": _COL["등록상태"] + 1,
-                    },
-                    "cell": {
-                        "dataValidation": {
-                            "condition": {"type": "BOOLEAN"},
-                            "strict": True,
-                        }
-                    },
-                    "fields": "dataValidation",
+                        "startRowIndex": 0,
+                        "startColumnIndex": 0,
+                        "endColumnIndex": len(APPLICATION_HEADER),
+                    }
                 }
-            },
-        ]},
+            }
+        },
+    ]
+
+    # 처리상태 드롭다운 (등록완료/환불완료/취소완료/보류)
+    if "처리상태" in _COL:
+        requests.append({
+            "repeatCell": {
+                "range": {
+                    "sheetId": sheet_id,
+                    "startRowIndex": 1,
+                    "endRowIndex": 1 + len(merged),
+                    "startColumnIndex": _COL["처리상태"],
+                    "endColumnIndex": _COL["처리상태"] + 1,
+                },
+                "cell": {
+                    "dataValidation": {
+                        "condition": {
+                            "type": "ONE_OF_LIST",
+                            "values": [
+                                {"userEnteredValue": "등록완료"},
+                                {"userEnteredValue": "환불완료"},
+                                {"userEnteredValue": "취소완료"},
+                                {"userEnteredValue": "보류"},
+                            ],
+                        },
+                        "showCustomUi": True,
+                        "strict": False,
+                    }
+                },
+                "fields": "dataValidation",
+            }
+        })
+
+    sheets_svc.spreadsheets().batchUpdate(
+        spreadsheetId=spreadsheet_id,
+        body={"requests": requests},
     ).execute()
 
     return spreadsheet_id
@@ -213,7 +231,7 @@ def _write_applications_to_sheets(
 
 def _read_applications_from_sheets(spreadsheet_id: str) -> list[dict]:
     """Sheets에서 신청서 읽기."""
-    rows = read_sheet(spreadsheet_id, "신청서!A1:N5000")
+    rows = read_sheet(spreadsheet_id, "신청서!A1:L5000")
     if not rows or len(rows) < 2:
         return []
     header = rows[0]
@@ -294,7 +312,7 @@ async def write_applications_sheet(
 ) -> str:
     """통합 신청서 upsert.
 
-    DB 모드: DB에 upsert + Sheets에도 write (관리자 view + 등록상태 체크박스).
+    DB 모드: DB에 upsert + Sheets에도 write (관리자 view + 처리상태 드롭다운).
     Sheets 모드: Sheets에만 write.
     Returns: spreadsheet_id
     """
@@ -305,7 +323,7 @@ async def write_applications_sheet(
         except Exception as e:
             logger.error("DB write failed, falling back to Sheets only: %s", e)
 
-    # Sheets write는 항상 실행 (관리자 view + 등록상태 체크박스 필요)
+    # Sheets write는 항상 실행 (관리자 view + 처리상태 드롭다운 필요)
     return _write_applications_to_sheets(term_folder_id, applications)
 
 

@@ -64,20 +64,33 @@ CREATE TABLE IF NOT EXISTS applications (
     expected_amount     INTEGER,
     payment_status      TEXT DEFAULT 'not_paid',
     review_reason       TEXT,
-    registration_status BOOLEAN DEFAULT FALSE,
+    processing_status   TEXT,
     payment_time        TEXT,
     payer_name          TEXT,
     phone               TEXT,
     address             TEXT,
     applied_at          TEXT,
-    start_term          TEXT,
-    end_term            TEXT,
+    processed_at        TIMESTAMPTZ,
     created_at          TIMESTAMPTZ DEFAULT NOW(),
     updated_at          TIMESTAMPTZ DEFAULT NOW()
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS uq_applications
 ON applications (term_id, name_id, type, COALESCE(course_name, ''));
+
+CREATE TABLE IF NOT EXISTS deposits (
+    id                  SERIAL PRIMARY KEY,
+    term_id             TEXT NOT NULL,
+    transaction_time    TEXT,
+    amount              INTEGER,
+    payer_name          TEXT,
+    memo                TEXT,
+    match_status        TEXT DEFAULT 'unmatched',
+    matched_name_ids    TEXT[],
+    processing_status   TEXT,
+    review_reason       TEXT,
+    created_at          TIMESTAMPTZ DEFAULT NOW()
+);
 
 CREATE TABLE IF NOT EXISTS attendance (
     id              SERIAL PRIMARY KEY,
@@ -315,35 +328,26 @@ async def upsert_applications(term_id: str, applications: list[dict]) -> None:
                 except (ValueError, TypeError):
                     pass
 
-                reg_status = a.get("등록상태", "")
-                if isinstance(reg_status, bool):
-                    reg_bool = reg_status
-                elif isinstance(reg_status, str):
-                    reg_bool = reg_status.upper() in ("TRUE", "1", "YES")
-                else:
-                    reg_bool = bool(reg_status)
-
                 await conn.execute(
                     """
                     INSERT INTO applications (
                         term_id, name_id, name, type, course_name,
-                        expected_amount, payment_status, registration_status,
-                        payment_time, payer_name, phone, address,
-                        applied_at, start_term, end_term
-                    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+                        expected_amount, payment_status, review_reason,
+                        processing_status, payment_time, payer_name,
+                        phone, address, applied_at
+                    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
                     ON CONFLICT (term_id, name_id, type, COALESCE(course_name, ''))
                     DO UPDATE SET
                         name = EXCLUDED.name,
                         expected_amount = EXCLUDED.expected_amount,
                         payment_status = EXCLUDED.payment_status,
-                        registration_status = EXCLUDED.registration_status,
+                        review_reason = EXCLUDED.review_reason,
+                        processing_status = EXCLUDED.processing_status,
                         payment_time = EXCLUDED.payment_time,
                         payer_name = EXCLUDED.payer_name,
                         phone = EXCLUDED.phone,
                         address = EXCLUDED.address,
                         applied_at = EXCLUDED.applied_at,
-                        start_term = EXCLUDED.start_term,
-                        end_term = EXCLUDED.end_term,
                         updated_at = NOW()
                     """,
                     term_id,
@@ -353,14 +357,13 @@ async def upsert_applications(term_id: str, applications: list[dict]) -> None:
                     a.get("과목명", "") or None,
                     amount,
                     _emoji_to_code(a.get("입금현황", "❌미입금")),
-                    reg_bool,
+                    a.get("확인사유", "") or None,
+                    a.get("처리상태", "") or None,
                     a.get("입금시간", "") or None,
                     a.get("입금자명(적요)", "") or None,
                     a.get("전화번호", "") or None,
                     a.get("주소", "") or None,
                     a.get("신청일", "") or None,
-                    a.get("시작회차", "") or None,
-                    a.get("종료회차", "") or None,
                 )
 
 
@@ -380,17 +383,96 @@ async def load_applications(term_id: str) -> list[dict]:
             "과목명": r["course_name"] or "",
             "예상금액": str(r["expected_amount"] or ""),
             "입금현황": _code_to_emoji(r["payment_status"] or "not_paid"),
-            "등록상태": "TRUE" if r["registration_status"] else "",
+            "확인사유": r["review_reason"] or "",
+            "처리상태": r["processing_status"] or "",
             "입금시간": r["payment_time"] or "",
             "입금자명(적요)": r["payer_name"] or "",
             "전화번호": r["phone"] or "",
             "주소": r["address"] or "",
             "신청일": r["applied_at"] or "",
-            "시작회차": r["start_term"] or "",
-            "종료회차": r["end_term"] or "",
         }
         for r in rows
     ]
+
+
+# ============================================================== Deposits ====
+
+async def insert_deposits(term_id: str, deposits: list[dict]) -> None:
+    """입금내역 전건 INSERT."""
+    if not deposits:
+        return
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            for d in deposits:
+                amount = 0
+                try:
+                    amount = int(d.get("입금", 0) or d.get("amount", 0) or 0)
+                except (ValueError, TypeError):
+                    pass
+                await conn.execute(
+                    """
+                    INSERT INTO deposits (term_id, transaction_time, amount, payer_name, memo)
+                    VALUES ($1, $2, $3, $4, $5)
+                    """,
+                    term_id,
+                    d.get("거래일시", "") or d.get("transaction_time", "") or None,
+                    amount,
+                    d.get("의뢰인", "") or d.get("payer_name", "") or None,
+                    d.get("적요", "") or d.get("memo", "") or None,
+                )
+
+
+async def load_deposits(
+    term_id: str,
+    unmatched_only: bool = False,
+) -> list[dict]:
+    """입금내역 로드. unmatched_only=True이면 미매칭 건만."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        if unmatched_only:
+            rows = await conn.fetch(
+                "SELECT * FROM deposits WHERE term_id = $1 AND match_status = 'unmatched' ORDER BY id",
+                term_id,
+            )
+        else:
+            rows = await conn.fetch(
+                "SELECT * FROM deposits WHERE term_id = $1 ORDER BY id",
+                term_id,
+            )
+    return [
+        {
+            "id": r["id"],
+            "거래일시": r["transaction_time"] or "",
+            "입금": r["amount"] or 0,
+            "입금자명": r["payer_name"] or "",
+            "적요": r["memo"] or "",
+            "match_status": r["match_status"] or "unmatched",
+            "matched_name_ids": list(r["matched_name_ids"] or []),
+            "처리상태": r["processing_status"] or "",
+            "확인사유": r["review_reason"] or "",
+        }
+        for r in rows
+    ]
+
+
+async def update_deposit_match(
+    deposit_id: int,
+    match_status: str,
+    matched_name_ids: list[str] | None = None,
+) -> None:
+    """입금내역 매칭 결과 업데이트."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            UPDATE deposits SET match_status = $1, matched_name_ids = $2
+            WHERE id = $3
+            """,
+            match_status,
+            matched_name_ids or [],
+            deposit_id,
+        )
 
 
 # ============================================================= Attendance ====

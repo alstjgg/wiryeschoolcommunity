@@ -366,7 +366,9 @@ async def handle_applicants_file(message: cl.Message):
 
         # Step 4: 통합 신청서 생성 + Sheets 저장
         async with cl.Step(name="📝 통합 신청서 생성") as step:
-            applications = build_applications(applicants, member_records, fullmember_records)
+            applications = build_applications(
+                applicants, member_records, fullmember_records, term_id=term_id,
+            )
 
             term_folder_id = cl.user_session.get("term_folder_id")
             if not term_folder_id:
@@ -606,7 +608,7 @@ async def write_payment_results(
                 f"{summary_line}{check_note}\n\n"
                 f"신청서 시트에서 입금현황을 확인하시고, "
                 f"배움숲 포탈에서 수강 등록을 처리한 뒤\n"
-                f"등록상태 체크박스를 클릭해주세요.{sheet_link}"
+                f"처리상태를 입력해주세요.{sheet_link}"
             ),
         ).send()
 
@@ -687,8 +689,8 @@ async def _do_attendance_preflight(term: dict):
                 "출석부 생성 전 아래 3단계가 완료되었는지 확인해주세요.\n\n"
                 "1. ✅ 입금 대조 완료\n"
                 "2. ✅ 배움숲 포탈에서 수강 등록 처리 완료\n"
-                f"3. ✅ [신청서 시트](https://docs.google.com/spreadsheets/d/{app_sheet_id})의 "
-                "등록상태 열 체크박스 클릭 완료\n\n"
+                f"3. ✅ [신청기록 시트](https://docs.google.com/spreadsheets/d/{app_sheet_id})에서 "
+                "처리상태를 '등록완료'로 입력 완료\n\n"
                 "모두 완료되셨으면 출석부를 생성합니다."
             )
         else:
@@ -696,7 +698,7 @@ async def _do_attendance_preflight(term: dict):
                 "출석부 생성 전 아래 3단계가 완료되었는지 확인해주세요.\n\n"
                 "1. ✅ 입금 대조 완료\n"
                 "2. ✅ 배움숲 포탈에서 수강 등록 처리 완료\n"
-                "3. ✅ 신청서 시트의 등록상태 열 체크박스 클릭 완료\n\n"
+                "3. ✅ 신청기록 시트에서 처리상태를 '등록완료'로 입력 완료\n\n"
                 "모두 완료되셨으면 출석부를 생성합니다."
             )
 
@@ -719,13 +721,13 @@ async def _do_attendance_preflight(term: dict):
                     "**1단계** — 신청서 시트에서 입금현황 확인\n"
                     f"→ [신청서 시트 열기](https://docs.google.com/spreadsheets/d/{app_sheet_id})\n\n"
                     "**2단계** — 배움숲 포탈 접속 → 수강신청관리 → 등록 처리\n\n"
-                    "**3단계** — 신청서 시트로 돌아와 등록상태 열 체크박스 클릭\n\n"
+                    "**3단계** — 신청기록 시트로 돌아와 처리상태를 '등록완료'로 입력\n\n"
                     "완료 후 '📋 출석부 생성' 버튼을 다시 눌러주세요."
                 )
             else:
                 guide = (
                     "입금 대조를 먼저 진행해주세요.\n"
-                    "입금 대조 → 배움숲 등록 → 등록상태 체크박스 클릭 후\n"
+                    "입금 대조 → 배움숲 등록 → 처리상태 '등록완료' 입력 후\n"
                     "'📋 출석부 생성' 버튼을 눌러주세요."
                 )
             await cl.Message(guide).send()
@@ -760,13 +762,13 @@ async def do_create_attendance():
             )
             course_set = {s.get("과목명", "") for s in registered if s.get("과목명")}
             step.output = (
-                f"등록상태 체크된 수강생 **{len(registered)}명** ({len(course_set)}개 과목)"
+                f"등록완료 수강생 **{len(registered)}명** ({len(course_set)}개 과목)"
             )
 
         if not registered:
             await cl.Message(
-                "등록상태가 체크된 수강생이 없습니다.\n"
-                "배움숲 등록 처리 후 신청서 시트에 등록상태를 체크해주세요."
+                "처리상태가 '등록완료'인 수강생이 없습니다.\n"
+                "배움숲 등록 처리 후 신청기록 시트에서 처리상태를 '등록완료'로 설정해주세요."
             ).send()
             await send_default_actions()
             return

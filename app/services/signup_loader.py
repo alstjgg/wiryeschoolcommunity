@@ -120,8 +120,6 @@ def load_member_signups_from_drive(year: str) -> dict:
             "전화번호": phone,
             "주소": address,
             "신청일": signup_date,
-            "시작회차": "",
-            "종료회차": "",
         })
 
     return {
@@ -138,7 +136,6 @@ def load_fullmember_signups_from_drive(year: str) -> dict:
 
     탐색 기준: 폴더 내 파일명에 year (예: "2026") 포함 여부.
     정회원 가입은 2~4학기(3월 중순~9월 말)에만 가능.
-    종료회차: 항상 다음 해 1학기 (예: 2026년 가입 → 2027-1).
 
     Returns: {"found": bool, "file_name": str|None, "count": int,
               "records": list[dict], "error": str|None}
@@ -179,7 +176,6 @@ def load_fullmember_signups_from_drive(year: str) -> dict:
             continue
 
         name_id = name + phone[-4:]
-        year_int = int(year)
 
         records.append({
             "이름ID": name_id,
@@ -189,8 +185,6 @@ def load_fullmember_signups_from_drive(year: str) -> dict:
             "전화번호": phone,
             "주소": address,
             "신청일": signup_date,
-            "시작회차": f"{year_int}-2",
-            "종료회차": f"{year_int + 1}-1",
         })
 
     return {

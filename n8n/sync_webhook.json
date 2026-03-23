@@ -5,14 +5,17 @@
       "parameters": {
         "httpMethod": "POST",
         "path": "sheets-sync",
-        "responseMode": "onReceived",
         "options": {}
       },
-      "id": "webhook-trigger",
+      "id": "2978e7e8-fd46-447d-8b24-f351290d99b5",
       "name": "Webhook",
       "type": "n8n-nodes-base.webhook",
       "typeVersion": 2,
-      "position": [200, 300]
+      "position": [
+        -448,
+        160
+      ],
+      "webhookId": "900af540-5e95-453f-a01d-ea42d2be94c0"
     },
     {
       "parameters": {
@@ -20,56 +23,96 @@
           "values": [
             {
               "conditions": {
-                "options": { "caseSensitive": true, "leftValue": "" },
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
                 "conditions": [
                   {
                     "leftValue": "={{ $json.type }}",
                     "rightValue": "applications",
-                    "operator": { "type": "string", "operation": "equals" }
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "8a5f6e95-46b3-422a-ab40-40415bd76aef"
                   }
-                ]
+                ],
+                "combinator": "and"
               },
               "renameOutput": true,
               "outputKey": "applications"
             },
             {
               "conditions": {
-                "options": { "caseSensitive": true, "leftValue": "" },
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
                 "conditions": [
                   {
                     "leftValue": "={{ $json.type }}",
                     "rightValue": "members",
-                    "operator": { "type": "string", "operation": "equals" }
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "18de2835-5122-4ce6-9374-e1dd0175207b"
                   }
-                ]
+                ],
+                "combinator": "and"
               },
               "renameOutput": true,
               "outputKey": "members"
             },
             {
               "conditions": {
-                "options": { "caseSensitive": true, "leftValue": "" },
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
                 "conditions": [
                   {
                     "leftValue": "={{ $json.type }}",
                     "rightValue": "graduation",
-                    "operator": { "type": "string", "operation": "equals" }
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "1c24e395-7d00-4ef2-9b6b-3d66ed4e4163"
                   }
-                ]
+                ],
+                "combinator": "and"
               },
               "renameOutput": true,
               "outputKey": "graduation"
             },
             {
               "conditions": {
-                "options": { "caseSensitive": true, "leftValue": "" },
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
                 "conditions": [
                   {
                     "leftValue": "={{ $json.type }}",
                     "rightValue": "attendance",
-                    "operator": { "type": "string", "operation": "equals" }
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "696b8cd6-4a68-4aed-904a-81abfbf5f32e"
                   }
-                ]
+                ],
+                "combinator": "and"
               },
               "renameOutput": true,
               "outputKey": "attendance"
@@ -80,24 +123,35 @@
           "fallbackOutput": "extra"
         }
       },
-      "id": "switch-type",
+      "id": "574ca83c-d20c-4c21-b730-2b37b3193a25",
       "name": "Switch by Type",
       "type": "n8n-nodes-base.switch",
       "typeVersion": 3.2,
-      "position": [420, 300]
+      "position": [
+        -224,
+        160
+      ]
     },
     {
       "parameters": {
         "operation": "executeQuery",
-        "query": "SELECT term_id, name_id, name, type, course_name, expected_amount, payment_status, registration_status, payment_time, payer_name, phone, address, applied_at, start_term, end_term FROM applications WHERE term_id = '{{ $json.term_id }}' ORDER BY id",
+        "query": "SELECT applied_at, term_id, name_id, name, type, course_name,\n       expected_amount, payment_status, payment_time, payer_name,\n       review_reason, registration_status\nFROM applications\nWHERE term_id = '{{ $json.term_id }}'\nORDER BY id",
         "options": {}
       },
-      "id": "read-applications",
+      "id": "17644abd-4bc5-4766-836c-8cb94c6d3ff6",
       "name": "Read Applications",
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.5,
-      "position": [640, 140],
-      "credentials": { "postgres": { "id": "j1PLbiwu8dCOVpl5", "name": "Postgres account" } }
+      "position": [
+        0,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "j1PLbiwu8dCOVpl5",
+          "name": "Postgres account"
+        }
+      }
     },
     {
       "parameters": {
@@ -105,12 +159,20 @@
         "query": "SELECT name_id, name, phone, address, grade, is_exception, course_count, avg_attendance, last_term FROM members ORDER BY name_id",
         "options": {}
       },
-      "id": "read-members",
+      "id": "48f63bfb-a2ed-43cd-b611-6e1b03c633ef",
       "name": "Read Members",
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.5,
-      "position": [640, 300],
-      "credentials": { "postgres": { "id": "j1PLbiwu8dCOVpl5", "name": "Postgres account" } }
+      "position": [
+        0,
+        160
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "j1PLbiwu8dCOVpl5",
+          "name": "Postgres account"
+        }
+      }
     },
     {
       "parameters": {
@@ -118,12 +180,20 @@
         "query": "SELECT name_id, name, changed_at, grade_from, grade_to, reason, term_id FROM member_records ORDER BY created_at",
         "options": {}
       },
-      "id": "read-member-records",
+      "id": "78861f8a-f22d-4f71-ade2-20a8a29ee8d1",
       "name": "Read Member Records",
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.5,
-      "position": [640, 460],
-      "credentials": { "postgres": { "id": "j1PLbiwu8dCOVpl5", "name": "Postgres account" } }
+      "position": [
+        0,
+        320
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "j1PLbiwu8dCOVpl5",
+          "name": "Postgres account"
+        }
+      }
     },
     {
       "parameters": {
@@ -131,47 +201,359 @@
         "query": "SELECT name_id, term_id, course_name, attendance FROM course_records ORDER BY created_at",
         "options": {}
       },
-      "id": "read-course-records",
+      "id": "12393706-12ab-4779-b477-dd00b5dba0a6",
       "name": "Read Course Records",
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.5,
-      "position": [640, 620],
-      "credentials": { "postgres": { "id": "j1PLbiwu8dCOVpl5", "name": "Postgres account" } }
+      "position": [
+        0,
+        480
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "j1PLbiwu8dCOVpl5",
+          "name": "Postgres account"
+        }
+      }
     },
     {
       "parameters": {},
-      "id": "noop-attendance",
+      "id": "f99a74e5-1bfa-4540-bca0-8d17d99ca3d1",
       "name": "Attendance (TODO)",
       "type": "n8n-nodes-base.noOp",
       "typeVersion": 1,
-      "position": [640, 780]
+      "position": [
+        0,
+        640
+      ]
+    },
+    {
+      "parameters": {
+        "language": "pythonNative",
+        "pythonCode": "# Loop over input items and add a new field called 'my_new_field' to the JSON of each one\nfor item in _items:\n  item[\"json\"][\"my_new_field\"] = 1\nreturn _items"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        208,
+        0
+      ],
+      "id": "e36c9263-df40-4736-b879-e043f4716d06",
+      "name": "Convert payment_status"
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "operation": "clear",
+        "documentId": {
+          "__rl": true,
+          "value": "https://docs.google.com/spreadsheets/d/193r34mtLHd0-oX7MKJOWq1Ane9iBfbBZB5yYf78R3Bo/edit?gid=1369148408#gid=1369148408",
+          "mode": "url"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": 1369148408,
+          "mode": "list",
+          "cachedResultName": "신청기록",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/193r34mtLHd0-oX7MKJOWq1Ane9iBfbBZB5yYf78R3Bo/edit#gid=1369148408"
+        },
+        "keepFirstRow": true
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        416,
+        0
+      ],
+      "id": "f17a58a6-91c1-41b2-85a3-48fc63884c15",
+      "name": "Clear Applications",
+      "credentials": {
+        "googleApi": {
+          "id": "JtDg23azfbja0yi3",
+          "name": "Google Service Account account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "https://docs.google.com/spreadsheets/d/193r34mtLHd0-oX7MKJOWq1Ane9iBfbBZB5yYf78R3Bo/edit?gid=1369148408#gid=1369148408",
+          "mode": "url"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": 1369148408,
+          "mode": "list",
+          "cachedResultName": "신청기록",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/193r34mtLHd0-oX7MKJOWq1Ane9iBfbBZB5yYf78R3Bo/edit#gid=1369148408"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "신청일": "applied_at",
+            "회차": "term_id",
+            "이름ID": "name_id",
+            "이름": "name",
+            "유형": "type",
+            "과목명": "course_name",
+            "예상금액": "expected_amount",
+            "입금현황": "payment_status",
+            "입금시각": "payment_time",
+            "입금자명": "payer_name",
+            "확인사유": "review_reason",
+            "등록상태": "registration_status"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "신청일",
+              "displayName": "신청일",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "회차",
+              "displayName": "회차",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "이름ID",
+              "displayName": "이름ID",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "이름",
+              "displayName": "이름",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "유형",
+              "displayName": "유형",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "과목명",
+              "displayName": "과목명",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "예상금액",
+              "displayName": "예상금액",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "입금현황",
+              "displayName": "입금현황",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "입금시각",
+              "displayName": "입금시각",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "입금자명",
+              "displayName": "입금자명",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "확인사유",
+              "displayName": "확인사유",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "등록상태",
+              "displayName": "등록상태",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {
+          "locationDefine": {
+            "values": {}
+          }
+        }
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        608,
+        0
+      ],
+      "id": "a05e447d-1b79-4add-a6c4-e1fbb0ea26dc",
+      "name": "Write Applications",
+      "credentials": {
+        "googleApi": {
+          "id": "JtDg23azfbja0yi3",
+          "name": "Google Service Account account"
+        }
+      }
     }
   ],
+  "pinData": {},
   "connections": {
     "Webhook": {
       "main": [
-        [{ "node": "Switch by Type", "type": "main", "index": 0 }]
+        [
+          {
+            "node": "Switch by Type",
+            "type": "main",
+            "index": 0
+          }
+        ]
       ]
     },
     "Switch by Type": {
       "main": [
-        [{ "node": "Read Applications", "type": "main", "index": 0 }],
-        [{ "node": "Read Members", "type": "main", "index": 0 }],
         [
-          { "node": "Read Members", "type": "main", "index": 0 },
-          { "node": "Read Member Records", "type": "main", "index": 0 },
-          { "node": "Read Course Records", "type": "main", "index": 0 }
+          {
+            "node": "Read Applications",
+            "type": "main",
+            "index": 0
+          }
         ],
-        [{ "node": "Attendance (TODO)", "type": "main", "index": 0 }]
+        [
+          {
+            "node": "Read Members",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Read Members",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Read Member Records",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Read Course Records",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Attendance (TODO)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Applications": {
+      "main": [
+        [
+          {
+            "node": "Convert payment_status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Convert payment_status": {
+      "main": [
+        [
+          {
+            "node": "Clear Applications",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Clear Applications": {
+      "main": [
+        [
+          {
+            "node": "Write Applications",
+            "type": "main",
+            "index": 0
+          }
+        ]
       ]
     }
   },
-  "settings": { "executionOrder": "v1" },
-  "meta": {
-    "instanceId": "wiryeschool-chatbot"
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
   },
+  "versionId": "f5ecd57b-85f6-4e8b-963b-7a71c5abf70f",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "622c686528632a543190385bd68c7c1bbfc713919f334307d5883821cfe3c937"
+  },
+  "id": "gDRh4FYpZWtGhrCm",
   "tags": [
-    { "name": "sync" },
-    { "name": "db-to-sheets" }
+    {
+      "updatedAt": "2026-03-23T01:55:58.200Z",
+      "createdAt": "2026-03-23T01:55:58.200Z",
+      "id": "E8iLrBNxlhdq1GGD",
+      "name": "sync"
+    },
+    {
+      "updatedAt": "2026-03-23T01:55:58.210Z",
+      "createdAt": "2026-03-23T01:55:58.210Z",
+      "id": "EGsns86AE4WfSbNn",
+      "name": "db-to-sheets"
+    }
   ]
 }

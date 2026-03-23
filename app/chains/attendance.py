@@ -4,8 +4,8 @@
   탭1 수강생: 이름ID, 이름, 과목명, 출석률 (종강 처리 시 출석률 채워짐)
   탭N {과목명}: 이름, 1회차~12회차 (OCR 기록용 + PDF 출력 원본)
 
-등록상태는 Sheets에서만 관리자가 편집 가능. DB 모드에서도 등록상태는
-Sheets에서 읽은 뒤 DB applications와 머지하여 필터링.
+처리상태는 Sheets에서만 관리자가 편집 가능 (드롭다운: 등록완료/환불완료/취소완료/보류).
+DB 모드에서도 처리상태는 Sheets에서 읽은 뒤 DB applications와 머지하여 필터링.
 """
 
 import io
@@ -57,17 +57,16 @@ def _register_korean_font() -> tuple[str, str]:
 # ================================================= 수강생 로드 =====
 
 def _load_registered_from_sheets(applications_sheet_id: str) -> list[dict]:
-    """Sheets에서 유형='수강' AND 등록상태=TRUE인 행 로드."""
-    rows = read_sheet(applications_sheet_id, "신청서!A1:N5000")
+    """Sheets에서 유형='수강' AND 처리상태='등록완료'인 행 로드."""
+    rows = read_sheet(applications_sheet_id, "신청서!A1:L5000")
     if not rows or len(rows) < 2:
         return []
     header = rows[0]
     result = []
     for row in rows[1:]:
         data = dict(zip(header, row + [""] * (len(header) - len(row))))
-        등록상태 = data.get("등록상태", "").strip()
-        is_registered = 등록상태 and 등록상태.upper() != "FALSE"
-        if data.get("유형") == "수강" and is_registered:
+        처리상태 = data.get("처리상태", "").strip()
+        if data.get("유형") == "수강" and 처리상태 == "등록완료":
             result.append(data)
     return result
 
@@ -76,31 +75,30 @@ async def _load_registered_from_db(
     term_id: str,
     applications_sheet_id: str,
 ) -> list[dict]:
-    """DB에서 수강 신청 로드 + Sheets에서 등록상태만 읽어서 머지.
+    """DB에서 수강 신청 로드 + Sheets에서 처리상태만 읽어서 머지.
 
-    등록상태는 관리자가 Sheets에서 직접 편집하므로 Sheets가 SoT.
+    처리상태는 관리자가 Sheets에서 직접 편집하므로 Sheets가 SoT.
     """
     from app.services import db
 
     apps = await db.load_applications(term_id)
 
-    # Sheets에서 등록상태 컬럼만 읽기 (G열 = 7번째)
-    rows = read_sheet(applications_sheet_id, "신청서!A1:G5000")
-    reg_map: dict[tuple, bool] = {}
+    # Sheets에서 처리상태 컬럼만 읽기 (L열 = 12번째)
+    rows = read_sheet(applications_sheet_id, "신청서!A1:L5000")
+    status_map: dict[tuple, str] = {}
     if rows and len(rows) >= 2:
         header = rows[0]
         for row in rows[1:]:
             data = dict(zip(header, row + [""] * (len(header) - len(row))))
             key = (data.get("이름ID", ""), data.get("유형", ""), data.get("과목명", ""))
-            등록상태 = data.get("등록상태", "").strip()
-            reg_map[key] = bool(등록상태 and 등록상태.upper() != "FALSE")
+            status_map[key] = data.get("처리상태", "").strip()
 
     result = []
     for a in apps:
         if a.get("유형") != "수강":
             continue
         key = (a.get("이름ID", ""), a.get("유형", ""), a.get("과목명", ""))
-        if reg_map.get(key, False):
+        if status_map.get(key) == "등록완료":
             result.append(a)
     return result
 
@@ -109,9 +107,9 @@ async def load_registered_students(
     applications_sheet_id: str,
     term_id: str = "",
 ) -> list[dict]:
-    """등록상태 체크된 수강생 로드.
+    """처리상태='등록완료'인 수강생 로드.
 
-    DB 모드: DB에서 applications 읽기 + Sheets에서 등록상태 머지.
+    DB 모드: DB에서 applications 읽기 + Sheets에서 처리상태 머지.
     Sheets 모드: Sheets에서 전체 읽기.
     """
     if USE_DB_SOT and term_id:
@@ -156,8 +154,8 @@ async def create_attendance_sheet(
 
     if not registered:
         raise ValueError(
-            "등록상태가 체크된 수강생이 없습니다. "
-            "입금 대조 후 배움숲에서 등록 처리를 완료하고 신청서 시트에 등록상태를 체크해주세요."
+            "처리상태가 '등록완료'인 수강생이 없습니다. "
+            "입금 대조 후 배움숲에서 등록 처리를 완료하고 신청기록 시트에서 처리상태를 '등록완료'로 설정해주세요."
         )
 
     # 과목별 그룹핑
