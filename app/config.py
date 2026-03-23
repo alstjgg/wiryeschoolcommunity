@@ -48,6 +48,10 @@ MEMBERS_SHEET_ID = "193r34mtLHd0-oX7MKJOWq1Ane9iBfbBZB5yYf78R3Bo"  # 회원관�
 MEMBER_SIGNUP_FOLDER_ID = "10ZL8rD9j7OyyZOihfyJ6GRTzmBrTBgWe"
 FULLMEMBER_SIGNUP_FOLDER_ID = "17tsWfYwIRgHHcT1DQEj8Sqa4ys6pe0Vy"
 
+# 강사/사무처 관리 시트 (면제 대상 판별용)
+INSTRUCTOR_SHEET_ID = "1GPwpyHU4vzOtDW3eFlvDKh13maR-yq-qaUzJ73HaR2U"
+STAFF_SHEET_ID = "1hvuXv0NZmEhTW6QDFJ4SYArP51rrPJoWS9BRramtTMY"
+
 # 회원관리 파일 내 탭명 (5탭 구조: 회원목록, 회원기록, 수강기록, 신청기록, 미확인입금)
 MEMBERS_TAB = "회원목록"              # 현재 상태 스냅샷
 MEMBER_RECORDS_TAB = "회원기록"       # 등급 변경 이력

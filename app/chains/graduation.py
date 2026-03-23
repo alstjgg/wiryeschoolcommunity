@@ -231,25 +231,29 @@ async def recalculate_member_stats(members: list[dict]) -> list[dict]:
 def get_members_to_demote(
     members: list[dict],
     is_winter_term: bool,
+    active_staff_ids: set[str] | None = None,
 ) -> tuple[list[dict], list[dict]]:
     """강등 대상 분류.
 
     준회원 → 회원: 매 종강 시
-    정회원 → 회원: 1학기(겨울) 종강 시만. 예외여부=TRUE인 회원 제외.
+    정회원 → 회원: 1학기(겨울) 종강 시만.
+      - 활동 중인 사무처 직원(active_staff_ids)은 제외
+      - 강사 포함 나머지 정회원은 전원 강등
 
     Returns: (준회원_강등대상, 정회원_강등대상)
     """
+    if active_staff_ids is None:
+        active_staff_ids = set()
     junior_demote = []
     full_demote = []
 
     for m in members:
         grade = m.get("등급", "")
-        is_exception = str(m.get("예외여부", "")).upper() == "TRUE"
-
         if grade == "준회원":
             junior_demote.append(m)
-        elif grade == "정회원" and is_winter_term and not is_exception:
-            full_demote.append(m)
+        elif grade == "정회원" and is_winter_term:
+            if m.get("이름ID", "") not in active_staff_ids:
+                full_demote.append(m)
 
     return junior_demote, full_demote
 
@@ -314,8 +318,12 @@ async def run_graduation(
     members = await load_members_from_sheet()
     members = await recalculate_member_stats(members)
 
-    # 6. 등급 강등
-    junior_demote, full_demote = get_members_to_demote(members, is_winter)
+    # 6. 등급 강등 (활동 중 사무처 직원은 제외)
+    from app.chains.payment import get_active_staff_ids
+    active_staff_ids = get_active_staff_ids()
+    junior_demote, full_demote = get_members_to_demote(
+        members, is_winter, active_staff_ids,
+    )
     change_records = []
 
     for m in junior_demote:
@@ -329,6 +337,7 @@ async def run_graduation(
 
     for m in full_demote:
         m["등급"] = "회원"
+        m["예외여부"] = ""  # 강등 시 리셋 (다음 사이클 강의하면 재설정)
         change_records.append({
             "이름ID": m["이름ID"], "이름": m["이름"],
             "변경일시": now_str,

@@ -41,16 +41,23 @@ class TestGetMembersToDemote:
         assert len(full) == 0
 
     def test_fullmember_demoted_only_winter(self):
-        """정회원은 겨울학기(1학기)에만 강등"""
-        junior, full = get_members_to_demote(MEMBERS, is_winter_term=True)
+        """정회원은 겨울학기(1학기)에만 강등 — 활동 중 사무처 직원은 제외"""
+        active_staff = {"정회원02"}
+        junior, full = get_members_to_demote(MEMBERS, is_winter_term=True, active_staff_ids=active_staff)
         assert len(junior) == 2
-        assert len(full) == 1  # 정회원A만 (정회원B는 예외)
+        assert len(full) == 1  # 정회원A만 (정회원B는 활동 중 직원)
 
-    def test_exception_member_excluded(self):
-        """예외여부=TRUE인 정회원은 겨울학기에도 강등 면제"""
-        junior, full = get_members_to_demote(MEMBERS, is_winter_term=True)
+    def test_active_staff_excluded(self):
+        """활동 중 사무처 직원은 겨울학기에도 강등 면제"""
+        active_staff = {"정회원02"}
+        junior, full = get_members_to_demote(MEMBERS, is_winter_term=True, active_staff_ids=active_staff)
         demoted_ids = [m["이름ID"] for m in full]
         assert "정회원02" not in demoted_ids
+
+    def test_no_staff_ids_demotes_all(self):
+        """active_staff_ids 없으면 정회원 전원 강등"""
+        junior, full = get_members_to_demote(MEMBERS, is_winter_term=True)
+        assert len(full) == 2
 
     def test_regular_member_not_demoted(self):
         """일반 회원은 강등 대상 아님"""

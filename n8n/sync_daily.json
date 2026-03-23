@@ -1,5 +1,5 @@
 {
-  "name": "Sync-1: DB→Sheets Daily Full Push",
+  "name": "Sync-1",
   "nodes": [
     {
       "parameters": {
@@ -520,7 +520,7 @@
     {
       "parameters": {
         "operation": "executeQuery",
-        "query": "SELECT applied_at, term_id, name_id, name, type, course_name,\n       expected_amount, payment_status, payment_time, payer_name,\n       review_reason, registration_status\nFROM applications\nORDER BY term_id DESC, id",
+        "query": "SELECT applied_at, term_id, name_id, name, type, course_name,\n       expected_amount, payment_status, payment_time, payer_name,\n       review_reason, processing_status\nFROM applications\nORDER BY term_id DESC, id",
         "options": {}
       },
       "id": "763d84ed-ec06-46b3-94c8-4ecdc7d5269e",
@@ -601,7 +601,7 @@
             "입금시각": "payment_time",
             "입금자명": "payer_name",
             "확인사유": "review_reason",
-            "등록상태": "registration_status"
+            "처리상태": "processing_status"
           },
           "matchingColumns": [],
           "schema": [
@@ -669,15 +669,6 @@
               "canBeUsedToMatch": true
             },
             {
-              "id": "입금현황",
-              "displayName": "입금현황",
-              "required": false,
-              "defaultMatch": false,
-              "display": true,
-              "type": "string",
-              "canBeUsedToMatch": true
-            },
-            {
               "id": "입금시각",
               "displayName": "입금시각",
               "required": false,
@@ -696,6 +687,15 @@
               "canBeUsedToMatch": true
             },
             {
+              "id": "입금현황",
+              "displayName": "입금현황",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
               "id": "확인사유",
               "displayName": "확인사유",
               "required": false,
@@ -705,13 +705,14 @@
               "canBeUsedToMatch": true
             },
             {
-              "id": "등록상태",
-              "displayName": "등록상태",
+              "id": "처리상태",
+              "displayName": "처리상태",
               "required": false,
               "defaultMatch": false,
               "display": true,
               "type": "string",
-              "canBeUsedToMatch": true
+              "canBeUsedToMatch": true,
+              "removed": false
             }
           ],
           "attemptToConvertTypes": false,
@@ -741,7 +742,7 @@
     {
       "parameters": {
         "language": "pythonNative",
-        "pythonCode": "# Loop over input items and add a new field called 'my_new_field' to the JSON of each one\nfor item in _items:\n  item[\"json\"][\"my_new_field\"] = 1\nreturn _items"
+        "pythonCode": "status_map = {\n    \"confirmed\": \"✅정상\",\n    \"needs_review\": \"🔶확인필요\",\n    \"not_paid\": \"❌미입금\",\n    \"name_mismatch\": \"⚠️이름불일치\",\n    \"duplicate\": \"🔄중복\",\n    \"exempted\": \"💎면제\",\n}\nfor item in _items:\n    raw = item[\"json\"].get(\"payment_status\", \"\")\n    item[\"json\"][\"payment_status\"] = status_map.get(raw, raw)\nreturn _items"
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -886,7 +887,7 @@
     "executionOrder": "v1",
     "binaryMode": "separate"
   },
-  "versionId": "844d60f2-8541-4343-9abf-f90d70e5d02c",
+  "versionId": "22f7366b-7b27-475f-8060-caa86307a1a0",
   "meta": {
     "templateCredsSetupCompleted": true,
     "instanceId": "622c686528632a543190385bd68c7c1bbfc713919f334307d5883821cfe3c937"

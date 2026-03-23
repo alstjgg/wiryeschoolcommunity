@@ -22,6 +22,7 @@ from app.chains.payment import (
     applications_to_students,
     apply_matching_results,
     apply_grade_cascade,
+    get_exception_ids,
     update_applications_sheet,
     load_members_from_sheet,
     update_members_sheet,
@@ -499,15 +500,20 @@ async def handle_payment_file(message: cl.Message):
             except Exception as e:
                 logger.warning("deposits INSERT failed (non-critical): %s", e)
 
-        # Step 2: 회원 정보 로드 + 정회원 면제 처리
+        # Step 2: 회원 정보 로드 + 면제 처리 (정회원 + 강사/사무처)
         async with cl.Step(name="👥 회원 정보 로드") as step:
             members = await load_members_from_sheet()
-            exempted = apply_exemptions(applications, members)
+            exception_ids = get_exception_ids(term_id) if term_id else set()
+            exempted = apply_exemptions(applications, members, exception_ids)
             students = applications_to_students(applications)
-            step.output = (
-                f"회원 **{len(members)}명** 로드, "
-                f"정회원 면제 **{len(exempted)}건** 처리"
-            )
+            exc_count = sum(1 for e in exempted if e.get("확인사유") == "강사/사무처 면제")
+            regular_count = len(exempted) - exc_count
+            parts = [f"회원 **{len(members)}명** 로드"]
+            if regular_count:
+                parts.append(f"정회원 면제 **{regular_count}건**")
+            if exc_count:
+                parts.append(f"강사/사무처 면제 **{exc_count}건**")
+            step.output = ", ".join(parts)
 
         # Step 3: 규칙 기반 매칭
         async with cl.Step(name="🔍 규칙 기반 매칭") as step:
@@ -562,7 +568,9 @@ async def handle_payment_file(message: cl.Message):
 
         # Step 5: 등급 전환 cascade (신규가입 → 정회원 → 수강)
         async with cl.Step(name="🔄 등급 전환") as step:
-            grade_changes = apply_grade_cascade(applications, members, term_id)
+            grade_changes = apply_grade_cascade(
+                applications, members, term_id, exception_ids,
+            )
             if grade_changes:
                 step.output = f"등급 변경 **{len(grade_changes)}건** 처리"
             else:

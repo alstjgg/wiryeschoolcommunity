@@ -15,6 +15,9 @@ from app.chains.payment import (
     apply_matching_results,
     find_unpaid,
     format_results,
+    get_cycle_year,
+    _parse_ym_to_cycle_year,
+    apply_grade_cascade,
 )
 
 
@@ -263,3 +266,124 @@ class TestDualWriteBranching:
             assert len(result) == 1
             assert result[0]["이름ID"] == "폴백0001"
             mock_sheets.assert_called_once()
+
+
+# ── get_cycle_year / _parse_ym_to_cycle_year ──────────────────────────────
+
+class TestCycleYear:
+    def test_winter_term(self):
+        """겨울학기(1)는 전년 사이클"""
+        assert get_cycle_year("2026-1") == 2025
+
+    def test_spring_term(self):
+        """봄학기(2)는 당년 사이클"""
+        assert get_cycle_year("2026-2") == 2026
+
+    def test_autumn_term(self):
+        assert get_cycle_year("2025-4") == 2025
+
+    def test_parse_ym_short(self):
+        """YY.MM 형식 파싱"""
+        assert _parse_ym_to_cycle_year("25.03") == 2024  # 3월 → 1학기 → 전년
+        assert _parse_ym_to_cycle_year("25.05") == 2025  # 5월 → 2학기 → 당년
+        assert _parse_ym_to_cycle_year("26.01") == 2025  # 1월 → 1학기 → 전년
+
+    def test_parse_ym_full(self):
+        """YYYY.MM 형식 파싱"""
+        assert _parse_ym_to_cycle_year("2025.10") == 2025  # 10월 → 4학기
+
+    def test_parse_ym_invalid(self):
+        assert _parse_ym_to_cycle_year("invalid") is None
+        assert _parse_ym_to_cycle_year("") is None
+
+
+# ── apply_exemptions with exception_ids ───────────────────────────────────
+
+class TestApplyExemptionsWithExceptionIds:
+    def test_exception_all_types_exempted(self):
+        """강사/사무처 면제 대상은 모든 유형(수강/신규가입/정회원) 면제"""
+        apps = [
+            {"이름ID": "강사0001", "유형": "신규가입", "입금현황": "❌미입금"},
+            {"이름ID": "강사0001", "유형": "정회원", "입금현황": "❌미입금"},
+            {"이름ID": "강사0001", "유형": "수강", "입금현황": "❌미입금"},
+        ]
+        members = []
+        exc_ids = {"강사0001"}
+        exempted = apply_exemptions(apps, members, exc_ids)
+        assert len(exempted) == 3
+        for app in apps:
+            assert app["입금현황"] == "💎면제"
+            assert app["확인사유"] == "강사/사무처 면제"
+
+    def test_non_exception_not_affected(self):
+        """면제 대상 아닌 사람은 기존 로직 유지"""
+        apps = [
+            {"이름ID": "일반0001", "유형": "수강", "입금현황": "❌미입금"},
+        ]
+        members = [{"이름ID": "일반0001", "등급": "회원"}]
+        exc_ids = {"강사0001"}
+        exempted = apply_exemptions(apps, members, exc_ids)
+        assert len(exempted) == 0
+        assert apps[0]["입금현황"] == "❌미입금"
+
+
+# ── apply_grade_cascade with exception_ids ────────────────────────────────
+
+class TestGradeCascadeWithExceptionIds:
+    def test_exception_new_member_registered(self):
+        """면제 대상 신규가입 → 비회원이 회원으로 등록 + is_exception=TRUE"""
+        apps = [
+            {"이름ID": "강사0001", "이름": "강사A", "유형": "신규가입",
+             "입금현황": "💎면제", "확인사유": "강사/사무처 면제",
+             "전화번호": "", "주소": ""},
+        ]
+        members = []
+        changes = apply_grade_cascade(apps, members, "2026-1", {"강사0001"})
+        assert len(changes) == 1
+        assert changes[0]["사유"] == "신규가입(강사/사무처면제)"
+        assert members[0]["예외여부"] == "TRUE"
+
+    def test_exception_promoted_to_fullmember(self):
+        """면제 대상 정회원 신청 → 정회원 승급 + is_exception=TRUE"""
+        apps = [
+            {"이름ID": "강사0001", "이름": "강사A", "유형": "정회원",
+             "입금현황": "💎면제", "확인사유": "강사/사무처 면제"},
+        ]
+        members = [
+            {"이름ID": "강사0001", "이름": "강사A", "등급": "회원", "예외여부": ""},
+        ]
+        changes = apply_grade_cascade(apps, members, "2026-1", {"강사0001"})
+        assert len(changes) == 1
+        assert changes[0]["사유"] == "정회원비면제(강사/사무처)"
+        assert members[0]["등급"] == "정회원"
+        assert members[0]["예외여부"] == "TRUE"
+
+    def test_exception_tuition_exempted_after_fullmember(self):
+        """면제 대상 정회원 승급 후 수강비도 면제"""
+        apps = [
+            {"이름ID": "강사0001", "이름": "강사A", "유형": "정회원",
+             "입금현황": "💎면제", "확인사유": "강사/사무처 면제"},
+            {"이름ID": "강사0001", "이름": "강사A", "유형": "수강", "과목명": "오카리나",
+             "입금현황": "💎면제", "확인사유": "강사/사무처 면제"},
+        ]
+        members = [
+            {"이름ID": "강사0001", "이름": "강사A", "등급": "회원", "예외여부": ""},
+        ]
+        changes = apply_grade_cascade(apps, members, "2026-1", {"강사0001"})
+        # 정회원 승급 1건, 수강 면제는 changes에 미포함 (Pass 3에서 정회원 → 💎면제)
+        assert len(changes) == 1
+        assert apps[1]["입금현황"] == "💎면제"
+
+    def test_no_exception_ids_normal_flow(self):
+        """exception_ids 없으면 기존 로직과 동일"""
+        apps = [
+            {"이름ID": "김기춘1234", "이름": "김기춘", "유형": "수강", "과목명": "오카리나",
+             "입금현황": "✅정상"},
+        ]
+        members = [
+            {"이름ID": "김기춘1234", "이름": "김기춘", "등급": "회원", "예외여부": ""},
+        ]
+        changes = apply_grade_cascade(apps, members, "2026-1")
+        assert len(changes) == 1
+        assert changes[0]["사유"] == "수강료입금"
+        assert members[0]["등급"] == "준회원"

@@ -169,13 +169,13 @@ wiryeschoolcommunity/
 │   └── sync_webhook.json        # Sync-2: DB → Sheets 웹훅 즉시 push
 ├── app/
 │   ├── main.py                  # Chainlit 엔트리포인트 + 세션 상태 라우터 + LLM 의도 분류 + mid-flow 인터럽트 처리
-│   ├── config.py                # 환경 변수, 상수, 영속 Google IDs, COURSE_KEYWORDS, USE_DB_SOT
+│   ├── config.py                # 환경 변수, 상수, 영속 Google IDs, COURSE_KEYWORDS, USE_DB_SOT, INSTRUCTOR/STAFF_SHEET_ID
 │   ├── context/
 │   │   ├── business.py          # 정적 비즈니스 컨텍스트 dict + 시스템 프롬프트
 │   │   └── term.py              # 현재 회차 자동 판별 + 자유 텍스트 회차 파싱 (parse_term_input)
 │   ├── chains/
 │   │   ├── qa.py                # 질의 응답 체인
-│   │   ├── payment.py           # 입금 대조 파이프라인 (DB+n8n, 매칭, deposits 추적, 등급 cascade)
+│   │   ├── payment.py           # 입금 대조 파이프라인 (DB+n8n, 매칭, deposits 추적, 등급 cascade, 강사/사무처 면제)
 │   │   ├── attendance.py        # 출석부 생성 (처리상태는 Sheets에서 읽기, DB모드: 신청기록 탭)
 │   │   ├── ocr.py               # 출석 체크 OCR (dual-write: DB+Sheets, Claude Vision)
 │   │   └── graduation.py        # 종강 처리 (dual-write, 출석률 집계, 등급 강등)
@@ -299,7 +299,7 @@ drive_service = build('drive', 'v3', credentials=credentials)
 
 - **PK**: 이름ID
 - **등급**: 회원 / 준회원 / 정회원
-- **예외여부**: TRUE이면 종강 시 정회원 강등 면제 (강사/사무처)
+- **예외여부**: 입금 대조 시 강사관리/사무처관리 시트에서 자동 판별하여 설정. 종강 강등 시 리셋됨
 
 ### 회원기록 (History) — 등급 변경 이력
 
@@ -330,14 +330,27 @@ drive_service = build('drive', 'v3', credentials=credentials)
   - 신규가입: Drive 신규가입 신청서 폴더 (signup_loader.py가 자동 탐색)
   - 정회원: Drive 정회원가입 신청서 폴더 (signup_loader.py가 자동 탐색)
 
+### 강사/사무처 면제 (자동 판별)
+
+입금 대조 시 강사관리/사무처관리 시트에서 면제 대상을 자동 판별. `get_exception_ids(term_id)` → set[str].
+
+- **강사**: 강사관리 시트(`INSTRUCTOR_SHEET_ID`)에서 현재 사이클에 강의 row가 있는 강사. 1학기 종강 시 강등됨 (다음 사이클 강의하면 재승급).
+- **사무처 직원**: 사무처관리 시트(`STAFF_SHEET_ID`)에서 활동종료가 비어있는(=활동 중) 직원. 1학기 종강 시 활동 중이면 강등 제외.
+- **사이클**: YY-2(봄) ~ YY+1-1(다음해 겨울). 예: 2025 사이클 = 2025-2, 2025-3, 2025-4, 2026-1.
+- **면제 범위**: 가입비 + 정회원비 + 수강비 전부 면제 (입금현황 = 💎면제).
+- **SoT**: 강사관리/사무처관리 시트 (Sheet). DB에 복제하지 않음. 입금 대조 시 1회 조회.
+- **`is_exception` 자동 설정**: cascade에서 면제 대상의 `members.예외여부 = TRUE` 자동 설정. 종강 강등 시 리셋.
+
 ### 등급 전환 (Grade Cascade)
 
 입금 대조 시 `apply_grade_cascade()` 함수가 자동 실행. Idempotent — 재실행 가능.
 
 3-Pass 순서:
-1. **신규가입 confirmed** → 비회원을 회원으로 등록
-2. **정회원 confirmed** → 회원을 정회원으로 승급 (회원 아니면 🔶확인필요)
+1. **신규가입 confirmed/면제** → 비회원을 회원으로 등록
+2. **정회원 confirmed/면제** → 회원을 정회원으로 승급 (회원 아니면 🔶확인필요)
 3. **수강** → 정회원이면 💎면제, 정회원비 미입금이면 🔶확인필요, 확정이면 준회원 승급
+
+강사/사무처 면제 대상은 Pass 1~2에서 입금현황=💎면제로 처리, 자동 등급 승급 + `is_exception=TRUE` 설정.
 
 ### 출석부 (Working, 회차별, 1파일 다중시트)
 
@@ -409,7 +422,7 @@ Google Sheets 파일 1개. 수강생 탭 + 과목별 탭 + 과목별 인쇄용 P
 5. 수강기록 탭에 append (수강생 × 과목)
 6. 회원목록 재집계 (수강count, 출석률(누적), 마지막수강회차)
 7. 준회원 → 회원 일괄 강등 (매 종강 시)
-8. (1학기 종강 시) 정회원 → 회원 강등 (예외여부=TRUE 제외)
+8. (1학기 종강 시) 정회원 → 회원 강등 (활동 중 사무처 직원만 제외, 강사는 강등) + 예외여부 리셋
 9. 회원기록 탭에 강등 이력 append
 ```
 
@@ -467,7 +480,7 @@ Sync-2 (n8n/sync_webhook.json): 웹훅 즉시 push — 챗봇이 DB 쓰기 후 n
 9. **Agent**: 6+7+8을 합쳐 통합 신청서 생성 → Google Sheets에 저장 (필터 + 처리상태 드롭다운 자동 설정)
 10. **Agent**: "입금 내역을 업로드해주세요"
 11. **관리자**: 입금 내역 엑셀을 챗봇에 직접 업로드
-12. **Agent**: 입금내역 전건 → DB deposits INSERT → 자동 매칭 (코드 80~90% → LLM 10~20%) → 등급 전환 cascade 실행 → **즉시** 신청서 시트에 자동 반영
+12. **Agent**: 회원 정보 로드 + 강사/사무처 면제 판별 → 입금내역 전건 → DB deposits INSERT → 자동 매칭 (코드 80~90% → LLM 10~20%) → 등급 전환 cascade 실행 → **즉시** 신청서 시트에 자동 반영
 13. **Agent**: 숫자 요약 (✅ 78건 🔶 5건 ...) + 미확인입금 안내 + 시트 링크 + "처리상태를 입력해주세요" + 기본 Action 버튼 7개 (`send_default_actions`)
 14. **관리자**: 신청기록/미확인입금 시트에서 입금현황 확인 → 배움숲 포탈에서 수강 등록 → 처리상태 '등록완료' 입력
 15. **관리자**: '출석부 생성' 클릭
@@ -478,7 +491,7 @@ Sync-2 (n8n/sync_webhook.json): 웹훅 즉시 push — 챗봇이 DB 쓰기 후 n
 
 2단계 구조: 코드 매칭(80~90%) → LLM 예외 처리(10~20%)
 
-**정회원 선처리**: 회원관리 등급 "정회원" → 입금현황 = "💎면제" (매칭 대상 제외). 등록상태는 관리자가 포탈 처리 후 직접 체크.
+**면제 선처리** (`apply_exemptions`): (1) 기존 정회원 → 수강 행 💎면제. (2) 강사/사무처 면제 대상(`exception_ids`) → 모든 유형 💎면제. 매칭 대상에서 제외됨.
 
 **입금 유형별 처리**:
 
@@ -543,9 +556,12 @@ TERM_SEASONS = {1: "겨울", 2: "봄", 3: "여름", 4: "가을"}
 | 학사운영 folder | `OPERATIONS_FOLDER_ID` | Drive folder | `1WuqNFt-g5qhnY1nMk0a8dsowZHKQVRMm` | — |
 | 신규가입 신청서 폴더 | `MEMBER_SIGNUP_FOLDER_ID` | Drive folder | `10ZL8rD9j7OyyZOihfyJ6GRTzmBrTBgWe` | — |
 | 정회원가입 신청서 폴더 | `FULLMEMBER_SIGNUP_FOLDER_ID` | Drive folder | `17tsWfYwIRgHHcT1DQEj8Sqa4ys6pe0Vy` | — |
+| 강사관리 | `INSTRUCTOR_SHEET_ID` | Spreadsheet | `1GPwpyHU4vzOtDW3eFlvDKh13maR-yq-qaUzJ73HaR2U` | `Sheet1` (강의회차/이름ID/이름/전화번호/주소/과목) |
+| 사무처관리 | `STAFF_SHEET_ID` | Spreadsheet | `1hvuXv0NZmEhTW6QDFJ4SYArP51rrPJoWS9BRramtTMY` | `Sheet1` (이름ID/이름/전화번호/주소/역할/활동시작/활동종료) |
 
 회원관리 시트는 `03 회원과 강사/회원(회원명단/가입서/정회원)/` 폴더에 위치한다 (Shared Drive 루트가 아님).
 신청서 폴더는 공유 드라이브에 위치.
+강사관리/사무처관리 시트는 면제 대상 판별에만 사용 (SoT = Sheet, DB 복제 없음).
 
 ### 회원 폴더 내부 구조 (03 회원과 강사/회원/)
 
@@ -730,6 +746,7 @@ DATABASE_URL=                   # Railway가 자동 주입 (PostgreSQL 연결 �
 - 신청서 폴더 통합 — ASIS(개인 드라이브) → TOBE(공유 드라이브) 전환 완료
 - FAQ/Context Injection 보강 — 입금대조절차, 처리상태, 등급전환, 시트구조 등 5개 토픽 추가
 - 합산 입금 분류 — 12만(정회원비), 13만(가입비+정회원비)
+- 강사/사무처 면제 자동 판별 — 강사관리/사무처관리 시트에서 면제 대상 자동 추출, 가입비+정회원비+수강비 전부 면제, 등급 자동 승급, 종강 시 활동 중 사무처 직원만 강등 제외
 
 **📋 백로그:**
 - 보고서 생성: DB SQL 집계 → PDF (placeholder 버튼 배치 완료)

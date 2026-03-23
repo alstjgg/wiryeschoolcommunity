@@ -16,6 +16,7 @@ from app.config import (
     TUITION_FEE, MEMBERSHIP_FEE, FULL_MEMBERSHIP_FEE,
     MEMBERS_TAB, MEMBER_RECORDS_TAB, COURSE_RECORDS_TAB,
     MEMBER_RECORD_HEADER, COURSE_RECORD_HEADER,
+    INSTRUCTOR_SHEET_ID, STAFF_SHEET_ID,
 )
 from app.services.google_auth import get_drive_service, get_sheets_service
 from app.services.google_drive import find_spreadsheet_by_name, find_or_create_folder
@@ -303,31 +304,125 @@ def _append_course_records_to_sheets(records: list[dict]) -> None:
     append_sheet(MEMBERS_SHEET_ID, f"{COURSE_RECORDS_TAB}!A1", rows)
 
 
+# ======================================= 강사/사무처 면제 대상 판별 ====
+
+def get_cycle_year(term_id: str) -> int:
+    """회차 → 사이클 연도. 사이클 = YY-2(봄) ~ YY+1-1(다음해 겨울)."""
+    year, num = int(term_id.split("-")[0]), int(term_id.split("-")[1])
+    return year - 1 if num == 1 else year
+
+
+def _parse_ym_to_cycle_year(ym: str) -> int | None:
+    """'YY.MM' 또는 'YYYY.MM' → 소속 사이클 연도.
+
+    예: '25.03' → 2025-1 → 사이클 2024
+        '25.05' → 2025-2 → 사이클 2025
+    """
+    try:
+        parts = ym.split(".")
+        year = int(parts[0])
+        month = int(parts[1])
+        if year < 100:
+            year += 2000
+        term_num = (month - 1) // 3 + 1
+        return year - 1 if term_num == 1 else year
+    except (ValueError, IndexError):
+        return None
+
+
+def get_exception_ids(term_id: str) -> set[str]:
+    """강사관리 + 사무처관리 시트에서 현재 사이클 면제 대상 이름ID 추출.
+
+    입금 대조 시 1회만 호출. SoT가 Sheet이므로 DB에 저장하지 않음.
+    """
+    exception_ids: set[str] = set()
+    cycle_year = get_cycle_year(term_id)
+    cycle_terms = {
+        f"{cycle_year}-2", f"{cycle_year}-3",
+        f"{cycle_year}-4", f"{cycle_year + 1}-1",
+    }
+
+    # 강사: 현재 사이클에 강의 row가 있는 강사
+    try:
+        rows = read_sheet(INSTRUCTOR_SHEET_ID, "Sheet1!A1:F1000")
+        if rows and len(rows) >= 2:
+            header = rows[0]
+            for row in rows[1:]:
+                data = dict(zip(header, row + [""] * (len(header) - len(row))))
+                if data.get("강의회차", "").strip() in cycle_terms:
+                    name_id = data.get("이름ID", "").strip()
+                    if name_id:
+                        exception_ids.add(name_id)
+    except Exception as e:
+        logger.warning("강사관리 시트 읽기 실패: %s", e)
+
+    # 직원: 활동종료가 비어있거나 종료 시점이 현재 사이클 이후
+    try:
+        rows = read_sheet(STAFF_SHEET_ID, "Sheet1!A1:G100")
+        if rows and len(rows) >= 2:
+            header = rows[0]
+            for row in rows[1:]:
+                data = dict(zip(header, row + [""] * (len(header) - len(row))))
+                name_id = data.get("이름ID", "").strip()
+                if not name_id:
+                    continue
+                end = data.get("활동종료", "").strip()
+                if not end:
+                    exception_ids.add(name_id)
+                else:
+                    end_cycle = _parse_ym_to_cycle_year(end)
+                    if end_cycle is not None and end_cycle >= cycle_year:
+                        exception_ids.add(name_id)
+    except Exception as e:
+        logger.warning("사무처관리 시트 읽기 실패: %s", e)
+
+    return exception_ids
+
+
+def get_active_staff_ids() -> set[str]:
+    """사무처관리 시트에서 활동 중인 직원 이름ID 추출 (종강 처리용)."""
+    active: set[str] = set()
+    try:
+        rows = read_sheet(STAFF_SHEET_ID, "Sheet1!A1:G100")
+        if rows and len(rows) >= 2:
+            header = rows[0]
+            for row in rows[1:]:
+                data = dict(zip(header, row + [""] * (len(header) - len(row))))
+                if not data.get("활동종료", "").strip():
+                    name_id = data.get("이름ID", "").strip()
+                    if name_id:
+                        active.add(name_id)
+    except Exception as e:
+        logger.warning("사무처관리 시트 읽기 실패: %s", e)
+    return active
+
+
 # ============================================ Grade Cascade (등급 전환) ====
 
 def apply_grade_cascade(
     applications: list[dict],
     members: list[dict],
     term_id: str = "",
+    exception_ids: set[str] | None = None,
 ) -> list[dict]:
     """확정된 입금 건에 대해 등급 전환을 순서대로 적용. Idempotent.
 
     호출할 때마다 전체를 재평가. 이미 처리된 건은 skip.
 
     3-Pass 순서:
-      Pass 1: 신규가입 confirmed → 비회원을 회원으로 등록
-      Pass 2: 정회원 confirmed → 회원을 정회원으로 승급
+      Pass 1: 신규가입 confirmed/면제 → 비회원을 회원으로 등록
+      Pass 2: 정회원 confirmed/면제 → 회원을 정회원으로 승급
       Pass 3: 수강 → 정회원이면 면제, 아니면 준회원 승급
 
-    Args:
-        applications: 통합 신청서 리스트 (in-place 수정됨)
-        members: 회원목록 리스트 (in-place 수정됨)
-        term_id: 관련 회차
+    exception_ids: 강사/사무처 면제 대상 이름ID set. 해당 대상은 가입비+정회원비+수강비 전부 면제.
 
     Returns: 등급 변경 기록 리스트 (회원기록 탭에 append할 데이터)
     """
     from datetime import datetime
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    if exception_ids is None:
+        exception_ids = set()
 
     # 이름ID → member dict 매핑
     member_map: dict[str, dict] = {m["이름ID"]: m for m in members}
@@ -337,10 +432,18 @@ def apply_grade_cascade(
     for app in applications:
         if app.get("유형") != "신규가입":
             continue
-        if app.get("입금현황") != "✅정상":
-            continue
         name_id = app["이름ID"]
+        is_exc = name_id in exception_ids
+
+        if is_exc:
+            app["입금현황"] = "💎면제"
+            app["확인사유"] = "강사/사무처 면제"
+        elif app.get("입금현황") != "✅정상":
+            continue
+
         if name_id in member_map:
+            if is_exc:
+                member_map[name_id]["예외여부"] = "TRUE"
             continue  # 이미 회원
 
         # 비회원 → 회원 등록
@@ -350,7 +453,7 @@ def apply_grade_cascade(
             "전화번호": app.get("전화번호", ""),
             "주소": app.get("주소", ""),
             "등급": "회원",
-            "예외여부": "",
+            "예외여부": "TRUE" if is_exc else "",
             "수강count": "0",
             "출석률(누적)": "",
             "마지막수강회차": "",
@@ -361,34 +464,47 @@ def apply_grade_cascade(
             "이름ID": name_id, "이름": app["이름"],
             "변경일시": now_str,
             "변경전등급": "(신규)", "변경후등급": "회원",
-            "사유": "신규가입", "관련회차": term_id,
+            "사유": "신규가입(강사/사무처면제)" if is_exc else "신규가입",
+            "관련회차": term_id,
         })
 
     # Pass 2: 정회원 → 정회원 승급
     for app in applications:
         if app.get("유형") != "정회원":
             continue
-        if app.get("입금현황") != "✅정상":
-            continue
         name_id = app["이름ID"]
+        is_exc = name_id in exception_ids
+
+        if is_exc:
+            app["입금현황"] = "💎면제"
+            app["확인사유"] = "강사/사무처 면제"
+        elif app.get("입금현황") != "✅정상":
+            continue
+
         member = member_map.get(name_id)
 
         if not member:
             # 회원이 아님 — 신규가입 먼저 필요
-            app["입금현황"] = "🔶확인필요"
-            app["확인사유"] = "회원 아님 — 신규가입 먼저 필요"
+            if not is_exc:
+                app["입금현황"] = "🔶확인필요"
+                app["확인사유"] = "회원 아님 — 신규가입 먼저 필요"
             continue
 
         if member.get("등급") == "정회원":
+            if is_exc:
+                member["예외여부"] = "TRUE"
             continue  # 이미 정회원
 
         prev_grade = member.get("등급", "회원")
         member["등급"] = "정회원"
+        if is_exc:
+            member["예외여부"] = "TRUE"
         changes.append({
             "이름ID": name_id, "이름": app["이름"],
             "변경일시": now_str,
             "변경전등급": prev_grade, "변경후등급": "정회원",
-            "사유": "정회원비입금", "관련회차": term_id,
+            "사유": "정회원비면제(강사/사무처)" if is_exc else "정회원비입금",
+            "관련회차": term_id,
         })
 
     # Pass 3: 수강 → 면제 or 준회원 승급
@@ -584,15 +700,29 @@ async def append_course_records(records: list[dict]) -> None:
 def apply_exemptions(
     applications: list[dict],
     members: list[dict],
+    exception_ids: set[str] | None = None,
 ) -> list[dict]:
-    """정회원 선처리: 회원관리에서 등급='정회원' → 해당 수강 행의 입금현황=💎면제"""
+    """면제 선처리.
+
+    1. 기존 정회원 → 수강 행 💎면제
+    2. 강사/사무처 면제 대상 → 모든 유형(신규가입/정회원/수강) 💎면제
+       (cascade에서 등급 승급은 별도 처리)
+    """
+    if exception_ids is None:
+        exception_ids = set()
     member_grades = {m.get("이름ID", ""): m.get("등급", "") for m in members}
     exempted = []
     for app in applications:
-        if app["유형"] != "수강":
-            continue
         name_id = app["이름ID"]
-        if member_grades.get(name_id) == "정회원":
+        is_exc = name_id in exception_ids
+
+        if is_exc:
+            # 강사/사무처 면제 — 모든 유형 (매칭 전에 💎면제 설정)
+            app["입금현황"] = "💎면제"
+            app["확인사유"] = "강사/사무처 면제"
+            exempted.append(app)
+        elif app["유형"] == "수강" and member_grades.get(name_id) == "정회원":
+            # 기존 정회원 수강료 면제
             app["입금현황"] = "💎면제"
             exempted.append(app)
     return exempted
