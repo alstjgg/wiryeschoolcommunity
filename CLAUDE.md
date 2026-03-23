@@ -29,7 +29,7 @@
 - 각 작업(입금 대조, 출석부 생성 등)은 실행 순서가 고정된 Python 함수 파이프라인으로 구현한다
 - LLM은 비정형 텍스트 해석이 필요한 특정 단계에서만 호출한다 (예: 입금자명 파싱)
 - LangChain은 LLM 호출 래퍼(ChatAnthropic)로만 사용, 오케스트레이션 프레임워크로는 사용하지 않는다
-- 의도 분류는 Conversation Starter 버튼의 고정 메시지로 판별. 버튼이 아닌 자유 텍스트 입력에 한해 LLM 기반 intent 분류를 사용하며 (`classify_intent_llm`), 분류 결과는 반드시 관리자 확인 단계(`AskActionMessage`)를 거친다.
+- 의도 분류는 Conversation Starter 버튼의 고정 메시지로 판별. 버튼이 아닌 자유 텍스트 입력에 한해 LLM 기반 intent 분류를 사용하며 (`classify_intent_llm`), 분류 결과는 반드시 관리자 확인 단계(Action 버튼)를 거친다.
 - 워크플로우 진행 중 파일 대신 텍스트가 입력되면 `handle_mid_flow_text()`로 처리: 취소 키워드 감지 → Q&A 답변 후 상태 유지 → 파일 재요청. 워크플로우를 이탈하지 않는다.
 - `.agents/skills/`에 LangChain Skills(langchain-ai/langchain-skills)이 설치되어 있음. Claude Code가 LangChain 관련 코드 작성 시 참조하는 코딩 가이드이며, 런타임 동작에는 영향 없음.
 
@@ -44,16 +44,20 @@ if session_state == "awaiting_applicants_file":
     else:
         await handle_mid_flow_text(message, session_state)  # 취소/질문/재안내
     return
-# 2) Starter 버튼 메시지로 분기
+# 2) 회차 텍스트 입력 대기 (모든 플로우 공용)
+if session_state == "awaiting_term_input":
+    await handle_term_input(message)  # 파싱 → term_input_next로 목적지 분기
+    return
+# 3) Starter 버튼 메시지로 분기
 if message.content == "입금 대조를 시작합니다.":
     await start_payment_flow(message)
-# 3) 자유 텍스트 → LLM 의도 분류 → 확인 후 워크플로우 진입
+# 4) 자유 텍스트 → LLM 의도 분류 → 확인 후 워크플로우 진입
 else:
     intent = await classify_intent_llm(message.content)
     if intent["intent"] == "question":
         await qa_flow(message)
     else:
-        await ask_intent_confirm(intent)
+        await ask_intent_confirm(intent)  # Message + Action (non-blocking)
 ```
 
 ## 용어 정의
@@ -79,26 +83,47 @@ async def match_payments():
     ...  # "85건 중 78건 매칭 완료..." 중간 결과 표시
 ```
 
-### Action — 다음 작업 추천 버튼
-모든 작업 완료/취소/에러 후 `send_default_actions(completed)` 호출로 6개 기본 버튼 제공. 방금 완료한 작업은 "다시하기" 레이블로 표시. 자유 텍스트 입력 없이 클릭만으로 다음 업무 진행.
-```python
-await send_default_actions("payment")  # 입금 대조 완료 후 → "💰 입금 대조 다시하기" 레이블
-await send_default_actions()            # 에러/취소 후 → 기본 레이블
-```
+### Action — 사용자 선택지 제공 (non-blocking)
+모든 작업 완료/취소/에러 후 `send_default_actions(completed)` 호출로 7개 기본 버튼 제공. 방금 완료한 작업은 "다시하기" 레이블로 표시. 자유 텍스트 입력 없이 클릭만으로 다음 업무 진행.
 
-### AskActionMessage — 사용자 확인 대기
-파이프라인 중간에 관리자 확인이 필요한 지점에서 사용. 응답을 기다렸다가 다음 단계 진행.
+워크플로우 중간의 확인/선택도 `cl.Message(actions=[...]).send()` + `@cl.action_callback`으로 구현. **`AskActionMessage` 사용 금지** — blocking + timeout으로 UI 멈춤, 파일 업로드 비활성화, state 꼬임 유발.
+
 ```python
-res = await cl.AskActionMessage(
-    content="매칭 결과를 시트에 반영할까요?",
+# ✅ 올바른 패턴: non-blocking (메시지 보내고 즉시 return)
+await cl.Message(
+    content="**2026-1 겨울학기** 입금 대조를 시작할까요?",
     actions=[
-        cl.Action(name="confirm", label="✅ 반영하기", value="confirm"),
-        cl.Action(name="cancel", label="❌ 취소", value="cancel"),
+        cl.Action(name="payment_confirm_term", label="✅ 맞습니다", payload={"value": "confirm"}),
+        cl.Action(name="payment_other_term", label="📅 다른 회차에요", payload={"value": "other"}),
+        cl.Action(name="payment_cancel", label="❌ 취소", payload={"value": "cancel"}),
     ]
 ).send()
-if res and res.get("value") == "confirm":
-    await write_back_to_sheets()
+# 함수 끝. 코루틴 종료. timeout 없음.
+
+@cl.action_callback("payment_confirm_term")
+async def on_payment_confirm_term(action: cl.Action):
+    term = cl.user_session.get("term")
+    await _load_signup_and_ask_applicants(term)
+
+# ❌ 금지 패턴: blocking (코루틴이 응답까지 멈춤 + timeout 위험)
+# res = await cl.AskActionMessage(content="...", actions=[...]).send()
 ```
+
+### State Machine — 세션 상태 기반 흐름 제어
+모든 봇 응답 함수는 메시지를 보내고 **즉시 return**. 사용자의 다음 행동은 `action_callback` 또는 `on_message`로만 들어옴. `user_session`의 state가 유일한 흐름 제어 수단.
+
+```python
+# 상태 목록
+idle                     # 기본. Starter/default Action/자유 질문 가능
+awaiting_term_input      # 회차 텍스트 입력 대기 (모든 플로우 공용, term_input_next로 목적지 구분)
+awaiting_applicants_file # 수강 신청자 목록 파일 대기
+awaiting_payment_file    # 입금내역 파일 대기
+awaiting_ocr_image       # 출석부 사진 대기
+```
+
+파일 업로드 대기 상태에서 텍스트가 입력되면 `handle_mid_flow_text()`로 처리: 취소 키워드 감지 → Q&A 답변 후 상태 유지 → 파일 재요청. 워크플로우를 이탈하지 않는다.
+
+`@cl.on_stop` 훅으로 사용자가 멈춤 버튼을 누르면 state를 `idle`로 리셋.
 
 ## Chainlit 테마 & 디자인 시스템
 
@@ -679,7 +704,8 @@ DATABASE_URL=                   # Railway가 자동 주입 (PostgreSQL 연결 �
 - 종강 처리 (`app/chains/graduation.py`): 출석률 집계, 수강기록 append, 회원목록 재집계, 등급 강등
 - 회원관리 3탭 구조 (회원목록/회원기록/수강기록), 동적 Drive 폴더 탐색
 - 신청서 upsert (기존 행 보존, 새 key만 추가), 입금 시 회원기록 자동 기록
-- Action 버튼, AskActionMessage, 세션 상태 머신
+- Non-blocking Action 패턴 (`cl.Message(actions=...) + @cl.action_callback`), 세션 상태 머신
+- `@cl.on_stop` 훅으로 사용자 멈춤 시 state 리셋
 - cl.Step 진행 상황 표시 (각 파이프라인 단계별 expandable indicator)
 - 입금 대조 결과 즉시 자동 반영 (확인 단계 제거, 숫자 요약 한 줄)
 - 회차 불일치 시 자유 텍스트 재입력 루프 (`parse_term_input`)

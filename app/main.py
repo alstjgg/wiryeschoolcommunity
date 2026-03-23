@@ -1,6 +1,7 @@
 """Chainlit 엔트리포인트 — 위례인생학교 업무 도우미"""
 
 import json
+import logging
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -49,6 +50,8 @@ from app.services.signup_loader import (
 from app.utils.matching import run_code_matching
 from app.context.term import get_current_term, parse_term_input
 
+logger = logging.getLogger(__name__)
+
 # 워크플로우 중 취소 의도 감지 키워드
 CANCEL_KEYWORDS = ["취소", "중단", "그만", "멈춰", "stop", "cancel", "안 할게", "안할게", "나가기"]
 
@@ -75,6 +78,12 @@ async def on_chat_resume(thread: dict):
             ).send()
         elif step_type in ("assistant_message", "llm"):
             await cl.Message(content=output).send()
+    cl.user_session.set("state", "idle")
+
+
+@cl.on_stop
+async def on_stop():
+    """User clicked the stop button — reset to idle."""
     cl.user_session.set("state", "idle")
 
 
@@ -126,33 +135,11 @@ async def on_message(message: cl.Message):
     if session_state == "awaiting_term_input":
         await handle_term_input(message)
         return
-    if session_state == "awaiting_attendance_term_input":
-        term = parse_term_input(message.content)
-        if term:
-            cl.user_session.set("term", term)
-            cl.user_session.set("state", "idle")
-            await _do_attendance_preflight(term)
-        else:
-            await cl.Message(
-                "회차를 인식하지 못했어요. 다시 입력해주세요.\n예) 2026-1, 겨울학기"
-            ).send()
-        return
     if session_state == "awaiting_ocr_image":
         if message.elements:
             await handle_ocr_image(message)
         else:
             await handle_mid_flow_text(message, "awaiting_ocr_image")
-        return
-    if session_state == "awaiting_graduation_term_input":
-        term = parse_term_input(message.content)
-        if term:
-            cl.user_session.set("term", term)
-            cl.user_session.set("state", "idle")
-            await _confirm_ocr_done_before_graduation(term)
-        else:
-            await cl.Message(
-                "회차를 인식하지 못했어요. 다시 입력해주세요.\n예) 2026-1, 겨울학기"
-            ).send()
         return
 
     # Starter 버튼 메시지 라우팅
@@ -197,33 +184,43 @@ async def start_payment_flow(message: cl.Message):
     """입금 대조 시작 — 회차 추측 → 확인"""
     term = get_current_term()
     cl.user_session.set("term", term)
-    await start_payment_flow_with_term(term)
+    await _show_payment_term_confirm(term)
 
 
-async def start_payment_flow_with_term(term: dict):
-    """회차 확인 AskActionMessage — 루프 재진입점"""
+async def _show_payment_term_confirm(term: dict):
+    """Show term confirmation with action buttons — non-blocking."""
     cl.user_session.set("term", term)
-
-    res = await cl.AskActionMessage(
+    await cl.Message(
         content=f"**{term['term_name']}** 입금 대조를 시작할까요?",
         actions=[
-            cl.Action(name="confirm_term", label="✅ 맞습니다", payload={"value": "confirm"}),
-            cl.Action(name="other_term", label="📅 다른 회차에요", payload={"value": "other"}),
-            cl.Action(name="cancel_term", label="❌ 취소", payload={"value": "cancel"}),
+            cl.Action(name="payment_confirm_term", label="✅ 맞습니다",
+                      payload={"value": "confirm"}),
+            cl.Action(name="payment_other_term", label="📅 다른 회차에요",
+                      payload={"value": "other"}),
+            cl.Action(name="payment_cancel", label="❌ 취소",
+                      payload={"value": "cancel"}),
         ],
     ).send()
 
-    value = (res or {}).get("payload", {}).get("value")
-    if value == "confirm":
-        await _ask_to_confirm_signup_files(term)
-    elif value == "other":
-        cl.user_session.set("state", "awaiting_term_input")
-        await cl.Message(
-            "어떤 회차인지 알려주세요.\n예) 2026-2, 2026년 봄, 봄학기"
-        ).send()
-    else:
-        await cl.Message("입금 대조가 취소되었습니다.").send()
-        cl.user_session.set("state", "idle")
+
+@cl.action_callback("payment_confirm_term")
+async def on_payment_confirm_term(action: cl.Action):
+    term = cl.user_session.get("term")
+    await _load_signup_and_ask_applicants(term)
+
+
+@cl.action_callback("payment_other_term")
+async def on_payment_other_term(action: cl.Action):
+    cl.user_session.set("state", "awaiting_term_input")
+    cl.user_session.set("term_input_next", "payment")
+    await cl.Message("어떤 회차인지 알려주세요.\n예) 2026-2, 2026년 봄, 봄학기").send()
+
+
+@cl.action_callback("payment_cancel")
+async def on_payment_cancel(action: cl.Action):
+    cl.user_session.set("state", "idle")
+    await cl.Message("입금 대조가 취소되었습니다.").send()
+    await send_default_actions()
 
 
 async def handle_mid_flow_text(message: cl.Message, current_state: str):
@@ -283,43 +280,12 @@ def _get_resume_prompt(state: str) -> str:
     return prompts.get(state, "계속 진행하려면 파일을 업로드해주세요.\n취소하려면 '취소'라고 입력하세요.")
 
 
-async def _ask_to_confirm_signup_files(term: dict):
-    """신청서 파일이 올바른 위치에 있는지 관리자에게 확인"""
-    year = term["year"]
-    res = await cl.AskActionMessage(
-        content=(
-            f"입금 대조 전, **{year}년** 가입 신청서 응답 파일 위치를 확인해주세요.\n\n"
-            f"**확인 위치**:\n"
-            f"- 신규가입 신청서: `03 회원과 강사 > 회원 > 신규가입 신청서/`\n"
-            f"- 정회원가입 신청서: `03 회원과 강사 > 회원 > 정회원가입 신청서/`\n\n"
-            f"신청서가 없거나 이번 회차에 해당 없으면 건너뛰기를 선택하세요."
-        ),
-        actions=[
-            cl.Action(
-                name="signup_ready",
-                label="✅ 확인했습니다",
-                payload={"value": "ready"},
-            ),
-            cl.Action(
-                name="signup_skip",
-                label="⏭️ 해당 없음 / 건너뛰기",
-                payload={"value": "skip"},
-            ),
-            cl.Action(
-                name="signup_cancel",
-                label="❌ 취소",
-                payload={"value": "cancel"},
-            ),
-        ],
-    ).send()
-
-    value = (res or {}).get("payload", {}).get("value")
-    if value in ("ready", "skip"):
-        await _ask_for_applicants_file()
-    else:
-        await cl.Message("입금 대조가 취소되었습니다.").send()
-        cl.user_session.set("state", "idle")
-        await send_default_actions()
+async def _load_signup_and_ask_applicants(term: dict):
+    """Auto-load signup data from Drive, then ask for applicants file."""
+    member_records, fullmember_records = await _load_signup_data(str(term["year"]))
+    cl.user_session.set("member_records", member_records)
+    cl.user_session.set("fullmember_records", fullmember_records)
+    await _ask_for_applicants_file()
 
 
 async def _ask_for_applicants_file():
@@ -357,10 +323,11 @@ async def handle_applicants_file(message: cl.Message):
             courses = set(a.get("과목명", "") for a in applicants if a.get("과목명"))
             step.output = f"수강 신청자 **{len(applicants)}명** 확인 ({len(courses)}개 과목)"
 
-        # Step 2-3: Drive에서 신규가입/정회원가입 신청서 자동 로드 (기존 cl.Step 사용)
-        member_records, fullmember_records = await _load_signup_data(str(term["year"]))
+        # Step 2: 세션에서 신규가입/정회원가입 신청서 로드 (이미 _load_signup_and_ask_applicants에서 저장됨)
+        member_records = cl.user_session.get("member_records", [])
+        fullmember_records = cl.user_session.get("fullmember_records", [])
 
-        # Step 4: 통합 신청서 생성 + Sheets 저장
+        # Step 3: 통합 신청서 생성 + Sheets 저장
         async with cl.Step(name="📝 통합 신청서 생성") as step:
             applications = build_applications(
                 applicants, member_records, fullmember_records, term_id=term_id,
@@ -592,16 +559,33 @@ async def handle_payment_file(message: cl.Message):
 
 
 async def handle_term_input(message: cl.Message):
-    """회차 자유 텍스트 입력 파싱 → 확인 루프"""
+    """Unified term text input handler — routes based on term_input_next."""
+    # Check cancel first
+    if any(k in message.content for k in CANCEL_KEYWORDS):
+        await cl.Message("작업이 취소되었습니다.").send()
+        cl.user_session.set("state", "idle")
+        await send_default_actions()
+        return
+
     term = parse_term_input(message.content)
-    if term:
-        await start_payment_flow_with_term(term)
-    else:
+    if not term:
         await cl.Message(
-            "회차를 인식하지 못했어요. 다시 입력해주세요.\n"
-            "예) 2026-2, 봄학기, 2026년 여름"
+            "회차를 인식하지 못했어요. 다시 입력해주세요.\n예) 2026-2, 봄학기, 2026년 여름"
         ).send()
-        # 상태 유지 — awaiting_term_input
+        return  # state stays awaiting_term_input
+
+    cl.user_session.set("term", term)
+    cl.user_session.set("state", "idle")
+
+    next_flow = cl.user_session.get("term_input_next", "payment")
+    if next_flow == "payment":
+        await _show_payment_term_confirm(term)
+    elif next_flow == "attendance":
+        await _do_attendance_preflight(term)
+    elif next_flow == "ocr":
+        await _show_ocr_start_confirm(term)
+    elif next_flow == "graduation":
+        await _confirm_ocr_done_before_graduation(term)
 
 
 async def write_payment_results(
@@ -692,38 +676,48 @@ async def start_attendance_flow(message: cl.Message | None):
     term = cl.user_session.get("term")
 
     if not term:
-        # 별도 세션 진입: 회차 추측 → 확인
         term = get_current_term()
         cl.user_session.set("term", term)
-        res = await cl.AskActionMessage(
+
+    if cl.user_session.get("applications"):
+        # Same session as payment — skip term confirm, go to preflight
+        await _do_attendance_preflight(term)
+    else:
+        await cl.Message(
             content=f"**{term['term_name']}** 출석부를 생성할까요?",
             actions=[
-                cl.Action(name="att_confirm_term", label="✅ 맞습니다",
+                cl.Action(name="attendance_confirm_term", label="✅ 맞습니다",
                           payload={"value": "confirm"}),
-                cl.Action(name="att_other_term", label="📅 다른 회차에요",
+                cl.Action(name="attendance_other_term", label="📅 다른 회차에요",
                           payload={"value": "other"}),
-                cl.Action(name="att_cancel_term", label="❌ 취소",
+                cl.Action(name="attendance_cancel", label="❌ 취소",
                           payload={"value": "cancel"}),
             ],
         ).send()
-        value = (res or {}).get("payload", {}).get("value")
-        if value == "confirm":
-            await _do_attendance_preflight(term)
-        elif value == "other":
-            cl.user_session.set("state", "awaiting_attendance_term_input")
-            await cl.Message(
-                "어떤 회차인지 알려주세요.\n예) 2026-1, 2026년 겨울, 겨울학기"
-            ).send()
-        else:
-            await cl.Message("출석부 생성이 취소되었습니다.").send()
-            await send_default_actions()
-    else:
-        # 동일 세션(입금 대조 직후): 회차 확인 없이 바로 진행
-        await _do_attendance_preflight(term)
+
+
+@cl.action_callback("attendance_confirm_term")
+async def on_attendance_confirm_term(action: cl.Action):
+    term = cl.user_session.get("term")
+    await _do_attendance_preflight(term)
+
+
+@cl.action_callback("attendance_other_term")
+async def on_attendance_other_term(action: cl.Action):
+    cl.user_session.set("state", "awaiting_term_input")
+    cl.user_session.set("term_input_next", "attendance")
+    await cl.Message("어떤 회차인지 알려주세요.\n예) 2026-1, 2026년 겨울, 겨울학기").send()
+
+
+@cl.action_callback("attendance_cancel")
+async def on_attendance_cancel(action: cl.Action):
+    cl.user_session.set("state", "idle")
+    await cl.Message("출석부 생성이 취소되었습니다.").send()
+    await send_default_actions()
 
 
 async def _do_attendance_preflight(term: dict):
-    """출석부 생성 전 사전 확인 — 처리상태 gate → 최종 승인 1회"""
+    """출석부 생성 전 사전 확인 — 처리상태 gate → 최종 승인"""
     msg = cl.Message(content=f"**{term['term_name']}** 출석부 생성을 준비하는 중...")
     await msg.send()
 
@@ -743,31 +737,7 @@ async def _do_attendance_preflight(term: dict):
             cl.user_session.set("term_folder_id", term_folder_id)
 
         app_sheet_id = cl.user_session.get("applications_sheet_id")
-
-        # 1) 처리상태 gate — 미처리 건이 있으면 차단
-        gate_ok = await _check_processing_gate(term, app_sheet_id)
-        if not gate_ok:
-            return
-
-        # 2) gate 통과 → 최종 승인 1회
-        res = await cl.AskActionMessage(
-            content=(
-                "배움숲 등록, 환불/취소 처리를 모두 완료하셨나요?\n\n"
-                "처리상태가 '등록완료'인 수강생만 출석부에 포함됩니다."
-            ),
-            actions=[
-                cl.Action(name="confirm_attendance", label="✅ 확인, 출석부 생성",
-                          payload={"value": "confirm"}),
-                cl.Action(name="cancel_attendance", label="❌ 취소",
-                          payload={"value": "cancel"}),
-            ],
-        ).send()
-
-        if res and res.get("payload", {}).get("value") == "confirm":
-            await do_create_attendance()
-        else:
-            await cl.Message("출석부 생성이 취소되었습니다.").send()
-            await send_default_actions()
+        await _check_processing_gate(term, app_sheet_id)
 
     except Exception as e:
         msg.content = f"출석부 생성 준비 중 오류: {str(e)}"
@@ -775,13 +745,8 @@ async def _do_attendance_preflight(term: dict):
         await send_default_actions()
 
 
-async def _check_processing_gate(term: dict, app_sheet_id: str | None) -> bool:
-    """처리상태 gate — 신청기록 + 미확인입금 양쪽의 미처리 건이 있으면 출석부 생성 차단.
-
-    DB 모드: 회원관리 파일(MEMBERS_SHEET_ID)의 신청기록/미확인입금 탭 + term_id 필터.
-    Sheets 모드: 회차별 신청서 탭 (미확인입금은 DB 모드 전용).
-    Returns: True이면 진행 가능, False이면 차단됨 (메시지 표시 완료).
-    """
+async def _check_processing_gate(term: dict, app_sheet_id: str | None):
+    """Check for unprocessed items. If clear → show final confirm. If not → show recheck/cancel."""
     from app.config import (
         USE_DB_SOT, MEMBERS_SHEET_ID, APPLICATIONS_TAB, UNMATCHED_DEPOSITS_TAB,
     )
@@ -818,72 +783,104 @@ async def _check_processing_gate(term: dict, app_sheet_id: str | None) -> bool:
         if USE_DB_SOT else []
     )
 
-    while True:
-        if not unprocessed_apps and not unprocessed_deposits:
-            return True
+    if not unprocessed_apps and not unprocessed_deposits:
+        # Gate passed — show final attendance confirm
+        await _show_attendance_final_confirm()
+        return
 
-        sections = []
-        if unprocessed_apps:
-            lines = []
-            for a in unprocessed_apps[:5]:
-                name = a.get("이름", "?")
-                course = a.get("과목명", "")
-                label = f"{name}({course})" if course else name
-                ps = a.get("처리상태", "").strip() or "미입력"
-                lines.append(f"  - {label} — 입금현황: {a.get('입금현황', '')}, 처리상태: {ps}")
-            if len(unprocessed_apps) > 5:
-                lines.append(f"  - ... 외 {len(unprocessed_apps) - 5}건")
-            sections.append(
-                f"**신청기록 미처리: {len(unprocessed_apps)}건**\n"
-                + "\n".join(lines)
-                + "\n  → 신청기록 시트에서 처리상태를 입력해주세요"
-            )
-
-        if unprocessed_deposits:
-            lines = []
-            for d in unprocessed_deposits[:5]:
-                ps = d.get("처리상태", "").strip() or "미입력"
-                lines.append(f"  - 입금자 {d.get('입금자명', '?')} / {d.get('입금액', '')}원 — 처리상태: {ps}")
-            if len(unprocessed_deposits) > 5:
-                lines.append(f"  - ... 외 {len(unprocessed_deposits) - 5}건")
-            sections.append(
-                f"**미확인입금 미처리: {len(unprocessed_deposits)}건**\n"
-                + "\n".join(lines)
-                + "\n  → 미확인입금 시트에서 처리상태를 입력해주세요"
-            )
-
-        link_id = MEMBERS_SHEET_ID if USE_DB_SOT else apps_sheet_id
-        sheet_link = (
-            f"\n\n[회원관리 시트 열기](https://docs.google.com/spreadsheets/d/{link_id})"
-            if link_id else ""
+    # Gate blocked — build message
+    sections = []
+    if unprocessed_apps:
+        lines = []
+        for a in unprocessed_apps[:5]:
+            name = a.get("이름", "?")
+            course = a.get("과목명", "")
+            label = f"{name}({course})" if course else name
+            ps = a.get("처리상태", "").strip() or "미입력"
+            lines.append(f"  - {label} — 입금현황: {a.get('입금현황', '')}, 처리상태: {ps}")
+        if len(unprocessed_apps) > 5:
+            lines.append(f"  - ... 외 {len(unprocessed_apps) - 5}건")
+        sections.append(
+            f"**신청기록 미처리: {len(unprocessed_apps)}건**\n"
+            + "\n".join(lines)
+            + "\n  → 신청기록 시트에서 처리상태를 입력해주세요"
         )
 
-        msg_content = (
-            f"**{term.get('term_name', '')}** 출석부 생성을 위해 처리가 필요한 건이 있습니다.\n\n"
-            + "\n\n".join(sections)
-            + f"\n\n모든 건의 처리상태를 입력해주세요 (등록완료/환불완료/취소완료).{sheet_link}"
+    if unprocessed_deposits:
+        lines = []
+        for d in unprocessed_deposits[:5]:
+            ps = d.get("처리상태", "").strip() or "미입력"
+            lines.append(f"  - 입금자 {d.get('입금자명', '?')} / {d.get('입금액', '')}원 — 처리상태: {ps}")
+        if len(unprocessed_deposits) > 5:
+            lines.append(f"  - ... 외 {len(unprocessed_deposits) - 5}건")
+        sections.append(
+            f"**미확인입금 미처리: {len(unprocessed_deposits)}건**\n"
+            + "\n".join(lines)
+            + "\n  → 미확인입금 시트에서 처리상태를 입력해주세요"
         )
 
-        res = await cl.AskActionMessage(
-            content=msg_content,
-            actions=[
-                cl.Action(name="recheck_gate", label="🔄 다시 확인",
-                          payload={"value": "recheck"}),
-                cl.Action(name="cancel_gate", label="❌ 취소",
-                          payload={"value": "cancel"}),
-            ],
-        ).send()
+    link_id = MEMBERS_SHEET_ID if USE_DB_SOT else apps_sheet_id
+    sheet_link = (
+        f"\n\n[회원관리 시트 열기](https://docs.google.com/spreadsheets/d/{link_id})"
+        if link_id else ""
+    )
 
-        if res and res.get("payload", {}).get("value") == "recheck":
-            unprocessed_apps = _read_unprocessed(apps_sheet_id, apps_tab, "A1:L5000")
-            unprocessed_deposits = (
-                _read_unprocessed(MEMBERS_SHEET_ID, UNMATCHED_DEPOSITS_TAB, "A1:G5000")
-                if USE_DB_SOT else []
-            )
-            continue
+    msg_content = (
+        f"**{term.get('term_name', '')}** 출석부 생성을 위해 처리가 필요한 건이 있습니다.\n\n"
+        + "\n\n".join(sections)
+        + f"\n\n모든 건의 처리상태를 입력해주세요 (등록완료/환불완료/취소완료).{sheet_link}"
+    )
 
-        await send_default_actions()
-        return False
+    await cl.Message(
+        content=msg_content,
+        actions=[
+            cl.Action(name="gate_recheck", label="🔄 다시 확인",
+                      payload={"value": "recheck"}),
+            cl.Action(name="gate_cancel", label="❌ 취소",
+                      payload={"value": "cancel"}),
+        ],
+    ).send()
+
+
+async def _show_attendance_final_confirm():
+    """Show final confirm before creating attendance sheet."""
+    await cl.Message(
+        content=(
+            "배움숲 등록, 환불/취소 처리를 모두 완료하셨나요?\n\n"
+            "처리상태가 '등록완료'인 수강생만 출석부에 포함됩니다."
+        ),
+        actions=[
+            cl.Action(name="attendance_confirm_create", label="✅ 확인, 출석부 생성",
+                      payload={"value": "confirm"}),
+            cl.Action(name="attendance_cancel_create", label="❌ 취소",
+                      payload={"value": "cancel"}),
+        ],
+    ).send()
+
+
+@cl.action_callback("gate_recheck")
+async def on_gate_recheck(action: cl.Action):
+    term = cl.user_session.get("term")
+    app_sheet_id = cl.user_session.get("applications_sheet_id")
+    await _check_processing_gate(term, app_sheet_id)
+
+
+@cl.action_callback("gate_cancel")
+async def on_gate_cancel(action: cl.Action):
+    cl.user_session.set("state", "idle")
+    await send_default_actions()
+
+
+@cl.action_callback("attendance_confirm_create")
+async def on_attendance_confirm_create(action: cl.Action):
+    await do_create_attendance()
+
+
+@cl.action_callback("attendance_cancel_create")
+async def on_attendance_cancel_create(action: cl.Action):
+    cl.user_session.set("state", "idle")
+    await cl.Message("출석부 생성이 취소되었습니다.").send()
+    await send_default_actions()
 
 
 async def do_create_attendance():
@@ -979,28 +976,38 @@ async def start_ocr_flow(message):
     """출석 체크 시작 — 회차 확인 → 종강 여부 확인 → 사진 업로드"""
     term = cl.user_session.get("term") or get_current_term()
     cl.user_session.set("term", term)
+    await _show_ocr_start_confirm(term)
 
-    res = await cl.AskActionMessage(
+
+async def _show_ocr_start_confirm(term: dict):
+    """Show OCR start confirmation — non-blocking."""
+    await cl.Message(
         content=(
             f"**{term['term_name']}** 출석 체크를 시작합니다.\n\n"
             "출석 체크는 **종강 후** 진행하는 작업입니다.\n"
             "해당 회차의 강좌가 종강되었는지 확인해주세요."
         ),
         actions=[
-            cl.Action(name="ocr_confirm", label="✅ 종강 완료, 시작합니다",
+            cl.Action(name="ocr_confirm_start", label="✅ 종강 완료, 시작합니다",
                       payload={"value": "confirm"}),
-            cl.Action(name="ocr_cancel", label="❌ 취소",
+            cl.Action(name="ocr_cancel_start", label="❌ 취소",
                       payload={"value": "cancel"}),
         ],
     ).send()
 
-    value = (res or {}).get("payload", {}).get("value")
-    if value == "confirm":
-        await _resolve_attendance_sheet_id(term)
-        await _ask_for_ocr_image(term)
-    else:
-        await cl.Message("출석 체크가 취소되었습니다.").send()
-        await send_default_actions()
+
+@cl.action_callback("ocr_confirm_start")
+async def on_ocr_confirm_start(action: cl.Action):
+    term = cl.user_session.get("term")
+    await _resolve_attendance_sheet_id(term)
+    await _ask_for_ocr_image(term)
+
+
+@cl.action_callback("ocr_cancel_start")
+async def on_ocr_cancel_start(action: cl.Action):
+    cl.user_session.set("state", "idle")
+    await cl.Message("출석 체크가 취소되었습니다.").send()
+    await send_default_actions()
 
 
 async def _resolve_attendance_sheet_id(term: dict):
@@ -1105,64 +1112,85 @@ async def handle_ocr_image(message: cl.Message):
                 f"{', '.join(ocr_result['unrecognized'])}"
             )
 
-        res = await cl.AskActionMessage(
+        # Store OCR result in session for the callback to use
+        cl.user_session.set("pending_ocr_result", ocr_result)
+        cl.user_session.set("pending_ocr_students", students)
+
+        await cl.Message(
             content="\n".join(preview_lines) + "\n\n출석부 시트에 반영할까요?",
             actions=[
                 cl.Action(name="ocr_apply", label="✅ 반영하기",
-                          payload={"value": "apply"}),
+                          payload={"value": "apply", "course_name": course_name}),
                 cl.Action(name="ocr_retry", label="🔄 이 과목 다시 찍기",
-                          payload={"value": "retry"}),
+                          payload={"value": "retry", "course_name": course_name}),
                 cl.Action(name="ocr_finish", label="✅ 출석 체크 완료",
                           payload={"value": "finish"}),
             ],
         ).send()
-
-        value = (res or {}).get("payload", {}).get("value")
-
-        if value == "apply":
-            async with cl.Step(name="💾 출석부 시트 반영") as step:
-                updated = await write_attendance_to_sheet(
-                    attendance_sheet_id, course_name,
-                    ocr_result["results"], students,
-                    term_id=ocr_term_id,
-                )
-                step.output = f"**{updated}명** 반영 완료"
-
-            await cl.Message(
-                f"**{course_name}** 출석 체크가 반영되었습니다."
-            ).send()
-
-            # DB→Sheets 동기화 트리거 (fire-and-forget)
-            from app.services.n8n import trigger_sheets_sync
-            await trigger_sheets_sync("attendance", {
-                "term_id": ocr_term_id, "course_name": course_name,
-            })
-
-            cl.user_session.set("current_ocr_course", "")
-            await _ask_continue_ocr(term)
-
-        elif value == "retry":
-            await cl.Message(
-                f"**{course_name}** 출석부를 다시 촬영하여 업로드해주세요."
-            ).send()
-            cl.user_session.set("current_ocr_course", course_name)
-
-        else:  # finish 또는 타임아웃
-            await cl.Message(
-                "출석 체크를 완료합니다.\n"
-                "모든 과목의 출석 체크가 완료되면 종강 처리를 진행하세요."
-            ).send()
-            cl.user_session.set("state", "idle")
-            await send_default_actions("ocr")
 
     except Exception as e:
         await cl.Message(f"출석 체크 중 오류: {str(e)}").send()
         await send_default_actions()
 
 
-async def _ask_continue_ocr(term: dict):
-    """다른 과목 출석 체크 계속 여부 확인"""
-    res = await cl.AskActionMessage(
+@cl.action_callback("ocr_apply")
+async def on_ocr_apply(action: cl.Action):
+    course_name = action.payload.get("course_name", "")
+    ocr_result = cl.user_session.get("pending_ocr_result")
+    students = cl.user_session.get("pending_ocr_students")
+    attendance_sheet_id = cl.user_session.get("attendance_sheet_id")
+    term = cl.user_session.get("term") or get_current_term()
+    ocr_term_id = term.get("term_id", "")
+
+    if not ocr_result or not students:
+        await cl.Message("OCR 결과를 찾을 수 없습니다. 다시 시도해주세요.").send()
+        await _ask_for_ocr_image(term)
+        return
+
+    async with cl.Step(name="💾 출석부 시트 반영") as step:
+        updated = await write_attendance_to_sheet(
+            attendance_sheet_id, course_name,
+            ocr_result["results"], students,
+            term_id=ocr_term_id,
+        )
+        step.output = f"**{updated}명** 반영 완료"
+
+    await cl.Message(f"**{course_name}** 출석 체크가 반영되었습니다.").send()
+
+    from app.services.n8n import trigger_sheets_sync
+    await trigger_sheets_sync("attendance", {
+        "term_id": ocr_term_id, "course_name": course_name,
+    })
+
+    cl.user_session.set("current_ocr_course", "")
+    cl.user_session.set("pending_ocr_result", None)
+    cl.user_session.set("pending_ocr_students", None)
+    await _show_continue_ocr(term)
+
+
+@cl.action_callback("ocr_retry")
+async def on_ocr_retry(action: cl.Action):
+    course_name = action.payload.get("course_name", "")
+    cl.user_session.set("current_ocr_course", course_name)
+    await cl.Message(f"**{course_name}** 출석부를 다시 촬영하여 업로드해주세요.").send()
+    # state stays awaiting_ocr_image
+
+
+@cl.action_callback("ocr_finish")
+async def on_ocr_finish(action: cl.Action):
+    cl.user_session.set("state", "idle")
+    cl.user_session.set("pending_ocr_result", None)
+    cl.user_session.set("pending_ocr_students", None)
+    await cl.Message(
+        "출석 체크를 완료합니다.\n"
+        "모든 과목의 출석 체크가 완료되면 종강 처리를 진행하세요."
+    ).send()
+    await send_default_actions("ocr")
+
+
+async def _show_continue_ocr(term: dict):
+    """다른 과목 출석 체크 계속 여부 — non-blocking."""
+    await cl.Message(
         content="다른 과목의 출석부도 처리하시겠어요?",
         actions=[
             cl.Action(name="ocr_next", label="📸 다른 과목 처리",
@@ -1172,16 +1200,21 @@ async def _ask_continue_ocr(term: dict):
         ],
     ).send()
 
-    value = (res or {}).get("payload", {}).get("value")
-    if value == "next":
-        await _ask_for_ocr_image(term)
-    else:
-        await cl.Message(
-            "출석 체크가 완료되었습니다.\n"
-            "모든 과목의 출석 체크가 끝났으면 종강 처리를 진행하세요."
-        ).send()
-        cl.user_session.set("state", "idle")
-        await send_default_actions("ocr")
+
+@cl.action_callback("ocr_next")
+async def on_ocr_next(action: cl.Action):
+    term = cl.user_session.get("term") or get_current_term()
+    await _ask_for_ocr_image(term)
+
+
+@cl.action_callback("ocr_done")
+async def on_ocr_done(action: cl.Action):
+    cl.user_session.set("state", "idle")
+    await cl.Message(
+        "출석 체크가 완료되었습니다.\n"
+        "모든 과목의 출석 체크가 끝났으면 종강 처리를 진행하세요."
+    ).send()
+    await send_default_actions("ocr")
 
 
 def _extract_course_name(text: str, attendance_sheet_id: str) -> str:
@@ -1230,37 +1263,44 @@ async def start_report_flow():
 
 
 async def start_graduation_flow(message):
-    """종강 처리 시작 — 회차 확인 → 출석 체크 완료 확인 → 처리 실행"""
+    """종강 처리 시작 — 회차 확인 (non-blocking)"""
     term = cl.user_session.get("term") or get_current_term()
     cl.user_session.set("term", term)
-
-    res = await cl.AskActionMessage(
+    await cl.Message(
         content=f"**{term['term_name']}** 종강 처리를 시작할까요?",
         actions=[
-            cl.Action(name="grad_confirm", label="✅ 맞습니다",
+            cl.Action(name="graduation_confirm_term", label="✅ 맞습니다",
                       payload={"value": "confirm"}),
-            cl.Action(name="grad_other_term", label="📅 다른 회차에요",
+            cl.Action(name="graduation_other_term", label="📅 다른 회차에요",
                       payload={"value": "other"}),
-            cl.Action(name="grad_cancel", label="❌ 취소",
+            cl.Action(name="graduation_cancel", label="❌ 취소",
                       payload={"value": "cancel"}),
         ],
     ).send()
 
-    value = (res or {}).get("payload", {}).get("value")
-    if value == "confirm":
-        await _confirm_ocr_done_before_graduation(term)
-    elif value == "other":
-        cl.user_session.set("state", "awaiting_graduation_term_input")
-        await cl.Message(
-            "어떤 회차인지 알려주세요.\n예) 2026-1, 겨울학기, 2026년 겨울"
-        ).send()
-    else:
-        await cl.Message("종강 처리가 취소되었습니다.").send()
-        await send_default_actions()
+
+@cl.action_callback("graduation_confirm_term")
+async def on_graduation_confirm_term(action: cl.Action):
+    term = cl.user_session.get("term")
+    await _confirm_ocr_done_before_graduation(term)
+
+
+@cl.action_callback("graduation_other_term")
+async def on_graduation_other_term(action: cl.Action):
+    cl.user_session.set("state", "awaiting_term_input")
+    cl.user_session.set("term_input_next", "graduation")
+    await cl.Message("어떤 회차인지 알려주세요.\n예) 2026-1, 겨울학기, 2026년 겨울").send()
+
+
+@cl.action_callback("graduation_cancel")
+async def on_graduation_cancel(action: cl.Action):
+    cl.user_session.set("state", "idle")
+    await cl.Message("종강 처리가 취소되었습니다.").send()
+    await send_default_actions()
 
 
 async def _confirm_ocr_done_before_graduation(term: dict):
-    """종강 처리 전 출석 체크 완료 확인"""
+    """종강 처리 전 출석 체크 완료 확인 — non-blocking."""
     await _resolve_attendance_sheet_id(term)
     attendance_sheet_id = cl.user_session.get("attendance_sheet_id")
 
@@ -1270,7 +1310,7 @@ async def _confirm_ocr_done_before_graduation(term: dict):
         if attendance_sheet_id else "출석부 시트"
     )
 
-    res = await cl.AskActionMessage(
+    await cl.Message(
         content=(
             f"종강 처리 전 아래 사항을 확인해주세요.\n\n"
             f"1. ✅ 모든 강좌의 출석 체크(사진 → OCR)가 완료되었습니다.\n"
@@ -1279,23 +1319,29 @@ async def _confirm_ocr_done_before_graduation(term: dict):
             "확인 후 종강 처리를 시작합니다."
         ),
         actions=[
-            cl.Action(name="grad_start", label="✅ 확인했습니다, 시작합니다",
+            cl.Action(name="graduation_confirm_start", label="✅ 확인했습니다, 시작합니다",
                       payload={"value": "start"}),
-            cl.Action(name="grad_not_ready", label="❌ 아직 출석 체크가 안 됐어요",
+            cl.Action(name="graduation_not_ready", label="❌ 아직 출석 체크가 안 됐어요",
                       payload={"value": "not_ready"}),
         ],
     ).send()
 
-    value = (res or {}).get("payload", {}).get("value")
-    if value == "start":
-        await _run_graduation_process(term)
-    else:
-        await cl.Message(
-            "출석 체크를 먼저 완료해주세요.\n"
-            "'✅ 출석 체크' 버튼으로 과목별 출석부 사진을 처리한 뒤 "
-            "종강 처리를 진행하세요."
-        ).send()
-        await send_default_actions()
+
+@cl.action_callback("graduation_confirm_start")
+async def on_graduation_confirm_start(action: cl.Action):
+    term = cl.user_session.get("term")
+    await _run_graduation_process(term)
+
+
+@cl.action_callback("graduation_not_ready")
+async def on_graduation_not_ready(action: cl.Action):
+    cl.user_session.set("state", "idle")
+    await cl.Message(
+        "출석 체크를 먼저 완료해주세요.\n"
+        "'✅ 출석 체크' 버튼으로 과목별 출석부 사진을 처리한 뒤 "
+        "종강 처리를 진행하세요."
+    ).send()
+    await send_default_actions()
 
 
 async def _run_graduation_process(term: dict):
@@ -1421,7 +1467,7 @@ confidence: 0.0~1.0 (0.8 이상이면 확신, 미만이면 불확실)."""
 
 
 async def ask_intent_confirm(intent_result: dict):
-    """의도 분류 결과를 관리자에게 확인"""
+    """의도 분류 결과를 관리자에게 확인 — non-blocking."""
     intent = intent_result["intent"]
     confidence = intent_result["confidence"]
     label = INTENT_LABELS.get(intent, intent)
@@ -1433,13 +1479,13 @@ async def ask_intent_confirm(intent_result: dict):
         prompt = f"혹시 **{label}**을(를) 원하시는 건가요?"
         confirm_label = "✅ 맞아요"
 
-    res = await cl.AskActionMessage(
+    await cl.Message(
         content=prompt,
         actions=[
             cl.Action(
                 name="intent_confirm",
                 label=confirm_label,
-                payload={"value": "confirm", "intent": intent, "term": intent_result["term"]},
+                payload={"value": "confirm", "intent": intent, "term": intent_result.get("term")},
             ),
             cl.Action(
                 name="intent_deny",
@@ -1449,12 +1495,17 @@ async def ask_intent_confirm(intent_result: dict):
         ],
     ).send()
 
-    value = (res or {}).get("payload", {}).get("value")
-    if value == "confirm":
-        await _route_to_workflow(intent, intent_result.get("term"))
-    elif value == "deny":
-        await send_default_actions()
-    # res=None (타임아웃) 시 아무것도 하지 않음
+
+@cl.action_callback("intent_confirm")
+async def on_intent_confirm(action: cl.Action):
+    intent = action.payload.get("intent")
+    term_text = action.payload.get("term")
+    await _route_to_workflow(intent, term_text)
+
+
+@cl.action_callback("intent_deny")
+async def on_intent_deny(action: cl.Action):
+    await send_default_actions()
 
 
 async def _route_to_workflow(intent: str, term_text: str | None):
@@ -1463,10 +1514,10 @@ async def _route_to_workflow(intent: str, term_text: str | None):
         if term_text:
             term = parse_term_input(term_text)
             if term:
-                await start_payment_flow_with_term(term)
+                await _show_payment_term_confirm(term)
                 return
         term = get_current_term()
-        await start_payment_flow_with_term(term)
+        await _show_payment_term_confirm(term)
     elif intent == "attendance":
         await start_attendance_flow(None)
     elif intent == "ocr":
@@ -1508,7 +1559,7 @@ async def send_default_actions(completed: str | None = None):
 @cl.action_callback("default_payment")
 async def on_default_payment(action: cl.Action):
     term = get_current_term()
-    await start_payment_flow_with_term(term)
+    await _show_payment_term_confirm(term)
 
 
 @cl.action_callback("default_attendance")
