@@ -64,6 +64,15 @@ CREATE TABLE IF NOT EXISTS elements (
     url         TEXT,
     created_at  TIMESTAMPTZ DEFAULT NOW()
 );
+
+CREATE TABLE IF NOT EXISTS feedbacks (
+    id          TEXT PRIMARY KEY,
+    thread_id   TEXT,
+    step_id     TEXT,
+    value       INTEGER,
+    comment     TEXT,
+    created_at  TIMESTAMPTZ DEFAULT NOW()
+);
 """
 
 
@@ -354,9 +363,29 @@ class PostgresDataLayer(BaseDataLayer):
     # ------------------------------------------- Feedback / Element (빈 구현) --
 
     async def upsert_feedback(self, feedback: Feedback) -> str:
-        return ""
+        import uuid
+        pool = await self._get_pool()
+        feedback_id = feedback.id or str(uuid.uuid4())
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO feedbacks (id, thread_id, step_id, value, comment)
+                VALUES ($1, $2, $3, $4, $5)
+                ON CONFLICT (id) DO UPDATE
+                    SET value = EXCLUDED.value, comment = EXCLUDED.comment
+                """,
+                feedback_id,
+                feedback.forId or "",
+                feedback.threadId or "",
+                feedback.value,
+                feedback.comment or "",
+            )
+        return feedback_id
 
     async def delete_feedback(self, feedback_id: str) -> bool:
+        pool = await self._get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute("DELETE FROM feedbacks WHERE id = $1", feedback_id)
         return True
 
     async def create_element(self, element: ElementDict):

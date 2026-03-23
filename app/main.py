@@ -100,30 +100,12 @@ def oauth_callback(
 @cl.set_starters
 async def set_starters():
     return [
-        cl.Starter(
-            label="💰 입금 대조",
-            message="입금 대조를 시작합니다.",
-        ),
-        cl.Starter(
-            label="📋 출석부 생성",
-            message="출석부를 생성합니다.",
-        ),
-        cl.Starter(
-            label="✅ 출석 체크",
-            message="출석 체크를 시작합니다.",
-        ),
-        cl.Starter(
-            label="🎓 종강 처리",
-            message="종강 처리를 시작합니다.",
-        ),
-        cl.Starter(
-            label="📝 계획서 검토",
-            message="강의 계획서를 검토합니다.",
-        ),
-        cl.Starter(
-            label="❓ 업무 관련 질문",
-            message="업무 관련 질문이 있습니다.",
-        ),
+        cl.Starter(label="📝 계획서 검토", message="강의 계획서를 검토합니다."),
+        cl.Starter(label="💰 입금 대조", message="입금 대조를 시작합니다."),
+        cl.Starter(label="📋 출석부 생성", message="출석부를 생성합니다."),
+        cl.Starter(label="✅ 출석 체크", message="출석 체크를 시작합니다."),
+        cl.Starter(label="🎓 종강 처리", message="종강 처리를 시작합니다."),
+        cl.Starter(label="❓ 질문하기", message="업무 관련 질문이 있습니다."),
     ]
 
 
@@ -1422,11 +1404,11 @@ async def send_default_actions(completed: str | None = None):
     completed: 방금 완료한 작업 키 — 해당 작업은 "다시하기" 레이블로 표시.
     """
     definitions = [
+        ("plan", "📝 계획서 검토"),
         ("payment", "💰 입금 대조"),
         ("attendance", "📋 출석부 생성"),
         ("ocr", "✅ 출석 체크"),
         ("graduation", "🎓 종강 처리"),
-        ("plan", "📝 계획서 검토"),
         ("question", "❓ 질문하기"),
     ]
     actions = []

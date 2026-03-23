@@ -44,22 +44,9 @@ ROOT_FOLDER_ID = "0AANInBeWsB7dUk9PVA"
 OPERATIONS_FOLDER_ID = "1WuqNFt-g5qhnY1nMk0a8dsowZHKQVRMm"  # 02 학사운영
 MEMBERS_FOLDER_ID = "12xm3vG4w5nOPTwoWgmyGCpz939KvJ93e"  # 03 회원과 강사/회원(회원명단/가입서/정회원) — 회원관리·수강기록 소재
 MEMBERS_SHEET_ID = "193r34mtLHd0-oX7MKJOWq1Ane9iBfbBZB5yYf78R3Bo"  # 회원관리 시트 (3탭: 회원목록, 회원기록, 수강기록)
-# 가입 신청서 폴더 위치
-# ASIS: 관리자 개인 드라이브 (현재 활성)
-# TOBE: 공유 드라이브 (이전 완료 후 주석 전환)
-#
-# 전환 방법:
-#   1. 관리자가 공유 드라이브로 파일 이전 완료
-#   2. 아래 ACTIVE 값을 TOBE ID로 교체
-#   3. 배포
-
-MEMBER_SIGNUP_FOLDER_ID_ASIS = "1wbxBPC6SRHaUnPRHbevYCy9tUKcpaSqr"       # 개인 드라이브
-MEMBER_SIGNUP_FOLDER_ID_TOBE = "10ZL8rD9j7OyyZOihfyJ6GRTzmBrTBgWe"       # 공유 드라이브
-MEMBER_SIGNUP_FOLDER_ID = MEMBER_SIGNUP_FOLDER_ID_ASIS                     # ← 현재 활성
-
-FULLMEMBER_SIGNUP_FOLDER_ID_ASIS = "1--3kKT19bGMl4uvA_qYRtWZss1DOA6So"   # 개인 드라이브
-FULLMEMBER_SIGNUP_FOLDER_ID_TOBE = "17tsWfYwIRgHHcT1DQEj8Sqa4ys6pe0Vy"   # 공유 드라이브
-FULLMEMBER_SIGNUP_FOLDER_ID = FULLMEMBER_SIGNUP_FOLDER_ID_ASIS             # ← 현재 활성
+# 가입 신청서 폴더 (공유 드라이브)
+MEMBER_SIGNUP_FOLDER_ID = "10ZL8rD9j7OyyZOihfyJ6GRTzmBrTBgWe"
+FULLMEMBER_SIGNUP_FOLDER_ID = "17tsWfYwIRgHHcT1DQEj8Sqa4ys6pe0Vy"
 
 # 회원관리 파일 내 탭명 (3탭 구조)
 MEMBERS_TAB = "회원목록"          # 현재 상태 스냅샷
