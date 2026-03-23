@@ -67,7 +67,7 @@ default_theme = "light"
 description = "위례인생학교 관리자 업무 지원 챗봇"
 
 # Chain of Thought (CoT) display mode. Can be "hidden", "tool_call" or "full".
-cot = "hidden"
+cot = "tool_call"
 
 # Specify a CSS file that can be used to customize the user interface.
 # The CSS file can be served from the public directory or via an external link.

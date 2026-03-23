@@ -14,7 +14,7 @@ from app.config import (
     ANTHROPIC_API_KEY, LLM_MODEL, USE_DB_SOT,
     MEMBERS_SHEET_ID, COURSE_KEYWORDS,
     TUITION_FEE, MEMBERSHIP_FEE, FULL_MEMBERSHIP_FEE,
-    MEMBERS_TAB, MEMBER_RECORDS_TAB, COURSE_RECORDS_TAB,
+    MEMBERS_TAB, MEMBER_RECORDS_TAB, COURSE_RECORDS_TAB, APPLICATIONS_TAB,
     MEMBER_RECORD_HEADER, COURSE_RECORD_HEADER,
     INSTRUCTOR_SHEET_ID, STAFF_SHEET_ID,
 )
@@ -230,9 +230,9 @@ def _write_applications_to_sheets(
     return spreadsheet_id
 
 
-def _read_applications_from_sheets(spreadsheet_id: str) -> list[dict]:
+def _read_applications_from_sheets(spreadsheet_id: str, tab_name: str = "신청서") -> list[dict]:
     """Sheets에서 신청서 읽기."""
-    rows = read_sheet(spreadsheet_id, "신청서!A1:L5000")
+    rows = read_sheet(spreadsheet_id, f"{tab_name}!A1:L5000")
     if not rows or len(rows) < 2:
         return []
     header = rows[0]
@@ -245,10 +245,11 @@ def _read_applications_from_sheets(spreadsheet_id: str) -> list[dict]:
 def _update_applications_in_sheets(
     spreadsheet_id: str,
     applications: list[dict],
+    tab_name: str = "신청서",
 ) -> None:
     """Sheets에 매칭 결과 덮어쓰기."""
     rows = [APPLICATION_HEADER] + [_app_to_row(a) for a in applications]
-    write_sheet(spreadsheet_id, "신청서!A1", rows)
+    write_sheet(spreadsheet_id, f"{tab_name}!A1", rows)
 
 
 def _load_members_from_sheets() -> list[dict]:
@@ -589,6 +590,7 @@ async def read_applications_sheet(
             return await db.load_applications(term_id)
         except Exception as e:
             logger.error("DB read failed, falling back to Sheets: %s", e)
+            return _read_applications_from_sheets(spreadsheet_id, tab_name=APPLICATIONS_TAB)
 
     return _read_applications_from_sheets(spreadsheet_id)
 
@@ -612,6 +614,8 @@ async def update_applications_sheet(
             return
         except Exception as e:
             logger.error("DB write failed, falling back to Sheets: %s", e)
+            _update_applications_in_sheets(spreadsheet_id, applications, tab_name=APPLICATIONS_TAB)
+            return
 
     _update_applications_in_sheets(spreadsheet_id, applications)
 

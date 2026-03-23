@@ -160,7 +160,7 @@ awaiting_ocr_image       # 출석부 사진 대기
 설정 파일:
 - `public/theme.json` — 전체 색상 팔레트 (HSL), 폰트 설정, Google Fonts URL
 - `public/stylesheet.css` — 타이포그래피 + UI 오버라이드 (버튼 테두리, 유저 메시지, 로고, 다크모드 토글)
-- `.chainlit/config.toml` — `custom_css = "/public/stylesheet.css"`, `default_theme = "light"`
+- `.chainlit/config.toml` — `custom_css = "/public/stylesheet.css"`, `default_theme = "light"`, `cot = "tool_call"` (Step 표시)
 
 ### 타이포그래피
 
@@ -496,21 +496,20 @@ Sync-2 (n8n/sync_webhook.json): 웹훅 즉시 push — 챗봇이 DB 쓰기 후 n
 
 1. **관리자**: 챗봇에서 "💰 입금 대조" Starter 버튼 클릭 (또는 자유 텍스트 → LLM 의도 분류 → 확인)
 2. **Agent**: 현재 날짜 기반으로 회차 추측 → "2026-1 겨울학기 입금 대조를 시작할까요?" → ✅ 맞습니다 / 📅 다른 회차에요 / ❌ 취소
-3. **관리자**: "다른 회차에요" 선택 시 → 자유 텍스트로 회차 입력 (`parse_term_input`으로 파싱) → 재확인 루프
-4. **Agent**: "신청자 목록 엑셀을 업로드해주세요" (배움숲에서 다운로드한 `LEARNING_APPLY*.xls`)
-5. **관리자**: 신청자 목록 엑셀을 챗봇에 직접 업로드 (파일 대기 중 텍스트 입력 시: 취소 감지 / Q&A 답변 후 재안내 / 파일 재요청)
-6. **Agent**: 신청자 목록 파싱 (수강 유형)
-7. **Agent**: (자동) Drive에서 신규가입 신청서 로드 → 파싱 (cl.Step 진행 표시)
-8. **Agent**: (자동) Drive에서 정회원가입 신청서 로드 → 파싱 (cl.Step 진행 표시)
-9. **Agent**: 6+7+8을 합쳐 통합 신청서 생성 → Google Sheets에 저장 (필터 + 처리상태 드롭다운 자동 설정)
-10. **Agent**: "입금 내역을 업로드해주세요"
-11. **관리자**: 입금 내역 엑셀을 챗봇에 직접 업로드
-12. **Agent**: 회원 정보 로드 + 강사/사무처 면제 판별 → 입금내역 전건 → DB deposits INSERT → 자동 매칭 (코드 80~90% → LLM 10~20%) → 등급 전환 cascade 실행 → **즉시** 신청서 시트에 자동 반영
-13. **Agent**: 숫자 요약 (✅ 78건 🔶 5건 ...) + 미확인입금 안내 + 시트 링크 + "처리상태를 입력해주세요" + 기본 Action 버튼 7개 (`send_default_actions`)
-14. **관리자**: 신청기록/미확인입금 시트에서 입금현황 확인 → 배움숲 포탈에서 수강 등록 → 처리상태 '등록완료' 입력
-15. **관리자**: '출석부 생성' 클릭
-16. **Agent**: 처리상태 gate check (신청기록 + 미확인입금 양쪽에서 NULL/보류 건이 있으면 차단 + 상세 안내) → 관리자 확인
-17. **Agent**: 신청기록에서 처리상태='등록완료'인 수강생만 → 출석부 생성 (과목별 필터 자동 설정) → 기본 Action 버튼
+3. **관리자**: "다른 회차에요" 선택 시 → 자유 텍스트로 회차 입력 (`parse_term_input`으로 파싱) → 재확인
+4. **Agent**: (자동) Drive에서 신규가입 신청서 로드 → 파싱 (cl.Step 진행 표시)
+5. **Agent**: (자동) Drive에서 정회원가입 신청서 로드 → 파싱 (cl.Step 진행 표시)
+6. **Agent**: "신청자 목록 엑셀을 업로드해주세요" (배움숲에서 다운로드한 `LEARNING_APPLY*.xls`)
+7. **관리자**: 신청자 목록 엑셀을 챗봇에 직접 업로드 (파일 대기 중 텍스트 입력 시: 취소 감지 / Q&A 답변 후 재안내 / 파일 재요청)
+8. **Agent**: 신청자 목록 파싱 + 4+5의 신청서와 합쳐 통합 신청서 생성 → Google Sheets에 저장 (필터 + 처리상태 드롭다운 자동 설정)
+9. **Agent**: "입금 내역을 업로드해주세요"
+10. **관리자**: 입금 내역 엑셀을 챗봇에 직접 업로드
+11. **Agent**: 회원 정보 로드 + 강사/사무처 면제 판별 → 입금내역 전건 → DB deposits INSERT → 자동 매칭 (코드 80~90% → LLM 10~20%) → 등급 전환 cascade 실행 → **즉시** 신청서 시트에 자동 반영
+12. **Agent**: 숫자 요약 (✅ 78건 🔶 5건 ...) + 미확인입금 안내 + 시트 링크 + "처리상태를 입력해주세요" + 기본 Action 버튼 7개 (`send_default_actions`)
+13. **관리자**: 신청기록/미확인입금 시트에서 입금현황 확인 → 배움숲 포탈에서 수강 등록 → 처리상태 '등록완료' 입력
+14. **관리자**: '출석부 생성' 클릭
+15. **Agent**: 처리상태 gate check (신청기록 + 미확인입금 양쪽에서 NULL/보류 건이 있으면 차단 + 상세 안내) → 관리자 확인
+16. **Agent**: 신청기록에서 처리상태='등록완료'인 수강생만 → 출석부 생성 (과목별 필터 자동 설정) → 기본 Action 버튼
 
 ### 입금 매칭 로직
 
@@ -714,10 +713,10 @@ DATABASE_URL=                   # Railway가 자동 주입 (PostgreSQL 연결 �
 - 모든 작업 종료 후 공통 기본 Action 버튼 (`send_default_actions`)
 - 신청서 시트: 필터 + 처리상태 드롭다운 자동 설정
 - 출석부 시트: 과목별 탭 BasicFilter 자동 설정
-- Railway 배포, 단위 테스트 108개 통과
+- Railway 배포, 단위 테스트 121개 통과
 - 커스텀 테마 (Palette C 마을회관): `public/theme.json` + `public/stylesheet.css`
 - Noto Sans KR 폰트, 본문 18px, WCAG AA 접근성
-- `config.toml`: `cot = "hidden"`, `description` 추가
+- `config.toml`: `cot = "tool_call"` (Step 진행 표시), `description` 추가
 - **남은 작업**: E2E 기능 테스트, Context Injection 고도화
 
 ### Phase 2 — 데이터 파이프라인 ✅ 완료
@@ -753,7 +752,7 @@ DATABASE_URL=                   # Railway가 자동 주입 (PostgreSQL 연결 �
 - `app/services/n8n.py`: fire-and-forget 웹훅 트리거 (applications/members/deposits/graduation)
 - n8n 워크플로우: Sync-1 (일일 06:00, 5탭) + Sync-2 (웹훅 즉시) — 설정 완료
 - `registration_status` → `processing_status` 전환 완료
-- 108개 테스트 통과
+- 121개 테스트 통과
 
 ### Phase 3 — 기능 확장 + UX 개선
 
@@ -773,6 +772,7 @@ DATABASE_URL=                   # Railway가 자동 주입 (PostgreSQL 연결 �
 - FAQ/Context Injection 보강 — 입금대조절차, 처리상태, 등급전환, 시트구조 등 5개 토픽 추가
 - 합산 입금 분류 — 12만(정회원비), 13만(가입비+정회원비)
 - 강사/사무처 면제 자동 판별 — 강사관리/사무처관리 시트에서 면제 대상 자동 추출, 가입비+정회원비+수강비 전부 면제, 등급 자동 승급, 종강 시 활동 중 사무처 직원만 강등 제외
+- AskActionMessage → non-blocking 전환 — 전체 12개 blocking AskActionMessage를 `cl.Message(actions=...) + @cl.action_callback` 패턴으로 전환. 26개 새 action callback 추가 (총 33개). `@cl.on_stop` 훅 추가. 회차 입력 상태 통합 (`term_input_next`). 신청서 위치 확인 단계 제거 (Drive 자동 탐색). 처리상태 gate의 `while True` 루프를 recheck callback으로 전환.
 
 **📋 백로그:**
 - 보고서 생성: DB SQL 집계 → PDF (placeholder 버튼 배치 완료)
