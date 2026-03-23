@@ -195,6 +195,8 @@ wiryeschoolcommunity/
 │   └── fonts/                   # NanumGothic TTF (빌드 시 다운로드, .gitignore)
 ├── scripts/
 │   ├── download_fonts.py        # NanumGothic 폰트 다운로드 (빌드 시 자동 실행)
+│   ├── init_db_schema.py        # DB 비즈니스 테이블 생성 (최초 1회)
+│   ├── migrate_v4.py            # v4.0 스키마 마이그레이션 (processing_status, deposits)
 │   ├── populate_members.py      # 회원관리 시트 초기 데이터 생성
 │   └── populate_students.py     # 수강생 시트 초기 데이터 생성
 ├── .python-version              # Python 3.12 고정 (Railway mise 빌드용)
@@ -246,19 +248,20 @@ drive_service = build('drive', 'v3', credentials=credentials)
   - `USE_DB_SOT=true`: **PostgreSQL이 SoT**. 챗봇은 DB에서 읽고 DB+Sheets에 동시 쓰기. n8n이 DB→Sheets 동기화.
   - `USE_DB_SOT=false` (기본): **Google Sheets가 SoT**. 기존 동작 유지. DB 쓰기 안 함.
 - **DB 실패 시 자동 폴백**: DB 읽기/쓰기 실패하면 Sheets로 폴백 + 로그 기록. 서비스 중단 없음.
-- **등록상태 예외**: 신청서의 `등록상태` 컬럼만 관리자가 Sheets에서 직접 편집. DB 모드에서도 이 컬럼은 Sheets에서 읽음.
+- **처리상태 예외**: 신청기록/미확인입금의 `처리상태` 컬럼만 관리자가 Sheets에서 직접 편집 (드롭다운: 등록완료/환불완료/취소완료/보류). DB 모드에서도 이 컬럼은 Sheets에서 읽음.
 - **PostgreSQL**: 비즈니스 데이터 (`db.py`, 6 테이블) + 채팅 기록 (`chat_data_layer.py`).
 - **Google Drive는 파일 저장소**. Raw 엑셀, PDF, 출석부 등 파일 단위 자료 관리.
 - **이모지↔코드 변환**: DB에는 상태 코드(confirmed, not_paid 등) 저장. 앱 코드는 이모지(✅정상, ❌미입금 등) 사용. 변환은 `db.py` 경계에서 수행.
 
-### DB 스키마 (6 테이블)
+### DB 스키마 (7 테이블)
 
 | 테이블 | PK / UK | 성격 |
 |--------|---------|------|
 | `members` | `name_id` (TEXT PK) | 회원 현재 상태 |
 | `member_records` | `id` (SERIAL) | 등급 변경 이력 |
 | `course_records` | `id` (SERIAL) | 수강 이력 |
-| `applications` | `(term_id, name_id, type, course_name)` UK | 통합 신청서 |
+| `applications` | `(term_id, name_id, type, course_name)` UK | 통합 신청서 (`processing_status`, `processed_at`) |
+| `deposits` | `id` (SERIAL) | 입금내역 원본 (`match_status`, `matched_name_ids`) |
 | `attendance` | `(term_id, course_name, student_name)` UK | 출석 데이터 |
 | `feedbacks` | `id` (TEXT PK) | Chainlit thumbs up/down |
 
@@ -280,10 +283,11 @@ drive_service = build('drive', 'v3', credentials=credentials)
 | **회원목록** | Master (영속) | `members` | 회원관리 → 회원목록 | 전체 회원 현재 상태 스냅샷 |
 | **회원기록** | History (영속) | `member_records` | 회원관리 → 회원기록 | 등급 변경 이력 |
 | **수강기록** | History (영속) | `course_records` | 회원관리 → 수강기록 | 전체 수강 이력 |
-| **신청서** | Working (회차별) | `applications` | 회차폴더 → 신청서 | 통합 신청서 — 수강+신규가입+정회원 |
+| **신청기록** | Working (전 회차 누적) | `applications` | 회원관리 → 신청기록 | 통합 신청서 — 수강+신규가입+정회원, 회차 필터로 열람 |
+| **미확인입금** | Working (전 회차 누적) | `deposits` (unmatched) | 회원관리 → 미확인입금 | 자동 매칭 안 된 입금 건만 표시 |
 | **출석부** | Working (회차별) | `attendance` | 회차폴더 → 출석부 | 수강생 탭 + 과목별 탭, 12회차 출석 |
 
-회원관리 시트(`MEMBERS_SHEET_ID`)는 3탭 구조: `회원목록`, `회원기록`, `수강기록`.
+회원관리 시트(`MEMBERS_SHEET_ID`)는 5탭 구조: `회원목록`, `회원기록`, `수강기록`, `신청기록`, `미확인입금`.
 탭명 상수: `MEMBERS_TAB`, `MEMBER_RECORDS_TAB`, `COURSE_RECORDS_TAB` (`config.py`).
 
 ### 회원목록 (Master) — 현재 상태 스냅샷
@@ -309,20 +313,29 @@ drive_service = build('drive', 'v3', credentials=credentials)
 
 종강 시: 출석부 → 출석률 확정 → 수강기록에 행 추가 → 회원목록 재집계
 
-### 통합 신청서 (Working, 회차별) — 수강+가입+정회원 통합 (14컬럼)
+### 신청기록 (Working, 전 회차 누적) — 수강+가입+정회원 통합 (12컬럼)
 
-| 이름ID | 이름 | 유형 | 과목명 | 예상금액 | 입금현황 | 등록상태 | 입금시간 | 입금자명(적요) | 전화번호 | 주소 | 신청일 | 시작회차 | 종료회차 |
-|--------|------|------|--------|---------|---------|---------|---------|-------------|---------|------|--------|---------|---------|
+| 신청일 | 회차 | 이름ID | 이름 | 유형 | 과목명 | 예상금액 | 입금시간 | 입금자명(적요) | 입금현황 | 확인사유 | 처리상태 |
+|--------|------|--------|------|------|--------|---------|---------|-------------|---------|---------|---------|
 
 - **유형**: `수강`(수강료 2만), `신규가입`(가입비 1만), `정회원`(정회원비 12만)
 - **과목명**: 수강 유형만 값 있음. 신규가입/정회원은 빈칸.
-- **시작회차/종료회차**: 정회원 유형만 값 있음.
-- **입금현황**: Agent가 자동 채움 (✅정상 / 🔶확인필요 / ⚠️이름불일치 / ❌미입금 / 🔄중복 / 💎면제)
-- **등록상태**: 체크박스 (Google Sheets BOOLEAN validation). Agent가 시트 생성 시 자동 설정. 관리자가 배움숲 포탈에서 등록 완료 후 체크박스 클릭. 출석부 생성 시 필터 기준 (TRUE만 포함, FALSE/빈칸 제외).
+- **입금현황**: Agent가 자동 채움 (✅정상 / 🔶확인필요 / ⚠️이름불일치 / ❌미입금 / 🔄중복 / 💎면제). DB에는 코드(confirmed 등) 저장, n8n Code 노드에서 이모지로 변환.
+- **처리상태**: 드롭다운 (등록완료/환불완료/취소완료/보류). 관리자가 Sheets에서 직접 편집. 출석부 생성 시 필터 기준 (`등록완료`만 포함).
+- **DB 전용 컬럼** (Sheets 비노출): `phone`, `address`, `processed_at`
 - **데이터 소스**:
   - 수강: 배움숲 다운로드 엑셀 (관리자가 챗봇에 업로드)
   - 신규가입: Drive 신규가입 신청서 폴더 (signup_loader.py가 자동 탐색)
   - 정회원: Drive 정회원가입 신청서 폴더 (signup_loader.py가 자동 탐색)
+
+### 등급 전환 (Grade Cascade)
+
+입금 대조 시 `apply_grade_cascade()` 함수가 자동 실행. Idempotent — 재실행 가능.
+
+3-Pass 순서:
+1. **신규가입 confirmed** → 비회원을 회원으로 등록
+2. **정회원 confirmed** → 회원을 정회원으로 승급 (회원 아니면 🔶확인필요)
+3. **수강** → 정회원이면 💎면제, 정회원비 미입금이면 🔶확인필요, 확정이면 준회원 승급
 
 ### 출석부 (Working, 회차별, 1파일 다중시트)
 
@@ -338,7 +351,7 @@ Google Sheets 파일 1개. 수강생 탭 + 과목별 탭 + 과목별 인쇄용 P
 - **수강생 탭**: 전체 수강생 현황. 출석률(D열)은 종강 처리 시 `graduation.py`가 채움 (생성 시 빈칸).
 - **과목별 탭**: 이름ID·출석률 없음. OCR 기록 범위: B열(1회차)~M열(12회차). 출석="O", 결석="".
 - **PDF**: 과목별 A4 가로 PDF. NanumGothic 12pt, 페이지 분할. Drive 출석부 폴더에 업로드.
-- 신청서의 `등록상태`가 체크된 수강자만 포함
+- 신청기록의 `처리상태`가 `등록완료`인 수강자만 포함
 
 ---
 
@@ -365,7 +378,7 @@ Google Sheets 파일 1개. 수강생 탭 + 과목별 탭 + 과목별 인쇄용 P
           ▼
    ┌──────────────────────────────────────────────────────────┐
    │  Google Workspace                                         │
-   │  Drive (파일) + Sheets (관리자 view, 등록상태 편집)       │
+   │  Drive (파일) + Sheets (관리자 view, 처리상태 편집)       │
    └──────────────────────────────────────────────────────────┘
           │
           ▼
@@ -450,15 +463,15 @@ Sync-2 (n8n/sync_webhook.json): 웹훅 즉시 push — 챗봇이 DB 쓰기 후 n
 6. **Agent**: 신청자 목록 파싱 (수강 유형)
 7. **Agent**: (자동) Drive에서 신규가입 신청서 로드 → 파싱 (cl.Step 진행 표시)
 8. **Agent**: (자동) Drive에서 정회원가입 신청서 로드 → 파싱 (cl.Step 진행 표시)
-9. **Agent**: 6+7+8을 합쳐 통합 신청서 생성 → Google Sheets에 저장 (필터 + 등록상태 체크박스 자동 설정)
+9. **Agent**: 6+7+8을 합쳐 통합 신청서 생성 → Google Sheets에 저장 (필터 + 처리상태 드롭다운 자동 설정)
 10. **Agent**: "입금 내역을 업로드해주세요"
 11. **관리자**: 입금 내역 엑셀을 챗봇에 직접 업로드
-12. **Agent**: 회원관리(Sheets) + 통합 신청서 + 입금내역을 바탕으로 매칭 (코드 80~90% → LLM 10~20%) → **즉시** 신청서 시트에 자동 반영 (확인 단계 없음)
-13. **Agent**: 숫자 요약 한 줄 (✅ 78건 🔶 5건 ...) + 시트 링크 + "등록상태 체크박스를 클릭해주세요" + 기본 Action 버튼 5개 (`send_default_actions`)
-14. **관리자**: 신청서 시트를 보면서 배움숲 포탈에서 수강 등록 처리 → 등록상태 체크박스 클릭
+12. **Agent**: 입금내역 전건 → DB deposits INSERT → 자동 매칭 (코드 80~90% → LLM 10~20%) → 등급 전환 cascade 실행 → **즉시** 신청서 시트에 자동 반영
+13. **Agent**: 숫자 요약 (✅ 78건 🔶 5건 ...) + 미확인입금 안내 + 시트 링크 + "처리상태를 입력해주세요" + 기본 Action 버튼 7개 (`send_default_actions`)
+14. **관리자**: 신청기록/미확인입금 시트에서 입금현황 확인 → 배움숲 포탈에서 수강 등록 → 처리상태 '등록완료' 입력
 15. **관리자**: '출석부 생성' 클릭
-16. **Agent**: 3단계 완료 확인 체크리스트 (입금대조 → 배움숲 등록 → 체크박스) → 관리자 확인
-17. **Agent**: 신청서 시트에서 등록상태 체크된 수강생만 → 출석부 생성 (과목별 필터 자동 설정) → 기본 Action 버튼
+16. **Agent**: 처리상태 gate check (NULL/보류 건이 있으면 차단 + 상세 안내) → 관리자 확인
+17. **Agent**: 신청기록에서 처리상태='등록완료'인 수강생만 → 출석부 생성 (과목별 필터 자동 설정) → 기본 Action 버튼
 
 ### 입금 매칭 로직
 
@@ -475,10 +488,11 @@ Sync-2 (n8n/sync_webhook.json): 웹훅 즉시 push — 챗봇이 DB 쓰기 후 n
 | 수강료+가입비 합산 | 3만원 | 통합 신청서 (수강+신규가입) | 비회원 → 회원 → 준회원 |
 | 다과목 합산 | 4만원+ | 통합 신청서 (다과목) | 회원 → 준회원 |
 | 정회원비 | 12만원 | 통합 신청서 유형='정회원' | 회원 → 정회원 |
+| 가입비+정회원비 | 13만원 | 통합 신청서 (신규가입+정회원) | 비회원 → 회원 → 정회원 |
 
 **코드 매칭 순서**:
 1. 비수강료 필터링: 금액 < 1만원(예금이자 등) 스킵, "취소됨"/"대기" 키워드 감지
-2. 금액 분류: 1만(가입비), 2만(수강료), 3만(합산), 4만+(다과목), 12만(정회원)
+2. 금액 분류: 1만(가입비), 2만(수강료), 3만(합산), 4만+(다과목), 12만(정회원), 13만(가입비+정회원)
 3. 이름 매칭: 의뢰인 컬럼 → 통합 신청서의 이름 (정확 일치). 카카오페이/토스면 적요에서 추출
 4. 강좌 매칭: 적요 컬럼에서 강좌 키워드 추출 → 신청서의 과목명과 대조
 5. 동명이인: 이름 매칭 2명+ → 강좌명으로 2차 구분, 안 되면 🔶확인필요
@@ -526,17 +540,17 @@ TERM_SEASONS = {1: "겨울", 2: "봄", 3: "여름", 4: "가을"}
 | Root folder | `ROOT_FOLDER_ID` | Shared Drive root | `0AANInBeWsB7dUk9PVA` | — |
 | 회원 폴더 | `MEMBERS_FOLDER_ID` | Drive folder | `12xm3vG4w5nOPTwoWgmyGCpz939KvJ93e` | — |
 | 학사운영 folder | `OPERATIONS_FOLDER_ID` | Drive folder | `1WuqNFt-g5qhnY1nMk0a8dsowZHKQVRMm` | — |
-| 신규가입 신청서 폴더 | `MEMBER_SIGNUP_FOLDER_ID` | Drive folder | ASIS/TOBE 전환 (config.py 참조) | — |
-| 정회원가입 신청서 폴더 | `FULLMEMBER_SIGNUP_FOLDER_ID` | Drive folder | ASIS/TOBE 전환 (config.py 참조) | — |
+| 신규가입 신청서 폴더 | `MEMBER_SIGNUP_FOLDER_ID` | Drive folder | `10ZL8rD9j7OyyZOihfyJ6GRTzmBrTBgWe` | — |
+| 정회원가입 신청서 폴더 | `FULLMEMBER_SIGNUP_FOLDER_ID` | Drive folder | `17tsWfYwIRgHHcT1DQEj8Sqa4ys6pe0Vy` | — |
 
 회원관리 시트는 `03 회원과 강사/회원(회원명단/가입서/정회원)/` 폴더에 위치한다 (Shared Drive 루트가 아님).
-신청서 폴더는 현재 관리자 개인 드라이브(ASIS)에 위치하며, 공유 드라이브(TOBE)로 이전 시 `config.py`에서 상수 전환.
+신청서 폴더는 공유 드라이브에 위치.
 
 ### 회원 폴더 내부 구조 (03 회원과 강사/회원/)
 
 ```
 회원(회원명단/가입서/정회원)/
-├── 회원관리 (Google Sheets)          ← 3탭: 회원목록, 회원기록, 수강기록 (영속)
+├── 회원관리 (Google Sheets)          ← 5탭: 회원목록, 회원기록, 수강기록, 신청기록, 미확인입금
 ├── 신규가입 신청서/                   ← 연도별 Google Forms 응답 xlsx
 ├── 정회원가입 신청서/                 ← 연도별 Google Forms 응답 xlsx
 ├── 연회비/                           ← 연회비 기록
@@ -655,9 +669,9 @@ DATABASE_URL=                   # Railway가 자동 주입 (PostgreSQL 연결 �
 - 자유 텍스트 → LLM 의도 분류 (`classify_intent_llm`) → 관리자 확인 후 워크플로우 진입
 - 워크플로우 중 인터럽트 처리 (`handle_mid_flow_text`): 취소 감지, Q&A 답변 후 상태 유지
 - 모든 작업 종료 후 공통 기본 Action 버튼 (`send_default_actions`)
-- 신청서 시트: 필터 + 등록상태 체크박스 자동 설정
+- 신청서 시트: 필터 + 처리상태 드롭다운 자동 설정
 - 출석부 시트: 과목별 탭 BasicFilter 자동 설정
-- Railway 배포, 단위 테스트 54개 통과
+- Railway 배포, 단위 테스트 108개 통과
 - 커스텀 테마 (Palette C 마을회관): `public/theme.json` + `public/stylesheet.css`
 - Noto Sans KR 폰트, 본문 18px, WCAG AA 접근성
 - `config.toml`: `cot = "hidden"`, `description` 추가
@@ -676,39 +690,44 @@ DATABASE_URL=                   # Railway가 자동 주입 (PostgreSQL 연결 �
   - Google SA: `Google Service Account account` (id: `JtDg23azfbja0yi3`, key: `googleApi`)
 - P4 워크플로우로 정상 동작 검증 완료
 
-**2-1. PostgreSQL 비즈니스 스키마** ✅ 재도입 (Phase 2.5)
-- `app/services/db.py`: 6 테이블 (members, member_records, course_records, applications, attendance, feedbacks)
+**2-1. PostgreSQL 비즈니스 스키마** ✅ 완료 (Phase 2.5)
+- `app/services/db.py`: 7 테이블 (members, member_records, course_records, applications, deposits, attendance, feedbacks)
 - Dual-Write 모드: `USE_DB_SOT=true`이면 DB가 SoT, Sheets는 secondary write
-- `scripts/init_db_schema.py`: Railway PostgreSQL에 테이블 생성 완료
+- `scripts/init_db_schema.py` + `scripts/migrate_v4.py`: Railway PostgreSQL에 테이블 생성/마이그레이션 완료
 
-**2-2. Dual-Write 마이그레이션** ✅ 완료
-- `payment.py`: 7개 함수 async 전환 + DB/Sheets dual-write + 폴백
-- `graduation.py`: 3개 함수 async 전환 + DB 읽기 + Sheets 쓰기
-- `attendance.py`: `load_registered_students` DB+Sheets 등록상태 머지
+**2-2. Dual-Write 마이그레이션 + v4.0 스키마 정렬** ✅ 완료
+- `payment.py`: 7개 함수 async dual-write + `apply_grade_cascade()` 등급 전환 cascade
+- `graduation.py`: 3개 함수 async dual-write
+- `attendance.py`: `load_registered_students` DB + Sheets 처리상태 머지 + gate check
 - `ocr.py`: `load_course_students` + `write_attendance_to_sheet` dual-write
-- `main.py`: 모든 호출부 `await` + `term_id` 파라미터 추가
-- `app/services/n8n.py`: fire-and-forget 웹훅 트리거 (3곳에서 호출)
-- n8n 워크플로우 JSON: `sync_daily.json` (일일 06:00) + `sync_webhook.json` (즉시)
-- 91개 테스트 통과 (54 기존 + 37 신규 DB/dual-write 테스트)
+- `main.py`: deposits INSERT + cascade 실행 + 미확인입금 안내 + 처리상태 gate
+- `app/services/n8n.py`: fire-and-forget 웹훅 트리거 (applications/members/deposits)
+- n8n 워크플로우: Sync-1 (일일 06:00, 5탭) + Sync-2 (웹훅 즉시) — 설정 완료
+- `registration_status` → `processing_status` 전환 완료
+- 108개 테스트 통과
 
-### Phase 3 — 기능 확장
+### Phase 3 — 기능 확장 + UX 개선
 
 **✅ 완료:**
-- ~~종강 처리~~ — 출석률 집계, 수강기록 추가, 등급 강등, 회원목록 재집계, 회원기록 기록
-- ~~출석 체크 (OCR)~~ — Claude Vision으로 종이 출석부 디지털화 → 과목별 탭 O/빈칸
-- ~~과목별 출석부 PDF 생성~~ — A4 가로, NanumGothic 12pt, Drive 업로드
-- ~~Theme/CSS 커스터마이징~~ — Palette C 마을회관 + Noto Sans KR 타이포그래피
-- ~~신청서 upsert~~ — 기존 행 보존, 새 key만 추가
-- ~~회원기록 자동 기록~~ — 입금 대조 시 등급 변경 이력 자동 append
-- ~~가입 신청서 키워드 매칭~~ — 연도별 검색, Form Responses 1 탭, 헤더 부분 일치
+- 종강 처리 — 출석률 집계, 수강기록 추가, 등급 강등, 회원목록 재집계, 회원기록 기록
+- 출석 체크 (OCR) — Claude Vision으로 종이 출석부 디지털화 → 과목별 탭 O/빈칸
+- 과목별 출석부 PDF 생성 — A4 가로, NanumGothic 12pt, Drive 업로드
+- Theme/CSS 커스터마이징 — Palette C 마을회관 + Noto Sans KR 타이포그래피
+- 신청서 upsert — 기존 행 보존, 새 key만 추가
+- 등급 전환 cascade (`apply_grade_cascade`) — 입금 대조 시 자동 실행, idempotent
+- 입금내역 원본 저장 (`deposits` 테이블) — 미확인입금 시트 연동
+- 출석부 생성 처리상태 gate — 미처리 건 차단 + 상세 안내
+- 피드백 수집 — Chainlit thumbs up/down → PostgreSQL feedbacks 테이블
+- Starter 버튼 정비 — 작업 순서 정렬 (7개), CSS min-width/flex 레이아웃
+- 신청서 폴더 통합 — ASIS(개인 드라이브) → TOBE(공유 드라이브) 전환 완료
+- FAQ/Context Injection 보강 — 입금대조절차, 처리상태, 등급전환, 시트구조 등 5개 토픽 추가
+- 합산 입금 분류 — 12만(정회원비), 13만(가입비+정회원비)
 
 **📋 백로그:**
+- 보고서 생성: DB SQL 집계 → PDF (placeholder 버튼 배치 완료)
+- 계획서 검토: PDF 파싱 → 오탈자/말투 수정 → 배움숲 멘트 생성 (placeholder 배치 완료)
 - 첫 화면 로고+타이틀 PNG 이미지 제작 (`public/logo_light.png` → CSS 워크어라운드 제거)
 - Accent 색상(#2B7A6E 틸) 적용 위치 결정 (현재 미사용)
-- 계획서 검토: PDF 파싱 → 오탈자/말투 수정 → 배움숲 멘트 생성
-- Google OAuth 인증 (Workspace 도메인 제한)
-- Chainlit UI 커스터마이징 (chainlit.md 웰컴 화면)
-- 가입 신청서 폴더 공유 드라이브 이전 (config.py ASIS→TOBE 전환)
 
 ## 코딩 규칙
 
