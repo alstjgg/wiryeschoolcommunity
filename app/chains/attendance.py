@@ -56,15 +56,34 @@ def _register_korean_font() -> tuple[str, str]:
 
 # ================================================= 수강생 로드 =====
 
-def _load_registered_from_sheets(applications_sheet_id: str) -> list[dict]:
-    """Sheets에서 유형='수강' AND 처리상태='등록완료'인 행 로드."""
-    rows = read_sheet(applications_sheet_id, "신청서!A1:L5000")
+def _load_registered_from_sheets(
+    applications_sheet_id: str,
+    term_id: str = "",
+) -> list[dict]:
+    """Sheets에서 유형='수강' AND 처리상태='등록완료'인 행 로드.
+
+    DB 모드: 회원관리 파일(MEMBERS_SHEET_ID)의 '신청기록' 탭에서 읽기 + term_id 필터.
+    Sheets 모드: 회차별 '신청서' 탭에서 읽기.
+    """
+    from app.config import MEMBERS_SHEET_ID
+
+    if USE_DB_SOT:
+        sheet_id = MEMBERS_SHEET_ID
+        tab = "신청기록"
+    else:
+        sheet_id = applications_sheet_id
+        tab = "신청서"
+
+    rows = read_sheet(sheet_id, f"{tab}!A1:L5000")
     if not rows or len(rows) < 2:
         return []
     header = rows[0]
     result = []
     for row in rows[1:]:
         data = dict(zip(header, row + [""] * (len(header) - len(row))))
+        # DB 모드: 전 회차 누적이므로 현재 회차만 필터
+        if USE_DB_SOT and term_id and data.get("회차", "").strip() != term_id:
+            continue
         처리상태 = data.get("처리상태", "").strip()
         if data.get("유형") == "수강" and 처리상태 == "등록완료":
             result.append(data)
@@ -78,18 +97,30 @@ async def _load_registered_from_db(
     """DB에서 수강 신청 로드 + Sheets에서 처리상태만 읽어서 머지.
 
     처리상태는 관리자가 Sheets에서 직접 편집하므로 Sheets가 SoT.
+    DB 모드: 회원관리 파일(MEMBERS_SHEET_ID)의 '신청기록' 탭에서 처리상태 읽기.
     """
     from app.services import db
+    from app.config import MEMBERS_SHEET_ID
 
     apps = await db.load_applications(term_id)
 
-    # Sheets에서 처리상태 컬럼만 읽기 (L열 = 12번째)
-    rows = read_sheet(applications_sheet_id, "신청서!A1:L5000")
+    # Sheets에서 처리상태 컬럼만 읽기
+    if USE_DB_SOT:
+        sheet_id = MEMBERS_SHEET_ID
+        tab = "신청기록"
+    else:
+        sheet_id = applications_sheet_id
+        tab = "신청서"
+
+    rows = read_sheet(sheet_id, f"{tab}!A1:L5000")
     status_map: dict[tuple, str] = {}
     if rows and len(rows) >= 2:
         header = rows[0]
         for row in rows[1:]:
             data = dict(zip(header, row + [""] * (len(header) - len(row))))
+            # DB 모드: 전 회차 누적이므로 현재 회차만 필터
+            if USE_DB_SOT and term_id and data.get("회차", "").strip() != term_id:
+                continue
             key = (data.get("이름ID", ""), data.get("유형", ""), data.get("과목명", ""))
             status_map[key] = data.get("처리상태", "").strip()
 
@@ -118,7 +149,7 @@ async def load_registered_students(
         except Exception as e:
             logger.error("DB read failed, falling back to Sheets: %s", e)
 
-    return _load_registered_from_sheets(applications_sheet_id)
+    return _load_registered_from_sheets(applications_sheet_id, term_id=term_id)
 
 
 # ============================================= 출석부 시트 생성 =====

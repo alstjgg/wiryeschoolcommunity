@@ -12,8 +12,8 @@
 - **LLM 프레임워크**: LangChain (LLM 호출 래퍼로만 사용)
 - **채팅 UI**: Chainlit (WebSocket 기반, Conversation Starter 버튼 지원)
 - **LLM**: Claude API (Anthropic) — 한국어 + Vision
-- **데이터 SoT**: Dual-Write 모드 (`USE_DB_SOT` 플래그)
-  - `USE_DB_SOT=true`: PostgreSQL이 SoT, Google Sheets는 관리자 view (n8n으로 동기화)
+- **데이터 SoT**: `USE_DB_SOT` 플래그로 전환
+  - `USE_DB_SOT=true`: **PostgreSQL이 SoT**. 챗봇은 DB에 쓰고, n8n webhook으로 Sheets 동기화 (직접 Sheets 쓰기 없음). DB 실패 시 Sheets 폴백.
   - `USE_DB_SOT=false` (기본): Google Sheets가 SoT (기존 동작)
 - **데이터베이스**: PostgreSQL (Railway) — 채팅 기록(chat_data_layer.py) + 비즈니스 데이터(db.py)
 - **배치 파이프라인**: n8n (Railway) — DB→Sheets 동기화 (Sync-1 일일 전체, Sync-2 웹훅 즉시)
@@ -175,8 +175,8 @@ wiryeschoolcommunity/
 │   │   └── term.py              # 현재 회차 자동 판별 + 자유 텍스트 회차 파싱 (parse_term_input)
 │   ├── chains/
 │   │   ├── qa.py                # 질의 응답 체인
-│   │   ├── payment.py           # 입금 대조 파이프라인 (dual-write: DB+Sheets, 매칭, 회원기록)
-│   │   ├── attendance.py        # 출석부 생성 (dual-write, 등록상태는 Sheets에서 읽기)
+│   │   ├── payment.py           # 입금 대조 파이프라인 (DB+n8n, 매칭, deposits 추적, 등급 cascade)
+│   │   ├── attendance.py        # 출석부 생성 (처리상태는 Sheets에서 읽기, DB모드: 신청기록 탭)
 │   │   ├── ocr.py               # 출석 체크 OCR (dual-write: DB+Sheets, Claude Vision)
 │   │   └── graduation.py        # 종강 처리 (dual-write, 출석률 집계, 등급 강등)
 │   ├── services/
@@ -186,7 +186,7 @@ wiryeschoolcommunity/
 │   │   ├── excel.py             # Excel 파싱 (입금내역 .xls/.xlsx + 신청자 목록 HTML .xls)
 │   │   ├── signup_loader.py     # Drive에서 신규가입/정회원가입 신청서 로드 → 파싱 결과 반환
 │   │   ├── chat_data_layer.py   # Chainlit 채팅 기록 PostgreSQL 영속성 (BaseDataLayer 구현)
-│   │   ├── db.py                # 비즈니스 데이터 PostgreSQL CRUD (asyncpg, 6 테이블)
+│   │   ├── db.py                # 비즈니스 데이터 PostgreSQL CRUD (asyncpg, 7 테이블)
 │   │   └── n8n.py               # n8n 웹훅 트리거 (DB→Sheets 동기화 fire-and-forget)
 │   └── utils/
 │       ├── __init__.py
@@ -244,14 +244,16 @@ drive_service = build('drive', 'v3', credentials=credentials)
 
 ### 설계 원칙
 
-- **Dual-Write 모드** (`USE_DB_SOT` 환경변수로 전환):
-  - `USE_DB_SOT=true`: **PostgreSQL이 SoT**. 챗봇은 DB에서 읽고 DB+Sheets에 동시 쓰기. n8n이 DB→Sheets 동기화.
+- **DB SoT + n8n Sheets 동기화** (`USE_DB_SOT` 환경변수로 전환):
+  - `USE_DB_SOT=true`: **PostgreSQL이 SoT**. 챗봇은 DB에 쓰고, n8n webhook으로 Sheets 동기화. 챗봇이 Sheets에 직접 쓰지 않음.
   - `USE_DB_SOT=false` (기본): **Google Sheets가 SoT**. 기존 동작 유지. DB 쓰기 안 함.
 - **DB 실패 시 자동 폴백**: DB 읽기/쓰기 실패하면 Sheets로 폴백 + 로그 기록. 서비스 중단 없음.
 - **처리상태 예외**: 신청기록/미확인입금의 `처리상태` 컬럼만 관리자가 Sheets에서 직접 편집 (드롭다운: 등록완료/환불완료/취소완료/보류). DB 모드에서도 이 컬럼은 Sheets에서 읽음.
-- **PostgreSQL**: 비즈니스 데이터 (`db.py`, 6 테이블) + 채팅 기록 (`chat_data_layer.py`).
+- **신청기록 통합**: DB 모드에서는 회차별 "신청서" 파일을 생성하지 않음. 회원관리 파일(`MEMBERS_SHEET_ID`)의 `신청기록` 탭에 전 회차 데이터 통합. n8n이 DB→Sheets push.
+- **PostgreSQL**: 비즈니스 데이터 (`db.py`, 7 테이블) + 채팅 기록 (`chat_data_layer.py`).
 - **Google Drive는 파일 저장소**. Raw 엑셀, PDF, 출석부 등 파일 단위 자료 관리.
 - **이모지↔코드 변환**: DB에는 상태 코드(confirmed, not_paid 등) 저장. 앱 코드는 이모지(✅정상, ❌미입금 등) 사용. 변환은 `db.py` 경계에서 수행.
+- **Deposit 매칭 추적**: 입금내역은 `deposits` 테이블에 전건 저장. 매칭 후 `match_status`(matched/unmatched) + `matched_name_ids` 업데이트. 미확인입금 시트에는 unmatched 건만 표시.
 
 ### DB 스키마 (7 테이블)
 
@@ -421,12 +423,11 @@ Sync-2 (n8n/sync_webhook.json): 웹훅 즉시 push — 챗봇이 DB 쓰기 후 n
 
 | 방향 | 시점 | 내용 |
 |------|------|------|
-| Raw → Sheets | 입금 대조 시 | 배움숲 엑셀 → 통합 신청서 (수강 유형) |
-| Raw → Sheets | 입금 대조 시 | Drive 신청서 → 통합 신청서 (신규가입/정회원 유형) |
-| Raw → Sheets | 입금 대조 시 | 은행 입금내역 → 통합 신청서 입금현황 반영 |
-| Sheets → Sheets | 출석부 생성 시 | 신청서 등록상태 체크된 행 → 출석부 시트 생성 + PDF |
+| Raw → DB → n8n → Sheets | 입금 대조 시 | 배움숲 엑셀 + Drive 신청서 → `applications` DB upsert → n8n이 신청기록 탭에 push |
+| Raw → DB → n8n → Sheets | 입금 대조 시 | 은행 입금내역 → `deposits` DB INSERT → 매칭 → `applications` 입금현황 갱신 → n8n push |
+| DB + Sheets → Sheets | 출석부 생성 시 | 처리상태='등록완료' 필터 (DB apps + Sheets 처리상태 머지) → 출석부 시트 생성 + PDF |
 | Image → Sheets | 출석 체크 시 | 종이 출석부 사진 → Claude Vision OCR → 과목별 탭 O/빈칸 |
-| Sheets → Sheets | 종강 처리 시 | 과목별 탭 출석률 집계 → 수강기록 append → 회원목록 재집계 → 등급 강등 |
+| Sheets → DB → n8n → Sheets | 종강 처리 시 | 과목별 탭 출석률 집계 → 수강기록 append → 회원목록 재집계 → 등급 강등 |
 
 ### 신청자 목록 (배움숲 다운로드 원본, SoT)
 
@@ -536,7 +537,7 @@ TERM_SEASONS = {1: "겨울", 2: "봄", 3: "여름", 4: "가을"}
 
 | Resource | 상수명 | Type | ID | 탭명 |
 |----------|--------|------|----|------|
-| 회원관리 (3탭) | `MEMBERS_SHEET_ID` | Spreadsheet | `193r34mtLHd0-oX7MKJOWq1Ane9iBfbBZB5yYf78R3Bo` | `회원목록`, `회원기록`, `수강기록` |
+| 회원관리 (5탭) | `MEMBERS_SHEET_ID` | Spreadsheet | `193r34mtLHd0-oX7MKJOWq1Ane9iBfbBZB5yYf78R3Bo` | `회원목록`, `회원기록`, `수강기록`, `신청기록`, `미확인입금` |
 | Root folder | `ROOT_FOLDER_ID` | Shared Drive root | `0AANInBeWsB7dUk9PVA` | — |
 | 회원 폴더 | `MEMBERS_FOLDER_ID` | Drive folder | `12xm3vG4w5nOPTwoWgmyGCpz939KvJ93e` | — |
 | 학사운영 folder | `OPERATIONS_FOLDER_ID` | Drive folder | `1WuqNFt-g5qhnY1nMk0a8dsowZHKQVRMm` | — |
@@ -564,11 +565,11 @@ TERM_SEASONS = {1: "겨울", 2: "봄", 3: "여름", 4: "가을"}
 | Resource | 탐색 방법 | 참고 ID (2026-1) |
 |----------|----------|-----------------|
 | 회차 폴더 | `find_term_folder(term_id)` → OPERATIONS_FOLDER_ID → 연도 폴더 → "2026-1 겨울학기" | `1rqb06_MdfaXHGmqbtS6kpb2Y6PdZbk9P` |
-| 신청서 폴더 | `find_or_create_folder(term_folder, "신청서")` | — |
-| 신청서 시트 | `write_applications_sheet()` / `find_spreadsheet_by_name(folder, "신청서")` | — |
+| 신청서 폴더 | `find_or_create_folder(term_folder, "신청서")` — Sheets 모드에서만 사용 | — |
+| 신청서 시트 | DB 모드: `MEMBERS_SHEET_ID`의 `신청기록` 탭. Sheets 모드: 회차별 `신청서` 파일 | — |
 | 출석부 폴더 | `find_or_create_folder(term_folder, "출석부")` | `1i-sixwrwPU_XxYhOwhDvaIqfvCxICWB8` |
 
-**주의**: 시트 탭명이 "시트1"이 아님. API 호출 시 정확한 탭명 사용 필요 (예: `"신청서!A1:P500"`).
+**주의**: DB 모드에서 신청기록은 회원관리 파일(`MEMBERS_SHEET_ID`)의 `신청기록` 탭에 전 회차 통합 저장. 회차별 "신청서" 파일은 생성하지 않음. 처리상태 gate와 출석부 생성 시 `신청기록!A1:L5000` + term_id 필터로 읽음.
 
 **주의**: Google Sheets/Docs 내용 읽기·쓰기는 `google-docs` MCP(`readSpreadsheet`, `getSpreadsheetInfo`, `readDocument` 등)를 사용해야 한다. `google_drive_search`는 파일/폴더 이름·메타데이터 탐색 전용이며 파일 내용에는 접근 불가. ID를 아는 경우 `google-docs` MCP로 직접 접근할 것.
 
@@ -695,13 +696,19 @@ DATABASE_URL=                   # Railway가 자동 주입 (PostgreSQL 연결 �
 - Dual-Write 모드: `USE_DB_SOT=true`이면 DB가 SoT, Sheets는 secondary write
 - `scripts/init_db_schema.py` + `scripts/migrate_v4.py`: Railway PostgreSQL에 테이블 생성/마이그레이션 완료
 
-**2-2. Dual-Write 마이그레이션 + v4.0 스키마 정렬** ✅ 완료
-- `payment.py`: 7개 함수 async dual-write + `apply_grade_cascade()` 등급 전환 cascade
+**2-2. DB SoT + n8n Sheets 동기화** ✅ 완료
+- `payment.py`: 5개 write 함수 DB+n8n 패턴으로 전환 (DB 쓰기 → `trigger_sheets_sync()`, Sheets 직접 쓰기 제거)
+- `payment.py`: `apply_matching_results()` deposit 매칭 추적 (match_status/matched_name_ids), unmatched count 반환
+- `payment.py`: `format_results()` 미확인입금 카운트 표시 (`| 미확인입금: N건`)
+- `payment.py`: `apply_grade_cascade()` 등급 전환 cascade (idempotent 3-pass)
+- `db.py`: `upsert_applications()`에 `processed_at` 컬럼 추가
+- `main.py`: deposit ID 추적 (insert 전후 load), `db.update_deposit_match()` 호출, `processed_at` 설정
+- `main.py`: `_check_processing_gate()` DB 모드에서 `MEMBERS_SHEET_ID`/`신청기록` 탭 + term_id 필터
+- `main.py`: `write_payment_results()` DB 모드에서 `MEMBERS_SHEET_ID`로 관리자 링크
+- `attendance.py`: DB 모드에서 `MEMBERS_SHEET_ID`/`신청기록` 탭에서 처리상태 읽기 + term_id 필터
 - `graduation.py`: 3개 함수 async dual-write
-- `attendance.py`: `load_registered_students` DB + Sheets 처리상태 머지 + gate check
 - `ocr.py`: `load_course_students` + `write_attendance_to_sheet` dual-write
-- `main.py`: deposits INSERT + cascade 실행 + 미확인입금 안내 + 처리상태 gate
-- `app/services/n8n.py`: fire-and-forget 웹훅 트리거 (applications/members/deposits)
+- `app/services/n8n.py`: fire-and-forget 웹훅 트리거 (applications/members/deposits/graduation)
 - n8n 워크플로우: Sync-1 (일일 06:00, 5탭) + Sync-2 (웹훅 즉시) — 설정 완료
 - `registration_status` → `processing_status` 전환 완료
 - 108개 테스트 통과
@@ -715,8 +722,9 @@ DATABASE_URL=                   # Railway가 자동 주입 (PostgreSQL 연결 �
 - Theme/CSS 커스터마이징 — Palette C 마을회관 + Noto Sans KR 타이포그래피
 - 신청서 upsert — 기존 행 보존, 새 key만 추가
 - 등급 전환 cascade (`apply_grade_cascade`) — 입금 대조 시 자동 실행, idempotent
-- 입금내역 원본 저장 (`deposits` 테이블) — 미확인입금 시트 연동
-- 출석부 생성 처리상태 gate — 미처리 건 차단 + 상세 안내
+- 입금내역 원본 저장 + 매칭 추적 (`deposits` 테이블) — `match_status`/`matched_name_ids` 업데이트, 미확인입금 시트 연동
+- 출석부 생성 처리상태 gate — 미처리 건 차단 + 상세 안내 (DB 모드: `MEMBERS_SHEET_ID`/`신청기록` 탭)
+- 신청기록 통합 — DB 모드에서 회차별 "신청서" 파일 제거, 회원관리 파일 `신청기록` 탭에 전 회차 통합
 - 피드백 수집 — Chainlit thumbs up/down → PostgreSQL feedbacks 테이블
 - Starter 버튼 정비 — 작업 순서 정렬 (7개), CSS min-width/flex 레이아웃
 - 신청서 폴더 통합 — ASIS(개인 드라이브) → TOBE(공유 드라이브) 전환 완료
@@ -732,7 +740,7 @@ DATABASE_URL=                   # Railway가 자동 주입 (PostgreSQL 연결 �
 ## 코딩 규칙
 
 - 한국어 주석 OK, 변수명/함수명은 영문
-- **데이터 읽기/쓰기는 `USE_DB_SOT` 플래그로 결정**. `true`=DB SoT (dual-write), `false`=Sheets SoT (기본). `db.py`의 CRUD 함수 사용.
+- **데이터 읽기/쓰기는 `USE_DB_SOT` 플래그로 결정**. `true`=DB SoT (DB 쓰기 + n8n webhook, Sheets 직접 쓰기 없음), `false`=Sheets SoT (기본). `db.py`의 CRUD 함수 + `n8n.py`의 `trigger_sheets_sync()` 사용.
 - LLM 호출은 최소화 — 코드로 처리 가능하면 코드로
 - 에러 시 사용자에게 한국어로 안내 메시지 반환
 - Docker 사용 안 함 (챗봇). n8n만 Docker 배포. Railway는 Procfile 기반 배포.

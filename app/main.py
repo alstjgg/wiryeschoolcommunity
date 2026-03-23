@@ -476,13 +476,26 @@ async def handle_payment_file(message: cl.Message):
             cl.user_session.set("state", "idle")
             return
 
-        # Step 1.5: 입금내역 DB 저장 (USE_DB_SOT 모드)
+        # Step 1.5: 입금내역 DB 저장 + deposit ID 추적 (USE_DB_SOT 모드)
         term_id = (cl.user_session.get("term") or {}).get("term_id", "")
         from app.config import USE_DB_SOT
         if USE_DB_SOT and term_id:
             try:
                 from app.services import db
+                # 기존 최대 ID 기록 (재실행 시 새 건만 추적)
+                existing = await db.load_deposits(term_id)
+                max_existing_id = max((d["id"] for d in existing), default=0)
+
                 await db.insert_deposits(term_id, transactions)
+
+                # 새로 삽입된 deposits 로드 (id > max_existing_id)
+                all_deposits = await db.load_deposits(term_id)
+                new_deposits = [d for d in all_deposits if d["id"] > max_existing_id]
+
+                # transactions[i] ↔ new_deposits[i] 매핑 (삽입 순서 = id 순서)
+                for i, tx in enumerate(transactions):
+                    if i < len(new_deposits):
+                        tx["_deposit_id"] = new_deposits[i]["id"]
             except Exception as e:
                 logger.warning("deposits INSERT failed (non-critical): %s", e)
 
@@ -512,8 +525,40 @@ async def handle_payment_file(message: cl.Message):
                 )
                 step.output = f"AI 분석 완료: **{llm_resolved}건** 추가 매칭"
 
-        # 매칭 결과를 applications에 반영
-        apply_matching_results(applications, all_results)
+        # 매칭 결과를 applications에 반영 + deposit 추적
+        # _deposit_id가 transactions에 있으면 all_results로 전파
+        for r in all_results:
+            tx_memo = r.get("적요", "")
+            tx_time = r.get("거래일시", "")
+            for tx in transactions:
+                if tx.get("적요") == tx_memo and tx.get("거래일시") == tx_time:
+                    if "_deposit_id" in tx:
+                        r["_deposit_id"] = tx["_deposit_id"]
+                    break
+
+        unmatched_deposits = apply_matching_results(applications, all_results)
+
+        # DB: deposit match status 업데이트
+        if USE_DB_SOT and term_id:
+            try:
+                from app.services import db as _db
+                for r in all_results:
+                    dep_id = r.get("_deposit_id")
+                    if not dep_id:
+                        continue
+                    if r.get("_matched"):
+                        await _db.update_deposit_match(
+                            dep_id, "matched", r.get("_matched_name_ids", []),
+                        )
+            except Exception as e:
+                logger.warning("deposit match update failed (non-critical): %s", e)
+
+        # processed_at 설정 (매칭 처리된 건)
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc).isoformat()
+        for app in applications:
+            if app.get("입금현황") not in ("❌미입금", ""):
+                app.setdefault("processed_at", now)
 
         # Step 5: 등급 전환 cascade (신규가입 → 정회원 → 수강)
         async with cl.Step(name="🔄 등급 전환") as step:
@@ -529,7 +574,9 @@ async def handle_payment_file(message: cl.Message):
         cl.user_session.set("grade_changes", grade_changes)
 
         # 즉시 시트에 자동 반영
-        await write_payment_results(all_results, exempted, grade_changes)
+        await write_payment_results(
+            all_results, exempted, grade_changes, unmatched_deposits,
+        )
 
     except Exception as e:
         await cl.Message(f"입금 대조 중 오류가 발생했습니다: {str(e)}").send()
@@ -553,15 +600,16 @@ async def write_payment_results(
     matched_results: list[dict] | None = None,
     exempted: list[dict] | None = None,
     grade_changes: list[dict] | None = None,
+    unmatched_deposits: int = 0,
 ):
-    """매칭 결과를 신청서 Sheets에 자동 반영 → 요약 + 다음 단계 Action 제공"""
+    """매칭 결과를 DB/Sheets에 반영 → 요약 + 다음 단계 Action 제공"""
     try:
         app_sheet_id = cl.user_session.get("applications_sheet_id")
         applications = cl.user_session.get("applications", [])
         members = cl.user_session.get("members", [])
 
-        async with cl.Step(name="💾 신청서 시트 업데이트") as step:
-            if app_sheet_id and applications:
+        async with cl.Step(name="💾 신청서 업데이트") as step:
+            if applications:
                 term_id = (cl.user_session.get("term") or {}).get("term_id", "")
                 await update_applications_sheet(
                     app_sheet_id, applications, term_id=term_id,
@@ -576,31 +624,33 @@ async def write_payment_results(
                     await update_members_sheet(members)
                     step.output += f", 등급변경 {len(grade_changes)}건 기록"
             else:
-                step.output = "시트 정보가 없어 반영하지 못했습니다."
+                step.output = "신청서 데이터가 없어 반영하지 못했습니다."
 
         # 숫자 요약
         if matched_results is None:
             matched_results = cl.user_session.get("matched_results", [])
-        summary_line = format_results(matched_results, applications, exempted)
+        summary_line = format_results(
+            matched_results, applications, exempted,
+            unmatched_deposits=unmatched_deposits,
+        )
 
         needs_check = sum(
             1 for r in matched_results if r["상태"] == "🔶확인필요"
-        )
-        unmatched_count = sum(
-            1 for r in matched_results
-            if r["상태"] in ("🔶확인필요", "❌미매칭") and r.get("상태") != "⏭️스킵"
         )
 
         notes = []
         if needs_check:
             notes.append("🔶 확인이 필요한 건이 있습니다. 신청기록 시트에서 직접 확인해주세요.")
-        if unmatched_count:
-            notes.append(f"💳 미확인입금 **{unmatched_count}건**이 있습니다. 미확인입금 시트에서 확인해주세요.")
+        if unmatched_deposits:
+            notes.append(f"💳 미확인입금 **{unmatched_deposits}건**이 있습니다. 미확인입금 시트에서 확인해주세요.")
         check_note = "\n\n" + "\n".join(notes) if notes else ""
 
+        # DB 모드: 회원관리 파일(MEMBERS_SHEET_ID)로 링크, Sheets 모드: 회차별 시트
+        from app.config import USE_DB_SOT, MEMBERS_SHEET_ID
+        link_sheet_id = MEMBERS_SHEET_ID if USE_DB_SOT else app_sheet_id
         sheet_link = (
-            f"\n\n[신청기록 시트 열기](https://docs.google.com/spreadsheets/d/{app_sheet_id})"
-            if app_sheet_id else ""
+            f"\n\n[신청기록 시트 열기](https://docs.google.com/spreadsheets/d/{link_sheet_id})"
+            if link_sheet_id else ""
         )
 
         await cl.Message(
@@ -615,11 +665,9 @@ async def write_payment_results(
 
         await send_default_actions("payment")
 
-        # DB→Sheets 동기화 트리거 (fire-and-forget)
+        # DB→Sheets 동기화 트리거 (fire-and-forget, DB 모드에서만)
         from app.services.n8n import trigger_sheets_sync
         term_id = (cl.user_session.get("term") or {}).get("term_id", "")
-        await trigger_sheets_sync("applications", {"term_id": term_id})
-        await trigger_sheets_sync("members", {"term_id": term_id})
         await trigger_sheets_sync("deposits", {"term_id": term_id})
 
     except Exception as e:
@@ -667,7 +715,7 @@ async def start_attendance_flow(message: cl.Message | None):
 
 
 async def _do_attendance_preflight(term: dict):
-    """출석부 생성 전 사전 확인 — 3단계 완료 확인 + 회차 폴더 탐색"""
+    """출석부 생성 전 사전 확인 — 처리상태 gate → 최종 승인 1회"""
     msg = cl.Message(content=f"**{term['term_name']}** 출석부 생성을 준비하는 중...")
     await msg.send()
 
@@ -687,56 +735,30 @@ async def _do_attendance_preflight(term: dict):
             cl.user_session.set("term_folder_id", term_folder_id)
 
         app_sheet_id = cl.user_session.get("applications_sheet_id")
-        if app_sheet_id:
-            confirm_content = (
-                "출석부 생성 전 아래 3단계가 완료되었는지 확인해주세요.\n\n"
-                "1. ✅ 입금 대조 완료\n"
-                "2. ✅ 배움숲 포탈에서 수강 등록 처리 완료\n"
-                f"3. ✅ [신청기록 시트](https://docs.google.com/spreadsheets/d/{app_sheet_id})에서 "
-                "처리상태를 '등록완료'로 입력 완료\n\n"
-                "모두 완료되셨으면 출석부를 생성합니다."
-            )
-        else:
-            confirm_content = (
-                "출석부 생성 전 아래 3단계가 완료되었는지 확인해주세요.\n\n"
-                "1. ✅ 입금 대조 완료\n"
-                "2. ✅ 배움숲 포탈에서 수강 등록 처리 완료\n"
-                "3. ✅ 신청기록 시트에서 처리상태를 '등록완료'로 입력 완료\n\n"
-                "모두 완료되셨으면 출석부를 생성합니다."
-            )
 
+        # 1) 처리상태 gate — 미처리 건이 있으면 차단
+        gate_ok = await _check_processing_gate(term, app_sheet_id)
+        if not gate_ok:
+            return
+
+        # 2) gate 통과 → 최종 승인 1회
         res = await cl.AskActionMessage(
-            content=confirm_content,
+            content=(
+                "배움숲 등록, 환불/취소 처리를 모두 완료하셨나요?\n\n"
+                "처리상태가 '등록완료'인 수강생만 출석부에 포함됩니다."
+            ),
             actions=[
-                cl.Action(name="confirm_attendance", label="✅ 등록 완료, 출석부 생성",
+                cl.Action(name="confirm_attendance", label="✅ 확인, 출석부 생성",
                           payload={"value": "confirm"}),
-                cl.Action(name="cancel_attendance", label="❌ 아직 안 했어요",
+                cl.Action(name="cancel_attendance", label="❌ 취소",
                           payload={"value": "cancel"}),
             ],
         ).send()
 
         if res and res.get("payload", {}).get("value") == "confirm":
-            # 처리상태 gate check
-            gate_ok = await _check_processing_gate(term, app_sheet_id)
-            if gate_ok:
-                await do_create_attendance()
+            await do_create_attendance()
         else:
-            if app_sheet_id:
-                guide = (
-                    "아직 완료되지 않은 단계가 있다면 아래 순서로 진행해주세요.\n\n"
-                    "**1단계** — 신청서 시트에서 입금현황 확인\n"
-                    f"→ [신청서 시트 열기](https://docs.google.com/spreadsheets/d/{app_sheet_id})\n\n"
-                    "**2단계** — 배움숲 포탈 접속 → 수강신청관리 → 등록 처리\n\n"
-                    "**3단계** — 신청기록 시트로 돌아와 처리상태를 '등록완료'로 입력\n\n"
-                    "완료 후 '📋 출석부 생성' 버튼을 다시 눌러주세요."
-                )
-            else:
-                guide = (
-                    "입금 대조를 먼저 진행해주세요.\n"
-                    "입금 대조 → 배움숲 등록 → 처리상태 '등록완료' 입력 후\n"
-                    "'📋 출석부 생성' 버튼을 눌러주세요."
-                )
-            await cl.Message(guide).send()
+            await cl.Message("출석부 생성이 취소되었습니다.").send()
             await send_default_actions()
 
     except Exception as e:
@@ -749,18 +771,34 @@ async def _check_processing_gate(term: dict, app_sheet_id: str | None) -> bool:
     """처리상태 gate — 미처리 건이 있으면 출석부 생성을 차단.
 
     신청기록의 처리상태가 NULL 또는 보류인 건이 있으면 차단.
+    DB 모드: 회원관리 파일(MEMBERS_SHEET_ID)의 '신청기록' 탭에서 읽기 + term_id 필터.
+    Sheets 모드: 회차별 '신청서' 탭에서 읽기.
     Returns: True이면 진행 가능, False이면 차단됨 (메시지 표시 완료).
     """
+    # TODO: 미확인입금(deposits) 시트 체크 추가 — deposits 테이블 활용 시 구현
+    # 현재는 신청기록(applications)의 처리상태만 체크
+
+    from app.config import USE_DB_SOT, MEMBERS_SHEET_ID
     term_id = term.get("term_id", "")
 
-    # Sheets에서 처리상태 읽기 (DB/Sheets 공통 — 처리상태는 Sheets가 SoT)
+    # DB 모드: 회원관리 파일의 '신청기록' 탭, Sheets 모드: 회차별 '신청서' 탭
+    if USE_DB_SOT:
+        sheet_id = MEMBERS_SHEET_ID
+        tab = "신청기록"
+    else:
+        sheet_id = app_sheet_id
+        tab = "신청서"
+
     unprocessed_apps = []
-    if app_sheet_id:
-        rows = read_sheet(app_sheet_id, "신청서!A1:L5000")
+    if sheet_id:
+        rows = read_sheet(sheet_id, f"{tab}!A1:L5000")
         if rows and len(rows) >= 2:
             header = rows[0]
             for row in rows[1:]:
                 data = dict(zip(header, row + [""] * (len(header) - len(row))))
+                # DB 모드: 전 회차 누적이므로 현재 회차만 필터
+                if USE_DB_SOT and term_id and data.get("회차", "").strip() != term_id:
+                    continue
                 처리상태 = data.get("처리상태", "").strip()
                 if not 처리상태 or 처리상태 == "보류":
                     unprocessed_apps.append(data)
@@ -781,8 +819,8 @@ async def _check_processing_gate(term: dict, app_sheet_id: str | None) -> bool:
         app_lines.append(f"  - ... 외 {len(unprocessed_apps) - 5}건")
 
     sheet_link = (
-        f"\n\n[신청기록 시트 열기](https://docs.google.com/spreadsheets/d/{app_sheet_id})"
-        if app_sheet_id else ""
+        f"\n\n[신청기록 시트 열기](https://docs.google.com/spreadsheets/d/{sheet_id})"
+        if sheet_id else ""
     )
 
     msg_content = (

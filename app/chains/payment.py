@@ -1,6 +1,6 @@
-"""입금 대조 파이프라인 — Dual-Write (DB primary + Sheets secondary)
+"""입금 대조 파이프라인 — DB SoT + n8n Sheets 동기화
 
-USE_DB_SOT=true: PostgreSQL이 SoT, Sheets는 관리자 view용 secondary write.
+USE_DB_SOT=true: PostgreSQL이 SoT. Sheets는 n8n webhook으로 동기화 (직접 쓰기 없음).
 USE_DB_SOT=false: 기존 Sheets SoT 동작 유지 (폴백).
 """
 
@@ -441,18 +441,20 @@ async def write_applications_sheet(
 ) -> str:
     """통합 신청서 upsert.
 
-    DB 모드: DB에 upsert + Sheets에도 write (관리자 view + 처리상태 드롭다운).
-    Sheets 모드: Sheets에만 write.
-    Returns: spreadsheet_id
+    DB 모드: DB에 upsert + n8n webhook → 회원관리 파일 신청기록 탭에 동기화. Returns MEMBERS_SHEET_ID.
+    Sheets 모드: 회차별 신청서 파일에 write. Returns spreadsheet_id.
     """
     if USE_DB_SOT and term_id:
         from app.services import db
+        from app.services.n8n import trigger_sheets_sync
         try:
             await db.upsert_applications(term_id, applications)
+            await trigger_sheets_sync("applications", {"term_id": term_id})
         except Exception as e:
-            logger.error("DB write failed, falling back to Sheets only: %s", e)
+            logger.error("DB write failed, falling back to Sheets: %s", e)
+            return _write_applications_to_sheets(term_folder_id, applications)
+        return MEMBERS_SHEET_ID
 
-    # Sheets write는 항상 실행 (관리자 view + 처리상태 드롭다운 필요)
     return _write_applications_to_sheets(term_folder_id, applications)
 
 
@@ -482,15 +484,18 @@ async def update_applications_sheet(
 ) -> None:
     """매칭 결과 반영.
 
-    DB 모드: DB에 upsert + Sheets에도 write.
-    Sheets 모드: Sheets에만 write.
+    DB 모드: DB에 upsert + n8n webhook (Sheets 직접 쓰기 없음).
+    Sheets 모드: Sheets에 직접 write.
     """
     if USE_DB_SOT and term_id:
         from app.services import db
+        from app.services.n8n import trigger_sheets_sync
         try:
             await db.upsert_applications(term_id, applications)
+            await trigger_sheets_sync("applications", {"term_id": term_id})
+            return
         except Exception as e:
-            logger.error("DB write failed, falling back to Sheets only: %s", e)
+            logger.error("DB write failed, falling back to Sheets: %s", e)
 
     _update_applications_in_sheets(spreadsheet_id, applications)
 
@@ -514,15 +519,18 @@ async def load_members_from_sheet() -> list[dict]:
 async def update_members_sheet(members: list[dict]) -> None:
     """회원목록 덮어쓰기.
 
-    DB 모드: DB에 upsert + Sheets에도 write.
-    Sheets 모드: Sheets에만 write.
+    DB 모드: DB에 upsert + n8n webhook (Sheets 직접 쓰기 없음).
+    Sheets 모드: Sheets에 직접 write.
     """
     if USE_DB_SOT:
         from app.services import db
+        from app.services.n8n import trigger_sheets_sync
         try:
             await db.upsert_members(members)
+            await trigger_sheets_sync("members")
+            return
         except Exception as e:
-            logger.error("DB write failed, falling back to Sheets only: %s", e)
+            logger.error("DB write failed, falling back to Sheets: %s", e)
 
     _update_members_in_sheets(members)
 
@@ -530,18 +538,21 @@ async def update_members_sheet(members: list[dict]) -> None:
 async def append_member_records(records: list[dict]) -> None:
     """회원기록 등급 변경 이력 append.
 
-    DB 모드: DB에 insert + Sheets에도 append.
-    Sheets 모드: Sheets에만 append.
+    DB 모드: DB에 insert + n8n webhook (Sheets 직접 쓰기 없음).
+    Sheets 모드: Sheets에 직접 append.
     """
     if not records:
         return
 
     if USE_DB_SOT:
         from app.services import db
+        from app.services.n8n import trigger_sheets_sync
         try:
             await db.insert_member_records(records)
+            await trigger_sheets_sync("members")
+            return
         except Exception as e:
-            logger.error("DB write failed, falling back to Sheets only: %s", e)
+            logger.error("DB write failed, falling back to Sheets: %s", e)
 
     _append_member_records_to_sheets(records)
 
@@ -549,18 +560,21 @@ async def append_member_records(records: list[dict]) -> None:
 async def append_course_records(records: list[dict]) -> None:
     """수강기록 수강 이력 append.
 
-    DB 모드: DB에 insert + Sheets에도 append.
-    Sheets 모드: Sheets에만 append.
+    DB 모드: DB에 insert + n8n webhook (Sheets 직접 쓰기 없음).
+    Sheets 모드: Sheets에 직접 append.
     """
     if not records:
         return
 
     if USE_DB_SOT:
         from app.services import db
+        from app.services.n8n import trigger_sheets_sync
         try:
             await db.insert_course_records(records)
+            await trigger_sheets_sync("graduation")
+            return
         except Exception as e:
-            logger.error("DB write failed, falling back to Sheets only: %s", e)
+            logger.error("DB write failed, falling back to Sheets: %s", e)
 
     _append_course_records_to_sheets(records)
 
@@ -600,20 +614,30 @@ def applications_to_students(applications: list[dict]) -> list[dict]:
 def apply_matching_results(
     applications: list[dict],
     matched_results: list[dict],
-) -> None:
-    """매칭 결과를 applications에 반영 (입금현황, 입금시간, 입금자명)"""
+) -> int:
+    """매칭 결과를 applications에 반영 (입금현황, 입금시간, 입금자명).
+
+    각 matched_result에 deposit 추적 메타데이터를 태그:
+    - _matched = True/False (매칭 성공 여부)
+    - _matched_name_ids = [name_id] (매칭된 이름ID 목록)
+
+    Returns: 매칭되지 않은 deposit 수 (스킵 제외)
+    """
     # 이름ID + 과목명 → application 인덱스 매핑
     app_index = {}
     for i, app in enumerate(applications):
         if app["유형"] == "수강":
             app_index[(app["이름ID"], app["과목명"])] = i
 
+    unmatched_count = 0
     for r in matched_results:
         if r["상태"] == "⏭️스킵":
             continue
         matched_id = r.get("매칭ID")
         matched_course = r.get("매칭강좌", "")
         if not matched_id:
+            r["_matched"] = False
+            unmatched_count += 1
             continue
 
         key = (matched_id, matched_course)
@@ -629,6 +653,13 @@ def apply_matching_results(
             applications[idx]["입금현황"] = r["상태"]
             applications[idx]["입금시간"] = r.get("거래일시", "")
             applications[idx]["입금자명(적요)"] = r.get("적요", "")
+            r["_matched"] = True
+            r["_matched_name_ids"] = [applications[idx].get("이름ID", "")]
+        else:
+            r["_matched"] = False
+            unmatched_count += 1
+
+    return unmatched_count
 
 
 async def run_llm_matching(unmatched: list[dict], students: list[dict]) -> list[dict]:
@@ -738,6 +769,7 @@ def format_results(
     matched: list[dict],
     applications: list[dict],
     exempted: list[dict] | None = None,
+    unmatched_deposits: int = 0,
 ) -> str:
     """매칭 결과를 한 줄 숫자 요약으로 포맷"""
     if exempted is None:
@@ -758,4 +790,7 @@ def format_results(
     if exempted:
         parts.append(f"💎 {len(exempted)}건")
 
-    return "  ".join(parts)
+    summary = "  ".join(parts)
+    if unmatched_deposits:
+        summary += f"  | 미확인입금: {unmatched_deposits}건"
+    return summary

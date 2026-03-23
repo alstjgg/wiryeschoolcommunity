@@ -334,8 +334,8 @@ async def upsert_applications(term_id: str, applications: list[dict]) -> None:
                         term_id, name_id, name, type, course_name,
                         expected_amount, payment_status, review_reason,
                         processing_status, payment_time, payer_name,
-                        phone, address, applied_at
-                    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+                        phone, address, applied_at, processed_at
+                    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
                     ON CONFLICT (term_id, name_id, type, COALESCE(course_name, ''))
                     DO UPDATE SET
                         name = EXCLUDED.name,
@@ -348,6 +348,7 @@ async def upsert_applications(term_id: str, applications: list[dict]) -> None:
                         phone = EXCLUDED.phone,
                         address = EXCLUDED.address,
                         applied_at = EXCLUDED.applied_at,
+                        processed_at = COALESCE(EXCLUDED.processed_at, applications.processed_at),
                         updated_at = NOW()
                     """,
                     term_id,
@@ -364,6 +365,7 @@ async def upsert_applications(term_id: str, applications: list[dict]) -> None:
                     a.get("전화번호", "") or None,
                     a.get("주소", "") or None,
                     a.get("신청일", "") or None,
+                    a.get("processed_at") or None,
                 )
 
 
