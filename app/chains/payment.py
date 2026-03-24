@@ -563,10 +563,10 @@ async def write_applications_sheet(
     """
     if USE_DB_SOT and term_id:
         from app.services import db
-        from app.services.n8n import trigger_sheets_sync
+        from app.services.sheets_sync import sync_to_sheets
         try:
             await db.upsert_applications(term_id, applications)
-            await trigger_sheets_sync("applications", {"term_id": term_id})
+            await sync_to_sheets("applications", data=applications, term_id=term_id)
         except Exception as e:
             logger.error("DB write failed, falling back to Sheets: %s", e)
             return _write_applications_to_sheets(term_folder_id, applications)
@@ -607,10 +607,10 @@ async def update_applications_sheet(
     """
     if USE_DB_SOT and term_id:
         from app.services import db
-        from app.services.n8n import trigger_sheets_sync
+        from app.services.sheets_sync import sync_to_sheets
         try:
             await db.upsert_applications(term_id, applications)
-            await trigger_sheets_sync("applications", {"term_id": term_id})
+            await sync_to_sheets("applications", data=applications, term_id=term_id)
             return
         except Exception as e:
             logger.error("DB write failed, falling back to Sheets: %s", e)
@@ -644,10 +644,10 @@ async def update_members_sheet(members: list[dict]) -> None:
     """
     if USE_DB_SOT:
         from app.services import db
-        from app.services.n8n import trigger_sheets_sync
+        from app.services.sheets_sync import sync_to_sheets
         try:
             await db.upsert_members(members)
-            await trigger_sheets_sync("members")
+            await sync_to_sheets("members", data=members)
             return
         except Exception as e:
             logger.error("DB write failed, falling back to Sheets: %s", e)
@@ -666,10 +666,10 @@ async def append_member_records(records: list[dict]) -> None:
 
     if USE_DB_SOT:
         from app.services import db
-        from app.services.n8n import trigger_sheets_sync
+        from app.services.sheets_sync import sync_to_sheets
         try:
             await db.insert_member_records(records)
-            await trigger_sheets_sync("members")
+            await sync_to_sheets("member_records", data=records)
             return
         except Exception as e:
             logger.error("DB write failed, falling back to Sheets: %s", e)
@@ -688,10 +688,10 @@ async def append_course_records(records: list[dict]) -> None:
 
     if USE_DB_SOT:
         from app.services import db
-        from app.services.n8n import trigger_sheets_sync
+        from app.services.sheets_sync import sync_to_sheets
         try:
             await db.insert_course_records(records)
-            await trigger_sheets_sync("graduation")
+            await sync_to_sheets("course_records", data=records)
             return
         except Exception as e:
             logger.error("DB write failed, falling back to Sheets: %s", e)

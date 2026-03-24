@@ -10,8 +10,6 @@ ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 # DB SoT 전환 플래그 (true이면 PostgreSQL을 SoT로 사용, false이면 Sheets 유지)
 USE_DB_SOT = os.environ.get("USE_DB_SOT", "false").lower() == "true"
 
-# n8n 웹훅 URL (DB→Sheets 동기화 트리거)
-N8N_WEBHOOK_URL = os.environ.get("N8N_WEBHOOK_URL", "")
 GOOGLE_SA_KEY_PATH = os.environ.get("GOOGLE_SA_KEY_PATH", "sa-key.json")
 GOOGLE_DELEGATED_USER = os.environ.get(
     "GOOGLE_DELEGATED_USER", "wirye@wiryeschoolcomunity.com"

@@ -52,6 +52,14 @@ def append_sheet(
     )
 
 
+def clear_range(spreadsheet_id: str, range_name: str) -> None:
+    """시트 범위의 값만 삭제 (서식/드롭다운/보호 유지)."""
+    service = get_sheets_service()
+    service.spreadsheets().values().clear(
+        spreadsheetId=spreadsheet_id, range=range_name, body={},
+    ).execute()
+
+
 def add_sheet_tab(spreadsheet_id: str, title: str) -> dict:
     """새 시트 탭 추가"""
     service = get_sheets_service()

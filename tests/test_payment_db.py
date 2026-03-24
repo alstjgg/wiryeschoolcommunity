@@ -237,20 +237,20 @@ class TestDualWriteBranching:
     @patch("app.chains.payment.USE_DB_SOT", True)
     @patch("app.chains.payment._append_member_records_to_sheets")
     async def test_append_member_records_db_mode(self, mock_sheets):
-        """USE_DB_SOT=true → DB insert + n8n webhook (Sheets 직접 쓰기 없음)"""
+        """USE_DB_SOT=true → DB insert + background Sheets sync (Sheets 직접 쓰기 없음)"""
         mock_db_insert = AsyncMock()
-        mock_n8n = AsyncMock()
+        mock_sync = AsyncMock()
         records = [
             {"이름ID": "테스트0001", "이름": "테스트", "변경일시": "2026-01-20",
              "변경전등급": "회원", "변경후등급": "준회원", "사유": "수강료입금",
              "관련회차": "2026-1"},
         ]
         with patch("app.services.db.insert_member_records", mock_db_insert), \
-             patch("app.services.n8n.trigger_sheets_sync", mock_n8n):
+             patch("app.services.sheets_sync.sync_to_sheets", mock_sync):
             from app.chains.payment import append_member_records
             await append_member_records(records)
             mock_db_insert.assert_called_once_with(records)
-            mock_n8n.assert_called_once_with("members")
+            mock_sync.assert_called_once_with("member_records", data=records)
             mock_sheets.assert_not_called()
 
     @pytest.mark.asyncio

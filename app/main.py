@@ -657,10 +657,15 @@ async def write_payment_results(
 
         await send_default_actions("payment")
 
-        # DB→Sheets 동기화 트리거 (fire-and-forget, DB 모드에서만)
-        from app.services.n8n import trigger_sheets_sync
-        term_id = (cl.user_session.get("term") or {}).get("term_id", "")
-        await trigger_sheets_sync("deposits", {"term_id": term_id})
+        # 미확인입금 Sheets 동기화 (fire-and-forget background)
+        if USE_DB_SOT:
+            from app.services import db as _db
+            from app.services.sheets_sync import sync_to_sheets
+            term_id = (cl.user_session.get("term") or {}).get("term_id", "")
+            if term_id:
+                all_deposits = await _db.load_deposits(term_id)
+                unmatched = [d for d in all_deposits if d.get("match_status") == "unmatched"]
+                await sync_to_sheets("deposits", data=unmatched, term_id=term_id)
 
     except Exception as e:
         await cl.Message(f"저장 중 오류: {str(e)}").send()
@@ -1157,10 +1162,7 @@ async def on_ocr_apply(action: cl.Action):
 
     await cl.Message(f"**{course_name}** 출석 체크가 반영되었습니다.").send()
 
-    from app.services.n8n import trigger_sheets_sync
-    await trigger_sheets_sync("attendance", {
-        "term_id": ocr_term_id, "course_name": course_name,
-    })
+    # Sheets 반영은 write_attendance_to_sheet()에서 직접 처리됨 — 별도 동기화 불필요
 
     cl.user_session.set("current_ocr_course", "")
     cl.user_session.set("pending_ocr_result", None)
@@ -1401,9 +1403,8 @@ async def _run_graduation_process(term: dict):
         await cl.Message(content=result_msg).send()
         await send_default_actions("graduation")
 
-        # DB→Sheets 동기화 트리거 (fire-and-forget)
-        from app.services.n8n import trigger_sheets_sync
-        await trigger_sheets_sync("graduation", {"term_id": term_id})
+        # Sheets 동기화는 개별 write 함수 (update_members_sheet, append_member_records 등)에서
+        # background sync로 처리됨 — 별도 트리거 불필요
 
     except Exception as e:
         await cl.Message(f"종강 처리 중 오류: {str(e)}").send()
