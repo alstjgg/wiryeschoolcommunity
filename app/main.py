@@ -320,7 +320,7 @@ async def handle_applicants_file(message: cl.Message):
                 ).send()
                 cl.user_session.set("state", "idle")
                 return
-            courses = set(a.get("과목명", "") for a in applicants if a.get("과목명"))
+            courses = set(a.get("강좌명", "") for a in applicants if a.get("강좌명"))
             step.output = f"수강 신청자 **{len(applicants)}명** 확인 ({len(courses)}개 과목)"
 
         # Step 2: 세션에서 신규가입/정회원가입 신청서 로드 (이미 _load_signup_and_ask_applicants에서 저장됨)
