@@ -276,6 +276,7 @@ drive_service = build('drive', 'v3', credentials=credentials)
 - **PostgreSQL**: 비즈니스 데이터 (`db.py`, 7 테이블) + 채팅 기록 (`chat_data_layer.py`).
 - **Google Drive는 파일 저장소**. Raw 엑셀, PDF, 출석부 등 파일 단위 자료 관리.
 - **이모지↔코드 변환**: DB에는 상태 코드(confirmed, not_paid 등) 저장. 앱 코드는 이모지(✅정상, ❌미입금 등) 사용. 변환은 `db.py` 경계에서 수행.
+- **타입 변환**: TIMESTAMPTZ 컬럼(`processed_at` 등)은 `db.py`의 `_to_datetime()`으로 str/datetime 모두 안전하게 처리. asyncpg는 str을 받지 않으므로 이 경계 변환이 필수.
 - **Deposit 매칭 추적**: 입금내역은 `deposits` 테이블에 전건 저장. 매칭 후 `match_status`(matched/unmatched) + `matched_name_ids` 업데이트. 미확인입금 시트에는 unmatched 건만 표시.
 
 ### DB 스키마 (7 테이블)

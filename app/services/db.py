@@ -11,6 +11,7 @@ DB에는 상태 코드(confirmed, not_paid 등)를 저장하고,
 import json
 import logging
 import os
+from datetime import datetime, timezone
 from typing import Optional
 
 import asyncpg
@@ -139,6 +140,24 @@ def _emoji_to_code(emoji: str) -> str:
 def _code_to_emoji(code: str) -> str:
     """DB 코드 → 이모지 상태. 알 수 없는 값은 그대로 반환."""
     return STATUS_TO_EMOJI.get(code, code)
+
+
+def _to_datetime(val) -> datetime | None:
+    """processed_at 등 TIMESTAMPTZ 컬럼 값을 datetime으로 변환.
+
+    str이면 fromisoformat 파싱, datetime이면 그대로, None/빈값이면 None.
+    asyncpg는 TIMESTAMPTZ에 str을 받지 않으므로 이 변환이 필요.
+    """
+    if val is None:
+        return None
+    if isinstance(val, datetime):
+        return val
+    if isinstance(val, str) and val:
+        try:
+            return datetime.fromisoformat(val)
+        except ValueError:
+            return None
+    return None
 
 
 # ======================================================== Connection Pool ====
@@ -368,7 +387,7 @@ async def upsert_applications(term_id: str, applications: list[dict]) -> None:
                     a.get("전화번호", "") or None,
                     a.get("주소", "") or None,
                     a.get("신청일", "") or None,
-                    a.get("processed_at") or None,
+                    _to_datetime(a.get("processed_at")),
                 )
 
 

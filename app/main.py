@@ -523,7 +523,7 @@ async def handle_payment_file(message: cl.Message):
 
         # processed_at 설정 (매칭 처리된 건)
         from datetime import datetime, timezone
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(timezone.utc)
         for app in applications:
             if app.get("입금현황") not in ("❌미입금", ""):
                 app.setdefault("processed_at", now)
