@@ -38,13 +38,6 @@ _DEPOSITS_HEADER = [
     "입금일시", "회차", "입금액", "입금자명", "적요", "확인사유", "처리상태",
 ]
 
-# DB column → Sheets column mapping for deposits
-_DEPOSIT_COLS = [
-    "transaction_time", "term_id", "amount", "payer_name",
-    "memo", "review_reason", "processing_status",
-]
-
-
 # ── Sync functions (synchronous, run in background thread) ────────────────
 
 
@@ -103,11 +96,23 @@ def _sync_course_records(records: list[dict]) -> None:
 
 
 def _sync_deposits(deposits: list[dict]) -> None:
-    """미확인입금 탭 전체 덮어쓰기 (clear A2:G + write A2)."""
-    rows = [
-        [str(d.get(col, "") or "") for col in _DEPOSIT_COLS]
-        for d in deposits
-    ]
+    """미확인입금 탭 전체 덮어쓰기 (clear A2:G + write A2).
+
+    _DEPOSITS_HEADER 순서: 입금일시, 회차, 입금액, 입금자명, 적요, 확인사유, 처리상태
+    load_deposits() dict 키: 거래일시, 입금, 입금자명, 적요, 확인사유, 처리상태
+    term_id는 호출부에서 각 dict에 주입.
+    """
+    rows = []
+    for d in deposits:
+        rows.append([
+            str(d.get("거래일시", "") or ""),
+            str(d.get("term_id", "") or d.get("회차", "") or ""),
+            str(d.get("입금", "") or d.get("amount", "") or ""),
+            str(d.get("입금자명", "") or ""),
+            str(d.get("적요", "") or ""),
+            str(d.get("확인사유", "") or ""),
+            str(d.get("처리상태", "") or ""),
+        ])
     clear_range(MEMBERS_SHEET_ID, f"{UNMATCHED_DEPOSITS_TAB}!A2:G")
     if rows:
         write_sheet(MEMBERS_SHEET_ID, f"{UNMATCHED_DEPOSITS_TAB}!A2", rows)

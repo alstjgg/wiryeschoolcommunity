@@ -358,14 +358,9 @@ async def handle_applicants_file(message: cl.Message):
                 f"정회원 {정회원_count}건 → 시트 저장 완료"
             )
 
-        sheet_note = (
-            f"\n[신청서 시트 열기](https://docs.google.com/spreadsheets/d/{app_sheet_id})"
-            if app_sheet_id else ""
-        )
-
         await cl.Message(
             content=(
-                f"**{term['term_name']}** 통합 신청서 생성 완료:{sheet_note}\n\n"
+                f"**{term['term_name']}** 통합 신청서 생성 완료:\n\n"
                 f"- 수강 신청: **{수강_count}건**\n"
                 f"- 신규가입: **{신규_count}건**\n"
                 f"- 정회원: **{정회원_count}건**\n\n"
@@ -638,12 +633,23 @@ async def write_payment_results(
         check_note = "\n\n" + "\n".join(notes) if notes else ""
 
         # DB 모드: 회원관리 파일(MEMBERS_SHEET_ID)로 링크, Sheets 모드: 회차별 시트
-        from app.config import USE_DB_SOT, MEMBERS_SHEET_ID
+        from app.config import USE_DB_SOT, MEMBERS_SHEET_ID, APPLICATIONS_TAB, UNMATCHED_DEPOSITS_TAB
+        from app.services.google_sheets import get_tab_gids
         link_sheet_id = MEMBERS_SHEET_ID if USE_DB_SOT else app_sheet_id
-        sheet_link = (
-            f"\n\n[신청기록 시트 열기](https://docs.google.com/spreadsheets/d/{link_sheet_id})"
-            if link_sheet_id else ""
-        )
+        sheet_links = ""
+        if link_sheet_id:
+            try:
+                gids = get_tab_gids(link_sheet_id)
+                base = f"https://docs.google.com/spreadsheets/d/{link_sheet_id}"
+                app_gid = gids.get(APPLICATIONS_TAB)
+                dep_gid = gids.get(UNMATCHED_DEPOSITS_TAB)
+                app_link = f"{base}#gid={app_gid}" if app_gid is not None else base
+                dep_link = f"{base}#gid={dep_gid}" if dep_gid is not None else base
+                sheet_links = f"\n\n[신청기록 시트 열기]({app_link})"
+                if unmatched_deposits:
+                    sheet_links += f"\n[미확인입금 시트 열기]({dep_link})"
+            except Exception:
+                sheet_links = f"\n\n[회원관리 시트 열기](https://docs.google.com/spreadsheets/d/{link_sheet_id})"
 
         await cl.Message(
             content=(
@@ -651,7 +657,7 @@ async def write_payment_results(
                 f"{summary_line}{check_note}\n\n"
                 f"신청기록 시트에서 입금현황을 확인하시고, "
                 f"배움숲 포탈에서 수강 등록을 처리한 뒤\n"
-                f"처리상태를 입력해주세요.{sheet_link}"
+                f"처리상태를 입력해주세요.{sheet_links}"
             ),
         ).send()
 
@@ -665,6 +671,8 @@ async def write_payment_results(
             if term_id:
                 all_deposits = await _db.load_deposits(term_id)
                 unmatched = [d for d in all_deposits if d.get("match_status") == "unmatched"]
+                for d in unmatched:
+                    d["term_id"] = term_id
                 await sync_to_sheets("deposits", data=unmatched, term_id=term_id)
 
     except Exception as e:

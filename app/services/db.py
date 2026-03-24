@@ -92,6 +92,9 @@ CREATE TABLE IF NOT EXISTS deposits (
     created_at          TIMESTAMPTZ DEFAULT NOW()
 );
 
+CREATE UNIQUE INDEX IF NOT EXISTS uq_deposits
+ON deposits (term_id, COALESCE(transaction_time, ''), amount, COALESCE(payer_name, ''), COALESCE(memo, ''));
+
 CREATE TABLE IF NOT EXISTS attendance (
     id              SERIAL PRIMARY KEY,
     term_id         TEXT NOT NULL,
@@ -416,6 +419,9 @@ async def insert_deposits(term_id: str, deposits: list[dict]) -> None:
                     """
                     INSERT INTO deposits (term_id, transaction_time, amount, payer_name, memo)
                     VALUES ($1, $2, $3, $4, $5)
+                    ON CONFLICT (term_id, COALESCE(transaction_time, ''), amount,
+                                 COALESCE(payer_name, ''), COALESCE(memo, ''))
+                    DO NOTHING
                     """,
                     term_id,
                     d.get("거래일시", "") or d.get("transaction_time", "") or None,

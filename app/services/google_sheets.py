@@ -60,6 +60,19 @@ def clear_range(spreadsheet_id: str, range_name: str) -> None:
     ).execute()
 
 
+def get_tab_gids(spreadsheet_id: str) -> dict[str, int]:
+    """스프레드시트의 탭명 → sheetId(gid) 매핑을 반환."""
+    service = get_sheets_service()
+    meta = service.spreadsheets().get(
+        spreadsheetId=spreadsheet_id,
+        fields="sheets.properties.title,sheets.properties.sheetId",
+    ).execute()
+    return {
+        s["properties"]["title"]: s["properties"]["sheetId"]
+        for s in meta.get("sheets", [])
+    }
+
+
 def add_sheet_tab(spreadsheet_id: str, title: str) -> dict:
     """새 시트 탭 추가"""
     service = get_sheets_service()

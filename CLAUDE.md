@@ -9,7 +9,7 @@
 ## 기술 스택
 
 - **언어**: Python 3.12 (`.python-version`으로 고정)
-- **LLM 프레임워크**: LangChain (LLM 호출 래퍼로만 사용)
+- **LLM 프레임워크**: LangChain (현재: LLM 호출 래퍼, 전환 계획: `create_agent` tool-calling 라우터)
 - **채팅 UI**: Chainlit (WebSocket 기반, Conversation Starter 버튼 지원)
 - **LLM**: Claude API (Anthropic) — 한국어 + Vision
 - **데이터 SoT**: `USE_DB_SOT` 플래그로 전환
@@ -22,17 +22,16 @@
 
 ## 아키텍처 방침
 
-**고정 파이프라인 + LLM은 특정 단계에서만 (Agent 패턴 사용 금지)**
+**고정 파이프라인 + Agent는 라우터로만 (전환 계획 중)**
 
-- LangChain Agent나 tool-calling agent 패턴을 사용하지 않는다
-- 각 작업(입금 대조, 출석부 생성 등)은 실행 순서가 고정된 Python 함수 파이프라인으로 구현한다
+- 각 작업(입금 대조, 출석부 생성 등)은 실행 순서가 고정된 Python 함수 파이프라인으로 구현한다 — 이 파이프라인 코드는 변경하지 않는다
 - LLM은 비정형 텍스트 해석이 필요한 특정 단계에서만 호출한다 (예: 입금자명 파싱)
-- LangChain은 LLM 호출 래퍼(ChatAnthropic)로만 사용, 오케스트레이션 프레임워크로는 사용하지 않는다
-- 의도 분류는 Conversation Starter 버튼의 고정 메시지로 판별. 버튼이 아닌 자유 텍스트 입력에 한해 LLM 기반 intent 분류를 사용하며 (`classify_intent_llm`), 분류 결과는 반드시 관리자 확인 단계(Action 버튼)를 거친다.
-- 워크플로우 진행 중 파일 대신 텍스트가 입력되면 `handle_mid_flow_text()`로 처리: 취소 키워드 감지 → Q&A 답변 후 상태 유지 → 파일 재요청. 워크플로우를 이탈하지 않는다.
+- **현재**: `on_message` 상태 머신 + 33개 action callback으로 라우팅. LangChain은 LLM 호출 래퍼(ChatAnthropic)로만 사용.
+- **전환 계획**: LangChain `create_agent` + 7개 coarse-grained `@tool`로 라우팅 대체. Agent가 "어떤 작업을 할지"만 결정, 내부 로직은 기존 Python 파이프라인 유지. 상세: `docs/LANGCHAIN_MIGRATION_PROPOSAL.md`
+- Starter/Action 버튼은 전환 후에도 유지 — 55세+ 사용자를 위한 가이드 UX
 - `.agents/skills/`에 LangChain Skills(langchain-ai/langchain-skills)이 설치되어 있음. Claude Code가 LangChain 관련 코드 작성 시 참조하는 코딩 가이드이며, 런타임 동작에는 영향 없음.
 
-**이유**: 대상 사용자가 55세 이상 비개발자 관리자 2~4명. 대화형 AI에 익숙하지 않음. 예측 가능하고 가이드된 UX가 필수. 자유도가 높으면 오히려 혼란.
+**이유**: 대상 사용자가 55세 이상 비개발자 관리자 2~4명. Action 버튼 중심의 가이드 UX로 충분히 안내 가능하면서, Agent의 자연어 이해로 예측 불가능한 입력도 처리.
 
 ```python
 # 라우팅 패턴 — 세션 상태 → 버튼 메시지 → 자유 텍스트 LLM 의도 분류
@@ -187,7 +186,8 @@ wiryeschoolcommunity/
 ├── docs/
 │   ├── DEV_DOCUMENT.md          # 상세 기획서 (비즈니스 컨텍스트, 데이터 구조, 입금 패턴 등)
 │   ├── BUSINESS_CONTEXT.md      # Context Injection 소스 텍스트
-│   └── PLANNED_DRIVE_STRUCTURE.md  # Google Drive 확정 구조 + 폴더 ID 참조
+│   ├── PLANNED_DRIVE_STRUCTURE.md  # Google Drive 확정 구조 + 폴더 ID 참조
+│   └── LANGCHAIN_MIGRATION_PROPOSAL.md  # LangChain Agent 전환 제안서 (Phase A: 라우터 전환)
 ├── n8n/                         # n8n 워크플로우 JSON (비활성, git 백업용 보존)
 │   ├── sync_daily.json          # Sync-1: 비활성 (챗봇이 직접 Sheets 동기화)
 │   └── sync_webhook.json        # Sync-2: 비활성 (sheets_sync.py로 대체)
@@ -267,12 +267,12 @@ drive_service = build('drive', 'v3', credentials=credentials)
 
 ### 설계 원칙
 
-- **DB SoT + n8n Sheets 동기화** (`USE_DB_SOT` 환경변수로 전환):
-  - `USE_DB_SOT=true`: **PostgreSQL이 SoT**. 챗봇은 DB에 쓰고, n8n webhook으로 Sheets 동기화. 챗봇이 Sheets에 직접 쓰지 않음.
+- **DB SoT + 백그라운드 Sheets 동기화** (`USE_DB_SOT` 환경변수로 전환):
+  - `USE_DB_SOT=true`: **PostgreSQL이 SoT**. 챗봇은 DB에 쓰고, 백그라운드 스레드로 Sheets 동기화 (`sheets_sync.py`). DB 실패 시 Sheets 폴백.
   - `USE_DB_SOT=false` (기본): **Google Sheets가 SoT**. 기존 동작 유지. DB 쓰기 안 함.
 - **DB 실패 시 자동 폴백**: DB 읽기/쓰기 실패하면 Sheets로 폴백 + 로그 기록. 서비스 중단 없음.
 - **처리상태 예외**: 신청기록/미확인입금의 `처리상태` 컬럼만 관리자가 Sheets에서 직접 편집 (드롭다운: 등록완료/환불완료/취소완료/보류). DB 모드에서도 이 컬럼은 Sheets에서 읽음.
-- **신청기록 통합**: DB 모드에서는 회차별 "신청서" 파일을 생성하지 않음. 회원관리 파일(`MEMBERS_SHEET_ID`)의 `신청기록` 탭에 전 회차 데이터 통합. n8n이 DB→Sheets push.
+- **신청기록 통합**: DB 모드에서는 회차별 "신청서" 파일을 생성하지 않음. 회원관리 파일(`MEMBERS_SHEET_ID`)의 `신청기록` 탭에 전 회차 데이터 통합. `sheets_sync.py`가 백그라운드로 push.
 - **PostgreSQL**: 비즈니스 데이터 (`db.py`, 7 테이블) + 채팅 기록 (`chat_data_layer.py`).
 - **Google Drive는 파일 저장소**. Raw 엑셀, PDF, 출석부 등 파일 단위 자료 관리.
 - **이모지↔코드 변환**: DB에는 상태 코드(confirmed, not_paid 등) 저장. 앱 코드는 이모지(✅정상, ❌미입금 등) 사용. 변환은 `db.py` 경계에서 수행.
@@ -286,7 +286,7 @@ drive_service = build('drive', 'v3', credentials=credentials)
 | `member_records` | `id` (SERIAL) | 등급 변경 이력 |
 | `course_records` | `id` (SERIAL) | 수강 이력 |
 | `applications` | `(term_id, name_id, type, course_name)` UK | 통합 신청서 (`processing_status`, `processed_at`) |
-| `deposits` | `id` (SERIAL) | 입금내역 원본 (`match_status`, `matched_name_ids`) |
+| `deposits` | `id` (SERIAL), UK `(term_id, transaction_time, amount, payer_name, memo)` | 입금내역 원본 (`match_status`, `matched_name_ids`). 중복 INSERT 방지 (`ON CONFLICT DO NOTHING`). |
 | `attendance` | `(term_id, course_name, student_name)` UK | 출석 데이터 |
 | `feedbacks` | `id` (TEXT PK) | Chainlit thumbs up/down |
 
@@ -411,16 +411,13 @@ Google Sheets 파일 1개. 수강생 탭 + 과목별 탭 + 과목별 인쇄용 P
 │  Railway                                              │
 │                                                       │
 │  ┌──────────────┐        ┌──────────────────────┐    │
-│  │  Chainlit     │        │  PostgreSQL           │    │
-│  │  + LangChain  │───────→│  (채팅 기록 +         │    │
+│  │  Chainlit     │───────→│  PostgreSQL           │    │
+│  │  + LangChain  │        │  (채팅 기록 +         │    │
 │  │  (챗봇)       │        │   비즈니스 데이터)     │    │
-│  └──────┬───────┘        └──────────┬───────────┘    │
-│         │                           │                 │
-│  ┌──────┴───────┐          ┌────────┴──────────┐     │
-│  │  n8n          │←─webhook─│  DB→Sheets Sync   │     │
-│  │  (동기화)     │          └──────────────────-┘     │
-│  └──────────────┘                                     │
-└───────────────────────────────────────────────────────┘
+│  └──────┬───────┘        └──────────────────────┘    │
+│         │                                             │
+│         │  sheets_sync.py (백그라운드 스레드)          │
+└─────────┼─────────────────────────────────────────────┘
           │
           ▼
    ┌──────────────────────────────────────────────────────────┐
@@ -441,7 +438,7 @@ Google Sheets 파일 1개. 수강생 탭 + 과목별 탭 + 과목별 인쇄용 P
 |------|--------|----------|------|
 | **On-demand** | 관리자 버튼 클릭 | 챗봇 (Chainlit) | 입금 대조 (수강+가입+정회원 통합), 출석부 생성, 종강 처리, OCR, 계획서 검토, Q&A |
 
-### n8n 배치 파이프라인 상세
+### 파이프라인 상세
 
 **P3. 종강 처리** (on-demand, ✅ 구현 완료 — `graduation.py`)
 ```
@@ -466,7 +463,7 @@ Google Sheets 파일 1개. 수강생 탭 + 과목별 탭 + 과목별 인쇄용 P
   member_records: 회원기록 (append)
   course_records: 수강기록 (append)
   deposits: 미확인입금 (clear A2:G + write, unmatched만)
-n8n 비활성 — 챗봇이 직접 Sheets API 호출
+챗봇이 직접 Sheets API 호출 (n8n 비활성)
 ```
 
 ### 데이터 흐름 정리
@@ -749,8 +746,8 @@ DATABASE_URL=                   # Railway가 자동 주입 (PostgreSQL 연결 �
 - Dual-Write 모드: `USE_DB_SOT=true`이면 DB가 SoT, Sheets는 secondary write
 - `scripts/init_db_schema.py` + `scripts/migrate_v4.py`: Railway PostgreSQL에 테이블 생성/마이그레이션 완료
 
-**2-2. DB SoT + n8n Sheets 동기화** ✅ 완료
-- `payment.py`: 5개 write 함수 DB+n8n 패턴으로 전환 (DB 쓰기 → `trigger_sheets_sync()`, Sheets 직접 쓰기 제거)
+**2-2. DB SoT + 백그라운드 Sheets 동기화** ✅ 완료
+- `payment.py`: 5개 write 함수 DB+Sheets sync 패턴으로 전환 (DB 쓰기 → `sync_to_sheets()`, n8n 제거)
 - `payment.py`: `apply_matching_results()` deposit 매칭 추적 (match_status/matched_name_ids), unmatched count 반환
 - `payment.py`: `format_results()` 미확인입금 카운트 표시 (`| 미확인입금: N건`)
 - `payment.py`: `apply_grade_cascade()` 등급 전환 cascade (idempotent 3-pass)
@@ -787,6 +784,8 @@ DATABASE_URL=                   # Railway가 자동 주입 (PostgreSQL 연결 �
 - AskActionMessage → non-blocking 전환 — 전체 12개 blocking AskActionMessage를 `cl.Message(actions=...) + @cl.action_callback` 패턴으로 전환. 26개 새 action callback 추가 (총 33개). `@cl.on_stop` 훅 추가. 회차 입력 상태 통합 (`term_input_next`). 신청서 위치 확인 단계 제거 (Drive 자동 탐색). 처리상태 gate의 `while True` 루프를 recheck callback으로 전환.
 
 **📋 백로그:**
+- **LangChain Agent 전환 (Phase A)**: `on_message` 라우팅(1500줄+33 callback)을 LangChain `create_agent` tool selection으로 대체. 7개 작업을 7개 coarse-grained `@tool`로 매핑. 비즈니스 파이프라인 코드는 변경 없음. 상세: `docs/LANGCHAIN_MIGRATION_PROPOSAL.md`
+- **비즈니스 컨텍스트 최적화**: (1) Prompt caching 즉시 적용 (비용 90%↓, 지연 50%↓), (2) Agent 전환 시 selective context injection (tool별 관련 컨텍스트만 주입), (3) 컨텍스트 ~100K 토큰 초과 시 RAG 도입
 - 보고서 생성: DB SQL 집계 → PDF (placeholder 버튼 배치 완료)
 - 계획서 검토: PDF 파싱 → 오탈자/말투 수정 → 배움숲 멘트 생성 (placeholder 배치 완료)
 - 첫 화면 로고+타이틀 PNG 이미지 제작 (`public/logo_light.png` → CSS 워크어라운드 제거)
