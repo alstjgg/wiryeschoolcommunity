@@ -1,7 +1,7 @@
 # 위례인생학교 업무 도우미 — E2E 테스트 체크리스트
 
 > 실제 데이터로 전체 플로우를 검증한다.
-> 기준: improvement_plan.md v4.0 + DB SoT + n8n Sheets 동기화 아키텍처
+> 기준: DB SoT + 백그라운드 Sheets 동기화 (sheets_sync.py) 아키텍처
 
 ---
 
@@ -14,10 +14,12 @@
 - [x] 회원관리 시트 5탭(회원목록/회원기록/수강기록/신청기록/미확인입금) 헤더 행 입력 여부 확인
 - [x] 신청기록 탭 헤더 12컬럼 순서 확인: 신청일 | 회차 | 이름ID | 이름 | 유형 | 과목명 | 예상금액 | 입금시각 | 입금자명 | 입금현황 | 확인사유 | 처리상태
 - [x] 미확인입금 탭 헤더 7컬럼 순서 확인: 입금일시 | 회차 | 입금액 | 입금자명 | 적요 | 확인사유 | 처리상태
-- [x] 처리상태 드롭다운 설정 확인 (등록완료/환불완료/취소완료/보류) — 신청기록 L열 + 미확인입금 G열
+- [x] 처리상태 드롭다운 설정 확인 (등록완료/환불완료/취소완료/보류) — 신청기록 L열 + 미확인입금 G열. **관리자가 Sheets UI에서 직접 설정** (코드에서 생성하지 않음)
+- [x] 출석부 시트 필터/드롭다운 설정 — **관리자가 Sheets UI에서 직접 설정** (코드에서 생성하지 않음)
 - [x] 강사관리 시트(`1GPwpyHU4vzOtDW3eFlvDKh13maR-yq-qaUzJ73HaR2U`)와 사무처관리 시트(`1hvuXv0NZmEhTW6QDFJ4SYArP51rrPJoWS9BRramtTMY`)에 데이터가 입력되어 있는지 확인 (is_exception은 입금 대조 시 자동 판별됨)
 - [x] DB 테이블 7개 존재 확인 (members, member_records, course_records, applications, deposits, attendance, feedbacks)
-- [x] Railway 환경변수 확인: `USE_DB_SOT=true`, `N8N_WEBHOOK_URL`, `DATABASE_URL`, `ANTHROPIC_API_KEY`, `GOOGLE_SA_KEY_JSON`
+- [x] deposits 테이블 unique index 존재 확인 (`uq_deposits`)
+- [x] Railway 환경변수 확인: `DATABASE_URL`, `ANTHROPIC_API_KEY`, `GOOGLE_SA_KEY_JSON`
 - [x] 출석 체크 테스트용 종이 출석부 사진 (또는 테스트 이미지)
 
 ---
@@ -45,17 +47,17 @@
 | 2-2 | 정회원 신청서 자동 로드 (연도 기준 탐색) | Drive에서 `2026` 포함 파일 찾아 건수 Step에 표시 | ☐ |
 | 2-3 | 신청서 파일 없을 때 | 경고 Step 표시 후 계속 진행 (입금 대조 중단 안 됨) | ☐ |
 | 2-4 | 자동 로드 후 신청자 목록 업로드 요청 | "수강 신청자 목록 파일을 업로드해주세요" 메시지 표시 | ☐ |
-| 2-5 | `LEARNING_APPLY*.xls` 업로드 | 신청자 수, 과목 수 Step에 표시 | ☐ |
+| 2-5 | `LEARNING_APPLY*.xls` 업로드 | 신청자 수, 과목 수 Step에 표시 (과목 수 > 0) | ☐ |
 | 2-6 | 파싱 결과 수강 유형 건수 확인 | 배움숲 원본 데이터와 일치 | ☐ |
-| 2-7 | 통합 신청서 생성 확인 | DB `applications` 테이블에 INSERT + n8n webhook → 회원관리 파일 신청기록 탭에 반영 | ☐ |
-| 2-8 | 신청기록 시트 필터 설정 확인 | 헤더 행에 ▼ 필터 표시 | ☐ |
-| 2-9 | 처리상태 드롭다운 확인 | L열(처리상태) 전체가 데이터 유효성 검사 드롭다운 (등록완료/환불완료/취소완료/보류) | ☐ |
-| 2-10 | 신청기록 시트 헤더 12컬럼 확인 | 신청일~처리상태 순서 일치, phone/address/processed_at 비노출 | ☐ |
-| 2-11 | DB applications 테이블 데이터 확인 | term_id, name_id, type, course_name, expected_amount 등 정상 INSERT | ☐ |
-| 2-12 | n8n Sync-2 webhook 호출 확인 | `trigger_sheets_sync("applications", ...)` 호출됨 | ☐ |
-| 2-13 | 파일 업로드 대기 중 질문 입력 | Q&A 답변 후 업로드 재안내 (상태 유지) | ☐ |
-| 2-14 | 파일 업로드 대기 중 "취소" 입력 | 작업 취소 + 기본 버튼 표시 | ☐ |
-| 2-15 | upsert 검증: 이미 신청서 데이터 있을 때 재실행 | 기존 행 보존, 새 신청자만 추가 (덮어쓰기 안 됨) | ☐ |
+| 2-6a | 이름/전화번호 정규화 확인 | 이름 중간 공백 제거 ("노 민의"→"노민의"), 전화번호 숫자만 ("010-1234-5678"→"01012345678") | ☐ |
+| 2-7 | 통합 신청서 생성 확인 | DB `applications` 테이블에 upsert + 백그라운드 Sheets sync → 회원관리 파일 신청기록 탭에 반영 | ☐ |
+| 2-8 | 중간 단계 시트 링크 없음 확인 | 신청자 목록 업로드 완료 메시지에 시트 링크가 **없어야** 함 (입금 대조 완료 시에만 제공) | ☐ |
+| 2-9 | 신청기록 시트 헤더 12컬럼 확인 | 신청일~처리상태 순서 일치, phone/address/processed_at 비노출 | ☐ |
+| 2-10 | DB applications 테이블 데이터 확인 | term_id, name_id, type, course_name, expected_amount 등 정상 upsert | ☐ |
+| 2-11 | 백그라운드 Sheets sync 확인 | Railway 로그에 `Sheets sync completed: type=applications` 표시 | ☐ |
+| 2-12 | 파일 업로드 대기 중 질문 입력 | Q&A 답변 후 업로드 재안내 (상태 유지) | ☐ |
+| 2-13 | 파일 업로드 대기 중 "취소" 입력 | 작업 취소 + 기본 버튼 표시 | ☐ |
+| 2-14 | upsert 검증: 이미 신청서 데이터 있을 때 재실행 | 기존 행 보존, 새 신청자만 추가 (덮어쓰기 안 됨) | ☐ |
 
 ---
 
@@ -65,6 +67,7 @@
 |---|---------|---------|------|
 | 3-1 | 은행 입금내역 업로드 | 거래 건수 Step에 표시 | ☐ |
 | 3-2 | deposits 테이블 INSERT 확인 | 입금내역 전건이 DB에 저장됨 (match_status='unmatched' 초기값) | ☐ |
+| 3-2a | deposits 중복 방지 확인 | 같은 입금내역 파일 재업로드 시 중복 삽입 안 됨 (ON CONFLICT DO NOTHING) | ☐ |
 | 3-3 | 정회원 면제 처리 | 회원목록 등급 "정회원"인 수강생 → 💎면제 처리 | ☐ |
 | 3-4 | 이름 정확 일치 매칭 | ✅정상 처리 | ☐ |
 | 3-5 | 카카오페이/토스 경유 입금 | 적요에서 이름 추출하여 매칭 | ☐ |
@@ -74,23 +77,25 @@
 | 3-9 | 합산 입금 (3만원=수강+가입, 4만원+=다과목, 12만원=정회원, 13만원=가입+정회원) | 올바른 금액 분류 및 매칭 | ☐ |
 | 3-10 | 등급 전환 cascade 실행 확인 | Pass 1: 신규가입→회원, Pass 2: 정회원비→정회원, Pass 3: 수강→준회원/💎면제 | ☐ |
 | 3-11 | cascade idempotent 확인 | 입금 대조 재실행 시 이미 처리된 등급 변경은 skip | ☐ |
-| 3-12 | 매칭 완료 후 자동 반영 | 별도 확인 버튼 없이 바로 DB 반영 + n8n webhook으로 시트 동기화 | ☐ |
+| 3-12 | 매칭 완료 후 자동 반영 | 별도 확인 버튼 없이 바로 DB 반영 + 백그라운드 Sheets sync | ☐ |
 | 3-13 | 숫자 요약 출력 | `✅ N건  🔶 N건  ⚠️ N건  ❌ N건  💎 N건 \| 미확인입금: N건` 형식 | ☐ |
-| 3-14 | 시트 링크 제공 | DB 모드: 회원관리 파일(MEMBERS_SHEET_ID) 링크, 클릭 시 신청기록 시트로 이동 | ☐ |
+| 3-14 | 탭별 시트 링크 제공 | 신청기록 링크 (`#gid=` 포함) + 미확인입금 있으면 미확인입금 링크도 제공 | ☐ |
 | 3-15 | 신청기록 시트 입금현황 반영 확인 | 각 행의 입금현황(이모지), 입금시각, 입금자명 컬럼 정확히 기록 | ☐ |
 | 3-16 | 회원기록 탭 자동 기록 확인 | 신규가입/수강료/정회원비 입금 확인 건 → 회원기록 탭에 append | ☐ |
+| 3-16a | 회원기록 changed_at datetime 확인 | DB `member_records.changed_at`에 datetime 객체 저장됨 (문자열 아님) | ☐ |
 | 3-17 | deposits match_status 업데이트 확인 | 매칭 성공: `matched` + `matched_name_ids` 기록, 실패: `unmatched` 유지 | ☐ |
-| 3-18 | 미확인입금 시트 확인 | unmatched 건만 미확인입금 탭에 표시됨 | ☐ |
-| 3-19 | processed_at 갱신 확인 | 매칭 처리된 applications에 processed_at 타임스탬프 기록됨 | ☐ |
+| 3-18 | 미확인입금 시트 확인 | unmatched 건만 미확인입금 탭에 표시됨 (빈 셀 아님, 한국어 키 정상 매핑) | ☐ |
+| 3-19 | processed_at 갱신 확인 | 매칭 처리된 applications에 processed_at datetime 객체 저장됨 (문자열 아님) | ☐ |
 | 3-20 | payment_status 이모지 변환 확인 | DB: confirmed 등 코드 저장, Sheets: ✅정상 등 이모지 표시 | ☐ |
 | 3-21 | 미확인입금 안내 메시지 확인 | unmatched > 0일 때 "💳 미확인입금 N건" 안내 표시 | ☐ |
-| 3-22 | n8n deposits webhook 호출 확인 | `trigger_sheets_sync("deposits", ...)` 호출됨 | ☐ |
+| 3-22 | 백그라운드 deposits sync 확인 | Railway 로그에 `Sheets sync completed: type=deposits` 표시 | ☐ |
 | 3-23 | 완료 후 기본 버튼 표시 | 7개 버튼 (입금 대조 다시하기 포함) | ☐ |
 | 3-24 | 강사 면제 확인 — 강사관리 시트에 현재 사이클 강의 row 있는 강사 | 신규가입비+정회원비+수강비 전부 💎면제 처리됨 | ☐ |
 | 3-25 | 사무처 직원 면제 확인 — 사무처관리 시트에 활동종료 없는 직원 | 신규가입비+정회원비+수강비 전부 💎면제 처리됨 | ☐ |
 | 3-26 | 면제 확인사유 기록 확인 | 면제된 행의 확인사유에 '강사/사무처 면제' 기록됨 | ☐ |
 | 3-27 | 면제 대상 is_exception 자동 설정 확인 | 회원목록 탭 해당 회원의 예외여부가 TRUE로 자동 설정됨 | ☐ |
 | 3-28 | 사이클 판별 정확성 확인 | 예) 2026-1 입금 대조 시 2025 사이클(2025-2~2026-1) 강의 강사 포함됨 | ☐ |
+| 3-29 | 방어적 에러 핸들링 확인 | 하나의 DB 쓰기 실패 시 나머지 쓰기는 계속 실행됨 (Step에 ⚠️ 오류 표시) | ☐ |
 
 ---
 
@@ -102,7 +107,7 @@
 | 4-2 | 새 세션에서 📋 출석부 생성 버튼 클릭 | 회차 확인 단계 먼저 표시 | ☐ |
 | 4-3 | 새 세션 - 다른 회차 입력 | 파싱 후 재확인 루프 동작 | ☐ |
 | 4-4 | gate check — 신청기록 미처리 건 있을 때 | 미처리 건수 + 상위 5건 상세 + "신청기록 시트에서 처리상태를 입력해주세요" 안내 | ☐ |
-| 4-5 | gate check — 미확인입금 미처리 건 있을 때 (DB 모드) | 미처리 건수 + 상위 5건 상세 + "미확인입금 시트에서 처리상태를 입력해주세요" 안내 | ☐ |
+| 4-5 | gate check — 미확인입금 미처리 건 있을 때 | 미처리 건수 + 상위 5건 상세 + "미확인입금 시트에서 처리상태를 입력해주세요" 안내 | ☐ |
 | 4-6 | gate check — 양쪽 모두 미처리 건 있을 때 | 신청기록 + 미확인입금 두 섹션 모두 표시 + 회원관리 시트 링크 | ☐ |
 | 4-7 | gate check — "🔄 다시 확인" 클릭 | 시트 재읽기 후 미처리 건 재확인 (recheck callback) | ☐ |
 | 4-8 | gate check — "❌ 취소" 클릭 | 취소 메시지 + 기본 버튼 표시 | ☐ |
@@ -112,12 +117,11 @@
 | 4-12 | 출석부 시트 구조 확인 | 수강생 탭(이름ID/이름/과목명/출석률) + 과목별 탭 생성 여부 | ☐ |
 | 4-13 | 과목별 탭 컬럼 확인 | 이름(A) + 1~12회차(B~M) — 이름ID·출석률 없음 | ☐ |
 | 4-14 | 수강생 탭 출석률 컬럼 확인 | 생성 시점에는 빈칸 (종강 처리 후 채워짐) | ☐ |
-| 4-15 | 출석부 시트 필터 설정 확인 | 수강생 탭 + 과목별 탭 모두 헤더에 ▼ 필터 표시 | ☐ |
-| 4-16 | PDF 생성 확인 | Drive 출석부 폴더에 과목별 PDF 파일 업로드됨 | ☐ |
-| 4-17 | PDF 내용 확인 | 이름 + 12회차 컬럼, 이름ID·출석률 없음, 과목명+회차 타이틀, 페이지 번호 | ☐ |
-| 4-18 | PDF 인쇄 품질 확인 | A4 가로, 13컬럼 한 장 배치, 수강생 많으면 2페이지 + 헤더 반복 | ☐ |
-| 4-19 | 최종 안내 메시지 확인 | 출석부 폴더 URL + 과목별 PDF 링크 + 출석 체크 안내 | ☐ |
-| 4-20 | 완료 후 기본 버튼 표시 | 출석부 생성 다시하기 포함 7개 버튼 | ☐ |
+| 4-15 | PDF 생성 확인 | Drive 출석부 폴더에 과목별 PDF 파일 업로드됨 | ☐ |
+| 4-16 | PDF 내용 확인 | 이름 + 12회차 컬럼, 이름ID·출석률 없음, 과목명+회차 타이틀, 페이지 번호 | ☐ |
+| 4-17 | PDF 인쇄 품질 확인 | A4 가로, 13컬럼 한 장 배치, 수강생 많으면 2페이지 + 헤더 반복 | ☐ |
+| 4-18 | 최종 안내 메시지 확인 | 출석부 폴더 URL + 과목별 PDF 링크 + 출석 체크 안내 | ☐ |
+| 4-19 | 완료 후 기본 버튼 표시 | 출석부 생성 다시하기 포함 7개 버튼 | ☐ |
 
 ---
 
@@ -160,8 +164,8 @@
 | 6-11b | 활동종료 있는 사무처 직원 강등 확인 | 활동종료가 입력된(비활동) 사무처 직원도 정상 강등됨 | ☐ |
 | 6-12 | 1학기가 아닌 종강 시 정회원 강등 없음 확인 | 정회원 등급 유지됨 | ☐ |
 | 6-13 | 회원기록 탭 append 확인 | 강등된 회원들의 변경 이력(종강강등/겨울학기강등)이 기록됨 | ☐ |
-| 6-14 | DB dual-write 확인 | members, member_records, course_records 테이블도 업데이트됨 | ☐ |
-| 6-15 | n8n graduation webhook 확인 | `trigger_sheets_sync("graduation", ...)` 호출 → 회원목록+회원기록+수강기록 탭 동기화 | ☐ |
+| 6-14 | DB write 확인 | members, member_records, course_records 테이블도 업데이트됨 | ☐ |
+| 6-15 | 백그라운드 Sheets sync 확인 | Railway 로그에 `Sheets sync completed` (members, member_records, course_records) 표시 | ☐ |
 | 6-16 | 종강 처리 완료 메시지 | 수강기록 추가 수, 강등 수 + 회원관리 시트 링크 | ☐ |
 | 6-17 | 완료 후 기본 버튼 표시 | 종강 처리 다시하기 포함 7개 버튼 | ☐ |
 
@@ -199,28 +203,31 @@
 | 8-5 | 출석부 시트 수강생 탭: 출석률 컬럼이 종강 처리 후 채워짐 | ☐ |
 | 8-6 | 출석부 시트 과목별 탭: OCR 기록 후 O/빈칸이 올바르게 기록됨 | ☐ |
 | 8-7 | applications 테이블 UPSERT: 동일 회차 입금 대조 재실행 시 기존 행 보존 + 중복 없음, 신청기록 시트 동기화됨 | ☐ |
-| 8-8 | deposits 테이블: 입금내역 전건 저장, match_status/matched_name_ids 정확 | ☐ |
-| 8-9 | 미확인입금 시트: deposits 중 unmatched 건만 표시됨 | ☐ |
+| 8-8 | deposits 테이블: 입금내역 전건 저장, match_status/matched_name_ids 정확, 재업로드 시 중복 없음 | ☐ |
+| 8-9 | 미확인입금 시트: deposits 중 unmatched 건만 표시됨, 모든 셀에 값 있음 (빈 셀 아님) | ☐ |
 | 8-10 | DB ↔ Sheets 이모지 변환: DB payment_status 코드 → Sheets 입금현황 이모지 정상 변환 | ☐ |
 | 8-11 | DB 전용 컬럼 비노출: phone, address, processed_at이 Sheets에 표시되지 않음 | ☐ |
 | 8-12 | DB ↔ Sheets 일치: 전체 워크플로우 후 DB 데이터와 Sheets 데이터가 일치 | ☐ |
 
 ---
 
-## 9. n8n 동기화 테스트
+## 9. 백그라운드 Sheets 동기화 테스트
+
+> `sheets_sync.py`의 `sync_to_sheets()` → `asyncio.to_thread()` → 동기 Sheets API 호출.
+> 챗봇 응답에 latency 영향 없음 (fire-and-forget).
 
 | # | 시나리오 | 예상 결과 | 확인 |
 |---|---------|---------|------|
-| 9-1 | Sync-1 수동 실행 | 5탭 모두 Clear+Append 정상 완료 (헤더 보존) | ☐ |
-| 9-2 | Sync-1 빈 테이블 sync | 에러 없이 Clear만 수행 (데이터 없을 때) | ☐ |
-| 9-3 | Sync-2 applications webhook | 신청기록 탭 Clear+Append 정상 (term_id 필터) | ☐ |
-| 9-4 | Sync-2 members webhook | 회원목록 탭 Clear+Append 정상 | ☐ |
-| 9-5 | Sync-2 deposits webhook | 미확인입금 탭 Clear+Append 정상 (unmatched만) | ☐ |
-| 9-6 | Sync-2 graduation webhook | 회원목록+회원기록+수강기록 탭 Clear+Append 정상 | ☐ |
-| 9-7 | Code 노드 이모지 변환 | payment_status: confirmed→✅정상, needs_review→🔶확인필요, not_paid→❌미입금, name_mismatch→⚠️이름불일치, duplicate→🔄중복, exempted→💎면제 | ☐ |
-| 9-8 | Code 노드 컬럼 제거 | processed_at, phone, address가 Sheets push에서 제외됨 | ☐ |
-| 9-9 | Sync-2 응답 시간 | Immediately 응답 (챗봇이 대기하지 않음) | ☐ |
-| 9-10 | Sync-1 스케줄 확인 | 매일 06:00 KST (Asia/Seoul timezone) 자동 실행 | ☐ |
+| 9-1 | applications sync (입금 대조 시) | 신청기록 탭 clear A2:L + write A2 정상 | ☐ |
+| 9-2 | members sync (등급 cascade 후) | 회원목록 탭 clear A2:I + write A2 정상 | ☐ |
+| 9-3 | member_records sync (등급 변경 시) | 회원기록 탭 append 정상 | ☐ |
+| 9-4 | course_records sync (종강 처리 시) | 수강기록 탭 append 정상 | ☐ |
+| 9-5 | deposits sync (입금 매칭 후) | 미확인입금 탭 clear A2:G + write A2 정상 (unmatched만, 한국어 키 매핑 정상) | ☐ |
+| 9-6 | sync 실패 시 비차단 | Sheets API 에러 시 로그 경고만, 챗봇 응답 정상 (DB SoT이므로 데이터 무결성 유지) | ☐ |
+| 9-7 | sync 로그 확인 | Railway 로그에 `Sheets sync starting` → `Sheets sync completed` 쌍 표시 | ☐ |
+| 9-8 | 이모지 변환 확인 | DB payment_status 코드가 Sheets에 이모지로 변환되어 표시됨 | ☐ |
+| 9-9 | DB 전용 컬럼 제외 확인 | processed_at, phone, address가 Sheets에 표시되지 않음 | ☐ |
+| 9-10 | 빈 데이터 sync | 데이터 없을 때 clear만 수행, 에러 없음 | ☐ |
 
 ---
 
