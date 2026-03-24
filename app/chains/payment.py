@@ -217,8 +217,8 @@ def apply_grade_cascade(
 
     Returns: 등급 변경 기록 리스트 (회원기록 탭에 append할 데이터)
     """
-    from datetime import datetime
-    now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+    from datetime import datetime, timezone
+    now_dt = datetime.now(timezone.utc)
 
     if exception_ids is None:
         exception_ids = set()
@@ -261,7 +261,7 @@ def apply_grade_cascade(
         members.append(new_member)
         changes.append({
             "이름ID": name_id, "이름": app["이름"],
-            "변경일시": now_str,
+            "변경일시": now_dt,
             "변경전등급": "(신규)", "변경후등급": "회원",
             "사유": "신규가입(강사/사무처면제)" if is_exc else "신규가입",
             "관련회차": term_id,
@@ -300,7 +300,7 @@ def apply_grade_cascade(
             member["예외여부"] = "TRUE"
         changes.append({
             "이름ID": name_id, "이름": app["이름"],
-            "변경일시": now_str,
+            "변경일시": now_dt,
             "변경전등급": prev_grade, "변경후등급": "정회원",
             "사유": "정회원비면제(강사/사무처)" if is_exc else "정회원비입금",
             "관련회차": term_id,
@@ -338,7 +338,7 @@ def apply_grade_cascade(
                 member["등급"] = "준회원"
                 changes.append({
                     "이름ID": name_id, "이름": app["이름"],
-                    "변경일시": now_str,
+                    "변경일시": now_dt,
                     "변경전등급": current_grade or "회원",
                     "변경후등급": "준회원",
                     "사유": "수강료입금", "관련회차": term_id,

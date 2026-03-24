@@ -596,20 +596,37 @@ async def write_payment_results(
         members = cl.user_session.get("members", [])
 
         async with cl.Step(name="💾 신청서 업데이트", type="tool") as step:
+            errors = []
             if applications:
                 term_id = (cl.user_session.get("term") or {}).get("term_id", "")
-                await update_applications_sheet(
-                    app_sheet_id, applications, term_id=term_id,
-                )
-                step.output = f"입금현황 **{len(applications)}건** 반영 완료"
+                try:
+                    await update_applications_sheet(
+                        app_sheet_id, applications, term_id=term_id,
+                    )
+                    step.output = f"입금현황 **{len(applications)}건** 반영 완료"
+                except Exception as e:
+                    logger.error("update_applications_sheet failed: %s", e)
+                    errors.append(f"입금현황 반영 실패: {e}")
+                    step.output = "입금현황 반영 중 오류 발생"
 
                 # 회원기록 + 회원목록 저장 (cascade 결과)
                 if grade_changes is None:
                     grade_changes = cl.user_session.get("grade_changes", [])
                 if grade_changes:
-                    await append_member_records(grade_changes)
-                    await update_members_sheet(members)
-                    step.output += f", 등급변경 {len(grade_changes)}건 기록"
+                    try:
+                        await append_member_records(grade_changes)
+                        step.output += f", 등급변경 {len(grade_changes)}건 기록"
+                    except Exception as e:
+                        logger.error("append_member_records failed: %s", e)
+                        errors.append(f"등급변경 기록 실패: {e}")
+                    try:
+                        await update_members_sheet(members)
+                    except Exception as e:
+                        logger.error("update_members_sheet failed: %s", e)
+                        errors.append(f"회원목록 업데이트 실패: {e}")
+
+                if errors:
+                    step.output += f"\n⚠️ 일부 오류: {'; '.join(errors)}"
             else:
                 step.output = "신청서 데이터가 없어 반영하지 못했습니다."
 
