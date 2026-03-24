@@ -9,8 +9,10 @@ N8N_WEBHOOK_URL 환경변수가 없으면 아무 동작 안 함 (n8n 미배포 �
 import logging
 
 import httpx
+from google.auth.transport.requests import Request as GoogleAuthRequest
 
 from app.config import N8N_WEBHOOK_URL, USE_DB_SOT
+from app.services.google_auth import _get_credentials
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +38,14 @@ async def trigger_sheets_sync(
         return
 
     url = N8N_WEBHOOK_URL.rstrip("/") + _SYNC_PATH
-    body = {"type": sync_type, **(payload or {})}
+
+    # Get fresh Google access token for n8n to use in Sheets API calls
+    creds = _get_credentials()
+    if not creds.valid:
+        creds.refresh(GoogleAuthRequest())
+    access_token = creds.token
+
+    body = {"type": sync_type, "access_token": access_token, **(payload or {})}
 
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
