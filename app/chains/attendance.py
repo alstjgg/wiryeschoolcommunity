@@ -271,38 +271,6 @@ async def create_attendance_sheet(
             data_rows.append(row)
         write_sheet(spreadsheet_id, f"{course_name}!A1", data_rows)
 
-    # 모든 탭에 BasicFilter 설정
-    meta_final = sheets_svc.spreadsheets().get(
-        spreadsheetId=spreadsheet_id
-    ).execute()
-    sheet_id_map = {
-        s["properties"]["title"]: s["properties"]["sheetId"]
-        for s in meta_final.get("sheets", [])
-    }
-
-    filter_requests = []
-    # 수강생 탭: 4컬럼
-    if "수강생" in sheet_id_map:
-        filter_requests.append({"setBasicFilter": {"filter": {"range": {
-            "sheetId": sheet_id_map["수강생"],
-            "startRowIndex": 0, "startColumnIndex": 0, "endColumnIndex": 4,
-        }}}})
-    # 과목별 탭: 이름(1) + 12회차 = 13컬럼
-    for course_name in course_names:
-        sid = sheet_id_map.get(course_name)
-        if sid is not None:
-            filter_requests.append({"setBasicFilter": {"filter": {"range": {
-                "sheetId": sid,
-                "startRowIndex": 0, "startColumnIndex": 0,
-                "endColumnIndex": 1 + MAX_SESSIONS,
-            }}}})
-
-    if filter_requests:
-        sheets_svc.spreadsheets().batchUpdate(
-            spreadsheetId=spreadsheet_id,
-            body={"requests": filter_requests},
-        ).execute()
-
     # 과목별 PDF 생성 + Drive 업로드
     pdf_urls: dict[str, str | None] = {}
     for course_name in course_names:

@@ -200,12 +200,10 @@ class TestFormatResults:
 
 # ── dual-write 분기 테스트 (USE_DB_SOT 플래그) ──────────────────────────────
 
-class TestDualWriteBranching:
+class TestDBOnlyAPI:
     @pytest.mark.asyncio
-    @patch("app.chains.payment.USE_DB_SOT", True)
-    @patch("app.chains.payment._load_members_from_sheets")
-    async def test_load_members_uses_db_when_flag_true(self, mock_sheets):
-        """USE_DB_SOT=true → DB에서 읽기"""
+    async def test_load_members_from_db(self):
+        """load_members_from_sheet() → DB에서 읽기"""
         mock_db = AsyncMock(return_value=[
             {"이름ID": "테스트0001", "이름": "테스트", "전화번호": "", "주소": "",
              "등급": "회원", "예외여부": "", "수강count": "0",
@@ -217,27 +215,10 @@ class TestDualWriteBranching:
             assert len(result) == 1
             assert result[0]["이름ID"] == "테스트0001"
             mock_db.assert_called_once()
-            mock_sheets.assert_not_called()
 
     @pytest.mark.asyncio
-    @patch("app.chains.payment.USE_DB_SOT", False)
-    @patch("app.chains.payment._load_members_from_sheets")
-    async def test_load_members_uses_sheets_when_flag_false(self, mock_sheets):
-        """USE_DB_SOT=false → Sheets에서 읽기"""
-        mock_sheets.return_value = [
-            {"이름ID": "시트0001", "이름": "시트", "등급": "회원"},
-        ]
-        from app.chains.payment import load_members_from_sheet
-        result = await load_members_from_sheet()
-        assert len(result) == 1
-        assert result[0]["이름ID"] == "시트0001"
-        mock_sheets.assert_called_once()
-
-    @pytest.mark.asyncio
-    @patch("app.chains.payment.USE_DB_SOT", True)
-    @patch("app.chains.payment._append_member_records_to_sheets")
-    async def test_append_member_records_db_mode(self, mock_sheets):
-        """USE_DB_SOT=true → DB insert + background Sheets sync (Sheets 직접 쓰기 없음)"""
+    async def test_append_member_records_db_and_sync(self):
+        """append_member_records() → DB insert + Sheets sync"""
         mock_db_insert = AsyncMock()
         mock_sync = AsyncMock()
         records = [
@@ -251,21 +232,15 @@ class TestDualWriteBranching:
             await append_member_records(records)
             mock_db_insert.assert_called_once_with(records)
             mock_sync.assert_called_once_with("member_records", data=records)
-            mock_sheets.assert_not_called()
 
     @pytest.mark.asyncio
-    @patch("app.chains.payment.USE_DB_SOT", True)
-    @patch("app.chains.payment._load_members_from_sheets")
-    async def test_db_failure_falls_back_to_sheets(self, mock_sheets):
-        """DB 실패 시 Sheets로 폴백"""
+    async def test_db_failure_propagates(self):
+        """DB 실패 시 에러 전파 (폴백 없음)"""
         mock_db = AsyncMock(side_effect=Exception("DB connection error"))
-        mock_sheets.return_value = [{"이름ID": "폴백0001", "이름": "폴백", "등급": "회원"}]
         with patch("app.services.db.load_members", mock_db):
             from app.chains.payment import load_members_from_sheet
-            result = await load_members_from_sheet()
-            assert len(result) == 1
-            assert result[0]["이름ID"] == "폴백0001"
-            mock_sheets.assert_called_once()
+            with pytest.raises(Exception, match="DB connection error"):
+                await load_members_from_sheet()
 
 
 # ── get_cycle_year / _parse_ym_to_cycle_year ──────────────────────────────

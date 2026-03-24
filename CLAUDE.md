@@ -267,12 +267,11 @@ drive_service = build('drive', 'v3', credentials=credentials)
 
 ### 설계 원칙
 
-- **DB SoT + 백그라운드 Sheets 동기화** (`USE_DB_SOT` 환경변수로 전환):
-  - `USE_DB_SOT=true`: **PostgreSQL이 SoT**. 챗봇은 DB에 쓰고, 백그라운드 스레드로 Sheets 동기화 (`sheets_sync.py`). DB 실패 시 Sheets 폴백.
-  - `USE_DB_SOT=false` (기본): **Google Sheets가 SoT**. 기존 동작 유지. DB 쓰기 안 함.
-- **DB 실패 시 자동 폴백**: DB 읽기/쓰기 실패하면 Sheets로 폴백 + 로그 기록. 서비스 중단 없음.
+- **DB SoT + 백그라운드 Sheets 동기화**: **PostgreSQL이 유일한 SoT**. 챗봇은 DB에 쓰고, 백그라운드 스레드로 Sheets 동기화 (`sheets_sync.py`). DB 실패 시 에러를 호출자에 전파 (Sheets 폴백 없음).
+  - `USE_DB_SOT` 플래그는 `main.py`, `ocr.py`, `graduation.py`에 아직 남아 있으나, `payment.py`는 DB-only로 전환 완료.
 - **처리상태 예외**: 신청기록/미확인입금의 `처리상태` 컬럼만 관리자가 Sheets에서 직접 편집 (드롭다운: 등록완료/환불완료/취소완료/보류). DB 모드에서도 이 컬럼은 Sheets에서 읽음.
-- **신청기록 통합**: DB 모드에서는 회차별 "신청서" 파일을 생성하지 않음. 회원관리 파일(`MEMBERS_SHEET_ID`)의 `신청기록` 탭에 전 회차 데이터 통합. `sheets_sync.py`가 백그라운드로 push.
+- **신청기록 통합**: 회차별 "신청서" 파일을 생성하지 않음. 회원관리 파일(`MEMBERS_SHEET_ID`)의 `신청기록` 탭에 전 회차 데이터 통합. `sheets_sync.py`가 백그라운드로 push.
+- **시트 서식**: 필터, 드롭다운, 보호 설정은 관리자가 Google Sheets UI에서 직접 관리. 코드는 값만 읽고 쓴다 (`values().get/update/clear/append`). 출석부 탭 생성(`addSheet`)만 코드에서 수행.
 - **PostgreSQL**: 비즈니스 데이터 (`db.py`, 7 테이블) + 채팅 기록 (`chat_data_layer.py`).
 - **Google Drive는 파일 저장소**. Raw 엑셀, PDF, 출석부 등 파일 단위 자료 관리.
 - **이모지↔코드 변환**: DB에는 상태 코드(confirmed, not_paid 등) 저장. 앱 코드는 이모지(✅정상, ❌미입금 등) 사용. 변환은 `db.py` 경계에서 수행.
@@ -795,7 +794,7 @@ DATABASE_URL=                   # Railway가 자동 주입 (PostgreSQL 연결 �
 ## 코딩 규칙
 
 - 한국어 주석 OK, 변수명/함수명은 영문
-- **데이터 읽기/쓰기는 `USE_DB_SOT` 플래그로 결정**. `true`=DB SoT (DB 쓰기 + 백그라운드 Sheets 동기화), `false`=Sheets SoT (기본). `db.py`의 CRUD 함수 + `sheets_sync.py`의 `sync_to_sheets()` 사용.
+- **데이터 읽기/쓰기는 DB SoT**. `payment.py` 공개 API는 DB-only (폴백 없음). `db.py`의 CRUD 함수 + `sheets_sync.py`의 `sync_to_sheets()` 사용. `main.py`/`ocr.py`/`graduation.py`는 아직 `USE_DB_SOT` 분기 잔존.
 - LLM 호출은 최소화 — 코드로 처리 가능하면 코드로
 - 에러 시 사용자에게 한국어로 안내 메시지 반환
 - Docker 사용 안 함 (챗봇). n8n만 Docker 배포. Railway는 Procfile 기반 배포.
