@@ -479,17 +479,16 @@ async def handle_payment_file(message: cl.Message):
 
         # Step 3: 규칙 기반 매칭
         async with cl.Step(name="🔍 규칙 기반 매칭", type="tool") as step:
-            all_results, unmatched = run_code_matching(transactions, students)
+            all_results, needs_llm = run_code_matching(transactions, students)
             code_matched = sum(1 for r in all_results if r["상태"] == "✅정상")
-            step.output = f"✅ {code_matched}건 매칭 / 🔶 {len(unmatched)}건 미매칭"
+            step.output = f"✅ {code_matched}건 매칭 / 🔶 {len(needs_llm)}건 강좌특정필요"
 
-        # Step 4: LLM 매칭 (미매칭 건이 있을 때만)
-        llm_unmatched = [r for r in unmatched if r["상태"] != "⏭️스킵"]
-        if llm_unmatched:
+        # Step 4: LLM 매칭 (강좌 특정이 필요한 건만)
+        if needs_llm:
             async with cl.Step(name="🤖 AI 매칭", type="tool") as step:
-                await run_llm_matching(llm_unmatched, students)
+                await run_llm_matching(needs_llm, students)
                 llm_resolved = sum(
-                    1 for r in llm_unmatched if r["상태"] != "🔶확인필요"
+                    1 for r in needs_llm if r["상태"] != "🔶확인필요"
                 )
                 step.output = f"AI 분석 완료: **{llm_resolved}건** 추가 매칭"
 
@@ -1248,7 +1247,7 @@ def _extract_course_name(text: str, attendance_sheet_id: str) -> str:
     """메시지 텍스트에서 출석부 과목 탭명을 추출.
 
     세션에 저장된 current_ocr_course가 있으면 우선 사용.
-    없으면 출석부 시트 탭명과 COURSE_KEYWORDS 기반으로 매칭.
+    없으면 출석부 시트 탭명과 fuzzy 매칭.
     """
     saved = cl.user_session.get("current_ocr_course", "")
     if saved:
@@ -1258,7 +1257,7 @@ def _extract_course_name(text: str, attendance_sheet_id: str) -> str:
         return ""
 
     from app.services.google_auth import get_sheets_service
-    from app.config import COURSE_KEYWORDS
+    from app.utils.matching import fuzzy_course_match
 
     svc = get_sheets_service()
     meta = svc.spreadsheets().get(spreadsheetId=attendance_sheet_id).execute()
@@ -1273,12 +1272,9 @@ def _extract_course_name(text: str, attendance_sheet_id: str) -> str:
         if tab in text:
             return tab
 
-    # 키워드 매칭
-    for kw, full_name in COURSE_KEYWORDS.items():
-        if kw in text and full_name in course_tabs:
-            return full_name
-
-    return ""
+    # fuzzy 매칭 (텍스트 전체를 힌트로 사용)
+    matched = fuzzy_course_match(text, course_tabs)
+    return matched or ""
 
 
 # ===================================================== 종강 처리 플로우 =====

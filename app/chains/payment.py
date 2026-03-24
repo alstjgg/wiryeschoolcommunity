@@ -11,7 +11,7 @@ from langchain_core.messages import SystemMessage, HumanMessage
 
 from app.config import (
     ANTHROPIC_API_KEY, LLM_MODEL,
-    MEMBERS_SHEET_ID, COURSE_KEYWORDS,
+    MEMBERS_SHEET_ID,
     TUITION_FEE, MEMBERSHIP_FEE, FULL_MEMBERSHIP_FEE,
     INSTRUCTOR_SHEET_ID, STAFF_SHEET_ID,
 )
@@ -474,6 +474,8 @@ def apply_matching_results(
 ) -> int:
     """매칭 결과를 applications에 반영 (입금현황, 입금시간, 입금자명).
 
+    강좌 지정 건을 먼저 처리하고, 이름만 있는 건은 남은 미입금 슬롯에 할당.
+
     각 matched_result에 deposit 추적 메타데이터를 태그:
     - _matched = True/False (매칭 성공 여부)
     - _matched_name_ids = [name_id] (매칭된 이름ID 목록)
@@ -481,25 +483,21 @@ def apply_matching_results(
     Returns: 매칭되지 않은 deposit 수 (스킵 제외)
     """
     # 이름ID + 과목명 → application 인덱스 매핑
-    app_index = {}
+    app_index: dict[tuple[str, str], int] = {}
     for i, app in enumerate(applications):
         if app["유형"] == "수강":
             app_index[(app["이름ID"], app["과목명"])] = i
 
-    unmatched_count = 0
-    for r in matched_results:
-        if r["상태"] == "⏭️스킵":
-            continue
+    def _apply(r: dict) -> bool:
+        """단일 결과를 application에 반영. 성공 시 True."""
         matched_id = r.get("매칭ID")
         matched_course = r.get("매칭강좌", "")
         if not matched_id:
-            r["_matched"] = False
-            unmatched_count += 1
-            continue
+            return False
 
         key = (matched_id, matched_course)
         if key not in app_index:
-            # 강좌 없이 이름ID만으로 시도
+            # 강좌 없이 이름ID만으로 남은 미입금 슬롯 찾기
             for k, idx in app_index.items():
                 if k[0] == matched_id and applications[idx]["입금현황"] == "❌미입금":
                     key = k
@@ -507,21 +505,47 @@ def apply_matching_results(
 
         if key in app_index:
             idx = app_index[key]
+            if applications[idx]["입금현황"] != "❌미입금":
+                # 이미 처리된 슬롯 → 다른 미입금 슬롯 탐색
+                for k, i2 in app_index.items():
+                    if k[0] == matched_id and applications[i2]["입금현황"] == "❌미입금":
+                        idx = i2
+                        break
+                else:
+                    return False
             applications[idx]["입금현황"] = r["상태"]
             applications[idx]["입금시간"] = r.get("거래일시", "")
             applications[idx]["입금자명(적요)"] = r.get("적요", "")
             r["_matched"] = True
             r["_matched_name_ids"] = [applications[idx].get("이름ID", "")]
-        else:
+            return True
+        return False
+
+    # 1차: 강좌 지정 건 먼저 (정확한 슬롯 대상)
+    # 2차: 이름만 있는 건 (남은 미입금 슬롯에 순서대로)
+    with_course = [r for r in matched_results if r.get("매칭강좌") and r["상태"] != "⏭️스킵"]
+    without_course = [r for r in matched_results if not r.get("매칭강좌") and r["상태"] != "⏭️스킵"]
+
+    unmatched_count = 0
+    for r in with_course + without_course:
+        if not r.get("매칭ID"):
+            r["_matched"] = False
+            unmatched_count += 1
+            continue
+        if not _apply(r):
             r["_matched"] = False
             unmatched_count += 1
 
     return unmatched_count
 
 
-async def run_llm_matching(unmatched: list[dict], students: list[dict]) -> list[dict]:
-    """LLM으로 미매칭 건 처리 — 비정형 적요 텍스트 해석"""
-    if not unmatched:
+async def run_llm_matching(needs_llm: list[dict], students: list[dict]) -> list[dict]:
+    """LLM으로 강좌 특정 — 룰베이스가 이름 추출까지 완료한 건의 과목만 매칭.
+
+    각 건에 _llm_context가 태깅되어 있으며,
+    LLM은 "이 수강생의 과목 목록 중 적요 힌트에 해당하는 과목"만 특정한다.
+    """
+    if not needs_llm:
         return []
 
     llm = ChatAnthropic(
@@ -530,62 +554,44 @@ async def run_llm_matching(unmatched: list[dict], students: list[dict]) -> list[
         max_tokens=4096,
     )
 
-    student_info = [
-        f"- {s['이름']} / {s['강좌명']} (ID: {s['이름ID']})"
-        for s in students
-    ]
-    student_list_text = "\n".join(student_info)
+    tx_lines = []
+    for i, tx in enumerate(needs_llm):
+        ctx = tx.get("_llm_context", {})
+        name = ctx.get("matched_name", tx.get("매칭이름", "?"))
+        hint = ctx.get("course_hint", "")
+        courses = ctx.get("candidate_courses", [])
+        amount_info = ctx.get("amount_info", {})
+        paid = amount_info.get("paid_courses", 1)
+        tx_lines.append(
+            f"{i+1}. 수강생: {name} / 힌트: '{hint}' / "
+            f"과목: {courses} / 금액: {tx['입금']:,}원({paid}과목)"
+        )
+    tx_text = "\n".join(tx_lines)
 
-    tx_list = [
-        f"{i+1}. 적요: \"{tx['적요']}\" / 의뢰인: \"{tx['의뢰인']}\" / "
-        f"금액: {tx['입금']:,}원"
-        for i, tx in enumerate(unmatched)
-    ]
-    tx_text = "\n".join(tx_list)
+    system_prompt = """당신은 위례인생학교의 입금 대조 보조 AI입니다.
+각 거래에 대해 수강생의 과목 목록과 적요 힌트를 제공합니다.
+적요에서 추출된 강좌 힌트를 해당 수강생의 과목 목록과 대조하여 어느 과목인지 특정해주세요.
 
-    keyword_text = "\n".join(f"  {k} → {v}" for k, v in COURSE_KEYWORDS.items())
-
-    system_prompt = f"""당신은 위례인생학교의 입금 대조 보조 AI입니다.
-아래 미매칭 거래들을 수강생 목록과 대조하여 매칭해주세요.
-
-## 수강생 목록
-{student_list_text}
-
-## 강좌 키워드 매핑
-{keyword_text}
-
-## 매칭 규칙
-1. 적요나 의뢰인에서 학생 이름을 찾으세요.
-2. 이름만으로 특정이 안 되면 강좌 힌트를 활용하세요.
-3. 대리입금 패턴: "A(B강좌)" → B가 수강생, A는 대리인
-4. 잘린 텍스트: "경제심" → "경제심화" 또는 "경제해설(심화)"
-5. 매칭 확신이 없으면 상태를 "🔶확인필요"로 설정하세요.
-
-## 상태 코드
-- ✅정상: 확실한 매칭
-- 🔶확인필요: LLM 추정, 동명이인, 금액 불일치 등
-- ⚠️이름불일치: 대리 입금 추정
-- 🔄중복: 중복 입금 감지
+## 적요 패턴
+- "이름+강좌약어" 형태가 많음 (예: "경제뉴스로기초" → "경제뉴스로 배우는 경제해설(기초)")
+- 역순("마음챙김명상" → "나, 마음챙김 명상"), 줄임말("경제심" → 심화), 오타 가능
+- 힌트가 비어있으면 금액/맥락으로 추정하되, 확신 없으면 "🔶확인필요"
 
 ## 응답 형식
-JSON 배열로 응답하세요. 각 항목:
-```json
+JSON 배열. 각 항목:
 [
-  {{
+  {
     "index": 1,
-    "매칭이름": "학생이름" 또는 null,
-    "매칭ID": "학생ID" 또는 null,
-    "매칭강좌": "강좌명" 또는 null,
-    "상태": "✅정상" 또는 "🔶확인필요" 또는 "⚠️이름불일치" 또는 "🔄중복",
+    "매칭강좌": "정확한 과목명" 또는 null,
+    "상태": "✅정상" 또는 "🔶확인필요",
     "메모": "판단 근거"
-  }}
+  }
 ]
-```
-JSON만 응답하세요. 설명은 메모 필드에 넣어주세요."""
+JSON만 응답하세요."""
 
-    user_prompt = f"다음 미매칭 거래들을 매칭해주세요:\n\n{tx_text}"
+    user_prompt = f"다음 거래들의 과목을 특정해주세요:\n\n{tx_text}"
 
-    logger.info("LLM matching input: %d items", len(unmatched))
+    logger.info("LLM matching input: %d items", len(needs_llm))
 
     response = await llm.ainvoke([
         SystemMessage(content=system_prompt),
@@ -603,19 +609,26 @@ JSON만 응답하세요. 설명은 메모 필드에 넣어주세요."""
         llm_results = json.loads(content)
     except json.JSONDecodeError as e:
         logger.error("LLM JSON parse failed: %s / response: %s", e, content[:500])
-        return unmatched
+        return needs_llm
 
     for llm_item in llm_results:
         idx = llm_item.get("index", 0) - 1
-        if 0 <= idx < len(unmatched):
-            tx = unmatched[idx]
-            tx["매칭이름"] = llm_item.get("매칭이름") or tx.get("매칭이름")
-            tx["매칭ID"] = llm_item.get("매칭ID") or tx.get("매칭ID")
-            tx["매칭강좌"] = llm_item.get("매칭강좌") or tx.get("매칭강좌")
+        if 0 <= idx < len(needs_llm):
+            tx = needs_llm[idx]
+            course = llm_item.get("매칭강좌")
+            if course:
+                tx["매칭강좌"] = course
+                # 강좌 특정 성공 → 해당 강좌의 이름ID로 업데이트
+                for s in students:
+                    if s["이름"] == tx.get("매칭이름") and s["강좌명"] == course:
+                        tx["매칭ID"] = s["이름ID"]
+                        break
             tx["상태"] = llm_item.get("상태", "🔶확인필요")
             tx["메모"] = llm_item.get("메모", tx.get("메모", ""))
+            # _llm_context 정리
+            tx.pop("_llm_context", None)
 
-    return unmatched
+    return needs_llm
 
 
 def find_unpaid(applications: list[dict]) -> list[dict]:

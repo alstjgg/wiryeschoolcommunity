@@ -1,21 +1,22 @@
-"""입금 매칭 로직 — 이름/강좌 추출 + 규칙 기반 매칭"""
+"""입금 매칭 로직 — 적요 우선 이름 추출 + 금액 기반 판별 + 룰베이스 매칭
+
+적요(B열)가 최우선, 의뢰인(D열)은 fallback.
+COURSE_KEYWORDS 하드코딩 제거 — 이름을 적요에서 제거한 나머지를 강좌 힌트로 사용.
+"""
 
 import re
-from app.config import TUITION_FEE, MEMBERSHIP_FEE, FULL_MEMBERSHIP_FEE, COURSE_KEYWORDS
+from app.config import TUITION_FEE, MEMBERSHIP_FEE, FULL_MEMBERSHIP_FEE
 
 # 카카오페이/토스 의뢰인명
-THIRD_PARTY_SENDERS = {"(주)카카오페이", "(주)비바리퍼블리카", "카카오페이", "비바리퍼블리카", "토스"}
+THIRD_PARTY_SENDERS = {
+    "(주)카카오페이", "(주)비바리퍼블리카",
+    "카카오페이", "비바리퍼블리카", "토스",
+}
 
-# 구분자 패턴 (이름과 강좌 사이)
-SEPARATOR_PATTERN = re.compile(r"[_,\-./\s]")
-
-
-def extract_name_from_sender(의뢰인: str) -> str:
-    """의뢰인 컬럼에서 이름 추출 (은행명 등 제거)"""
-    name = 의뢰인.strip()
-    # 괄호 안 은행명 제거: "홍길동(국민)" → "홍길동"
-    name = re.sub(r"\(.*?\)$", "", name).strip()
-    return name
+# 가입비 키워드
+_MEMBERSHIP_KEYWORDS = {"가입", "회원가입", "가입비"}
+# 정회원 키워드
+_FULLMEMBER_KEYWORDS = {"정회원", "연회비", "연회원"}
 
 
 def is_third_party(의뢰인: str) -> bool:
@@ -23,99 +24,174 @@ def is_third_party(의뢰인: str) -> bool:
     return any(tp in 의뢰인 for tp in THIRD_PARTY_SENDERS)
 
 
-def extract_name_from_memo(적요: str, student_names: list[str]) -> str | None:
-    """적요에서 학생 이름 추출 — 학생 목록과 대조"""
-    if not 적요:
-        return None
-    for name in sorted(student_names, key=len, reverse=True):
+def extract_name(
+    적요: str, 의뢰인: str, student_names: list[str],
+) -> str | None:
+    """적요 우선으로 수강생 이름 추출. 의뢰인은 fallback.
+
+    student_names는 긴 이름부터 정렬되어 전달되어야 함.
+    """
+    # Step 1: 적요에서 이름 찾기 (최우선)
+    for name in student_names:
         if name in 적요:
             return name
+
+    # Step 2: 의뢰인에서 fallback (핀테크 법인이 아닌 경우만)
+    if not is_third_party(의뢰인):
+        clean_payer = re.sub(r"\(.*?\)$", "", 의뢰인).strip()
+        for name in student_names:
+            if name == clean_payer or name in clean_payer:
+                return name
+
     return None
 
 
-def extract_course_hint(적요: str, course_names: list[str]) -> str | None:
-    """적요에서 강좌명 추출 — 키워드 매핑 + 정식 강좌명 직접 매칭"""
-    if not 적요:
+def extract_course_hint(적요: str, matched_name: str) -> str:
+    """적요에서 이름을 제거하고 남은 텍스트를 강좌 힌트로 반환.
+
+    Examples:
+        "김기춘경제뉴스로기초" → "경제뉴스로기초"
+        "류동원_요들" → "요들"
+        "마음챙김명상김영옥" → "마음챙김명상"
+        "황용섭(경제)" → "경제"
+    """
+    hint = 적요.replace(matched_name, "").strip()
+    hint = re.sub(r'^[_,\-./\s()+]+|[_,\-./\s()+]+$', '', hint)
+    # 괄호 내용 추출: "황용섭(경제)" → 이름 제거 후 "(경제)" → 괄호 벗기기
+    paren_match = re.search(r'\(([^)]+)\)', hint)
+    if paren_match:
+        hint = paren_match.group(1)
+    return hint
+
+
+def fuzzy_course_match(
+    hint: str, course_names: list[str],
+) -> str | None:
+    """강좌 힌트를 과목 목록과 fuzzy 매칭.
+
+    정확 포함, 부분 포함, 한글 자소 유사도 순으로 시도.
+    """
+    if not hint:
         return None
 
-    text = 적요.lower().strip()
+    hint_lower = hint.lower()
 
-    # 1. 정식 강좌명 직접 포함 여부 (긴 것부터)
+    # 1. 힌트가 과목명에 포함되는 경우 (긴 과목명부터)
     for course in sorted(course_names, key=len, reverse=True):
-        if course.lower() in text or course in 적요:
+        if hint_lower in course.lower():
             return course
 
-    # 2. 키워드 매핑 (긴 키워드부터 매칭)
-    for keyword in sorted(COURSE_KEYWORDS.keys(), key=len, reverse=True):
-        if keyword in text:
-            mapped = COURSE_KEYWORDS[keyword]
-            # 매핑된 강좌가 실제 강좌 목록에 있는지 확인
-            if mapped in course_names:
-                return mapped
-            # 부분 일치 시도
-            for course in course_names:
-                if mapped in course or keyword in course.lower():
-                    return course
+    # 2. 과목명의 핵심 부분이 힌트에 포함되는 경우
+    for course in course_names:
+        # 괄호 안 내용 추출: "경제뉴스로 배우는 경제해설(기초)" → "기초"
+        paren = re.search(r'\(([^)]+)\)', course)
+        if paren and paren.group(1).lower() in hint_lower:
+            # 괄호 바깥도 일부 매칭되어야 함
+            base = course[:course.index('(')].strip().lower()
+            if any(part in hint_lower for part in base.split() if len(part) >= 2):
+                return course
+
+    # 3. 짧은 힌트(2글자+)가 과목명 시작 부분과 매칭
+    if len(hint) >= 2:
+        for course in course_names:
+            if course.lower().startswith(hint_lower):
+                return course
 
     return None
 
 
-def detect_special_type(적요: str, amount: int) -> str | None:
-    """특수 입금 유형 감지"""
-    text = 적요 if 적요 else ""
+def classify_by_amount(
+    amount: int,
+    num_courses: int,
+    적요: str = "",
+) -> dict:
+    """금액과 신청 과목 수로 입금 유형 판별.
 
-    # 취소/대기 건
-    if any(kw in text for kw in ["취소됨", "대기", "반환"]):
-        return "취소"
+    Returns: {
+        "type": str,
+        "paid_courses": int,
+        "includes_membership": bool,
+        "auto_confirmable": bool,
+    }
+    """
+    text = 적요.lower() if 적요 else ""
+    has_membership_kw = any(kw in text for kw in _MEMBERSHIP_KEYWORDS)
+    has_fullmember_kw = any(kw in text for kw in _FULLMEMBER_KEYWORDS)
 
-    # 예금이자 등 소액
-    if amount < 10000:
-        return "소액"
+    result = {
+        "type": "unknown",
+        "paid_courses": 0,
+        "includes_membership": False,
+        "auto_confirmable": False,
+    }
 
-    # 가입비
-    if "가입" in text and amount == MEMBERSHIP_FEE:
-        return "가입비"
+    # 소액 (예금이자 등)
+    if amount < MEMBERSHIP_FEE:
+        result["type"] = "small_amount"
+        return result
 
-    # 가입비+정회원비 합산 (13만)
+    # 정회원비 + 가입비 합산 (13만)
     if amount == MEMBERSHIP_FEE + FULL_MEMBERSHIP_FEE:
-        return "가입비+정회원"
+        result["type"] = "membership_plus_fullmember"
+        result["includes_membership"] = True
+        result["auto_confirmable"] = True
+        return result
 
-    # 정회원비 — 금액 일치 또는 텍스트 포함
-    if amount == FULL_MEMBERSHIP_FEE or "정회원" in text:
-        return "정회원"
+    # 정회원비 (금액 또는 키워드)
+    if amount == FULL_MEMBERSHIP_FEE or (has_fullmember_kw and amount >= FULL_MEMBERSHIP_FEE):
+        result["type"] = "fullmember"
+        result["auto_confirmable"] = True
+        return result
 
-    return None
+    # 가입비 단독
+    if amount == MEMBERSHIP_FEE and has_membership_kw:
+        result["type"] = "membership_fee"
+        result["includes_membership"] = True
+        result["auto_confirmable"] = True
+        return result
 
+    # 수강료 계산
+    tuition_amount = amount
+    if amount % TUITION_FEE != 0 and (amount - MEMBERSHIP_FEE) % TUITION_FEE == 0:
+        # 가입비 포함 합산
+        tuition_amount = amount - MEMBERSHIP_FEE
+        result["includes_membership"] = True
 
-def classify_amount(amount: int) -> str:
-    """금액으로 입금 유형 분류"""
-    if amount == MEMBERSHIP_FEE:
-        return "가입비(1만)"
-    elif amount == TUITION_FEE:
-        return "수강료(2만)"
-    elif amount == MEMBERSHIP_FEE + TUITION_FEE:
-        return "수강료+가입비(3만)"
-    elif amount == TUITION_FEE * 2:
-        return "2과목(4만)"
-    elif amount == FULL_MEMBERSHIP_FEE:
-        return "정회원비(12만)"
-    elif amount == MEMBERSHIP_FEE + FULL_MEMBERSHIP_FEE:
-        return "가입비+정회원비(13만)"
-    elif amount > TUITION_FEE * 2:
-        return f"다과목/합산({amount // 10000}만)"
+    if tuition_amount % TUITION_FEE == 0:
+        paid = tuition_amount // TUITION_FEE
+        result["paid_courses"] = paid
+
+        if paid == 1 and num_courses == 1:
+            result["type"] = "single_course"
+            result["auto_confirmable"] = True
+        elif paid == num_courses:
+            result["type"] = "all_courses"
+            result["auto_confirmable"] = True
+        elif paid < num_courses:
+            result["type"] = "partial_courses"
+            result["auto_confirmable"] = False
+        else:
+            result["type"] = "amount_mismatch"
+            result["auto_confirmable"] = False
     else:
-        return f"기타({amount:,}원)"
+        # 가입비 단독 (키워드 없이 1만원)
+        if amount == MEMBERSHIP_FEE:
+            result["type"] = "membership_fee"
+            result["includes_membership"] = True
+            result["auto_confirmable"] = True
+        else:
+            result["type"] = "amount_mismatch"
+
+    return result
 
 
 def match_transaction(
     tx: dict,
     students: list[dict],
+    student_names: list[str],
     course_names: list[str],
 ) -> dict:
-    """단일 거래를 학생과 매칭. 결과 dict 반환.
-
-    매칭은 적요(memo)와 의뢰인(sender) 컬럼만 사용.
-    """
+    """단일 거래를 학생과 매칭. 결과 dict 반환."""
     적요 = tx.get("적요", "")
     의뢰인 = tx.get("의뢰인", "")
     amount = tx.get("입금", 0)
@@ -125,7 +201,6 @@ def match_transaction(
         "적요": 적요,
         "의뢰인": 의뢰인,
         "입금": amount,
-        "금액분류": classify_amount(amount),
         "매칭이름": None,
         "매칭강좌": None,
         "매칭ID": None,
@@ -133,92 +208,98 @@ def match_transaction(
         "메모": "",
     }
 
-    # 1. 특수 유형 감지
-    special = detect_special_type(적요, amount)
-    if special == "소액":
+    # 1. 소액/취소 스킵
+    if amount < MEMBERSHIP_FEE:
         result["상태"] = "⏭️스킵"
         result["메모"] = "소액(예금이자 등)"
         return result
-    if special == "취소":
+
+    if any(kw in 적요 for kw in ["취소됨", "대기", "반환"]):
         result["상태"] = "⏭️스킵"
         result["메모"] = "취소/대기 건"
         return result
 
-    # 가입비/정회원비 → 이름 매칭은 계속하되 cascade에서 처리
-    force_review: str | None = None
-    if special == "가입비":
-        force_review = "가입비 납부"
-    elif special == "정회원":
-        force_review = "정회원비 납부"
-    elif special == "가입비+정회원":
-        force_review = "가입비+정회원비 합산 납부"
-
-    # 2. 이름 추출 (적요 + 의뢰인만 사용)
-    student_names = list({s["이름"] for s in students})
-
-    if is_third_party(의뢰인):
-        # 카카오페이/토스: 적요에서 이름 추출
-        name = extract_name_from_memo(적요, student_names)
-        result["메모"] = (result["메모"] + " 간편결제").strip()
-    else:
-        # 일반: 의뢰인에서 이름 추출, 없으면 적요에서 시도
-        sender_name = extract_name_from_sender(의뢰인)
-        if sender_name in student_names:
-            name = sender_name
-        else:
-            name = extract_name_from_memo(적요, student_names)
-            if not name:
-                # 의뢰인 이름이 적요에 포함되어 있을 수도 있음
-                name = extract_name_from_memo(sender_name, student_names)
+    # 2. 이름 추출 (적요 우선)
+    name = extract_name(적요, 의뢰인, student_names)
 
     if not name:
-        # 이름 매칭 실패
         result["상태"] = "🔶확인필요"
-        result["메모"] = (result["메모"] + " 이름매칭실패").strip()
+        result["메모"] = "이름매칭실패"
         return result
 
     result["매칭이름"] = name
 
-    # 3. 강좌 추출 (적요에서만)
-    course = extract_course_hint(적요, course_names)
-    result["매칭강좌"] = course
+    # 대리입금 감지: 적요에서 이름을 찾았고, 의뢰인이 다른 사람인 경우
+    if not is_third_party(의뢰인):
+        clean_payer = re.sub(r"\(.*?\)$", "", 의뢰인).strip()
+        if clean_payer and clean_payer != name and name in 적요:
+            result["메모"] = "대리입금 추정"
 
-    # 4. 해당 이름의 학생 찾기
+    # 3. 해당 이름의 학생 찾기
     matched_students = [s for s in students if s["이름"] == name]
-
     if not matched_students:
         result["상태"] = "🔶확인필요"
         result["메모"] = (result["메모"] + " 수강생 미등록").strip()
         return result
 
-    if len(matched_students) == 1:
-        # 단일 매칭
-        student = matched_students[0]
-        result["매칭ID"] = student["이름ID"]
-        result["매칭강좌"] = course or student["강좌명"]
-        if force_review:
-            result["상태"] = "🔶확인필요"
-            result["메모"] = force_review
+    # 4. 금액 판별
+    num_courses = len(matched_students)
+    amount_info = classify_by_amount(amount, num_courses, 적요)
+
+    # 가입비/정회원 유형 → 이름 매칭만 하고 cascade에서 처리
+    if amount_info["type"] in ("membership_fee", "fullmember", "membership_plus_fullmember"):
+        if len(matched_students) == 1:
+            result["매칭ID"] = matched_students[0]["이름ID"]
         else:
-            result["상태"] = "✅정상"
+            # 동명이인 — 아무 학생이나 (가입비/정회원은 이름ID 기준이라 과목 무관)
+            result["매칭ID"] = matched_students[0]["이름ID"]
+        result["상태"] = "🔶확인필요"
+        result["메모"] = amount_info["type"].replace("_", " ")
         return result
 
-    # 5. 동명이인 처리 — 강좌로 구분
-    if course:
-        course_matched = [s for s in matched_students if s["강좌명"] == course]
-        if len(course_matched) == 1:
-            result["매칭ID"] = course_matched[0]["이름ID"]
-            result["매칭강좌"] = course
-            if force_review:
-                result["상태"] = "🔶확인필요"
-                result["메모"] = force_review
-            else:
+    # 5. 수강료 매칭
+    if len(matched_students) == 1 and amount_info["auto_confirmable"]:
+        # 단일 학생 + 자동 확정 가능
+        result["매칭ID"] = matched_students[0]["이름ID"]
+        result["매칭강좌"] = matched_students[0]["강좌명"]
+        result["상태"] = "✅정상"
+        return result
+
+    # 6. 강좌 힌트 추출 + 매칭 시도
+    hint = extract_course_hint(적요, name)
+    matched_course = fuzzy_course_match(hint, course_names) if hint else None
+
+    if matched_course:
+        course_students = [s for s in matched_students if s["강좌명"] == matched_course]
+        if len(course_students) == 1:
+            result["매칭ID"] = course_students[0]["이름ID"]
+            result["매칭강좌"] = matched_course
+            if amount_info["auto_confirmable"]:
                 result["상태"] = "✅정상"
+            else:
+                result["상태"] = "🔶확인필요"
+                result["메모"] = f"일부과목({amount_info['paid_courses']}/{num_courses})"
             return result
 
-    # 동명이인 + 강좌 구분 불가
+    # 7. 자동 확정 가능하지만 강좌 특정 필요 → LLM으로 넘김
+    if amount_info["auto_confirmable"] and num_courses > 1:
+        # 전과목 합산 → 전부 확정
+        result["매칭ID"] = matched_students[0]["이름ID"]
+        result["상태"] = "✅정상"
+        result["매칭강좌"] = None  # apply_matching_results에서 전 슬롯 소진
+        result["메모"] = f"전과목합산({num_courses}과목)"
+        return result
+
+    # 8. 강좌 특정 필요 → LLM 태깅
+    result["매칭ID"] = matched_students[0]["이름ID"]
     result["상태"] = "🔶확인필요"
-    result["메모"] = (result["메모"] + f" 동명이인({len(matched_students)}명)").strip()
+    result["메모"] = "강좌특정필요"
+    result["_llm_context"] = {
+        "matched_name": name,
+        "course_hint": hint or "",
+        "candidate_courses": [s["강좌명"] for s in matched_students],
+        "amount_info": amount_info,
+    }
     return result
 
 
@@ -226,15 +307,16 @@ def run_code_matching(
     transactions: list[dict],
     students: list[dict],
 ) -> tuple[list[dict], list[dict]]:
-    """규칙 기반 매칭 실행. (매칭결과 전체, 미매칭 건) 반환."""
+    """규칙 기반 매칭 실행. (매칭결과 전체, LLM에 넘길 건) 반환."""
     course_names = list({s["강좌명"] for s in students})
+    student_names = sorted({s["이름"] for s in students}, key=len, reverse=True)
     results = []
-    unmatched = []
+    needs_llm = []
 
     for tx in transactions:
-        result = match_transaction(tx, students, course_names)
+        result = match_transaction(tx, students, student_names, course_names)
         results.append(result)
-        if result["상태"] in ("🔶확인필요", "❌미매칭"):
-            unmatched.append(result)
+        if "_llm_context" in result:
+            needs_llm.append(result)
 
-    return results, unmatched
+    return results, needs_llm
