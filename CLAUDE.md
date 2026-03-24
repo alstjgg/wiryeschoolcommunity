@@ -16,7 +16,7 @@
   - `USE_DB_SOT=true`: **PostgreSQL이 SoT**. 챗봇은 DB에 쓰고, n8n webhook으로 Sheets 동기화 (직접 Sheets 쓰기 없음). DB 실패 시 Sheets 폴백.
   - `USE_DB_SOT=false` (기본): Google Sheets가 SoT (기존 동작)
 - **데이터베이스**: PostgreSQL (Railway) — 채팅 기록(chat_data_layer.py) + 비즈니스 데이터(db.py)
-- **배치 파이프라인**: n8n (Railway) — DB→Sheets 동기화 (Sync-1 일일 전체, Sync-2 웹훅 즉시)
+- **배치 파이프라인**: n8n (Railway) — DB→Sheets 동기화 (Sync-2 웹훅 즉시, HTTP Request batch write)
 - **Google 인증**: Service Account + Domain-wide Delegation
 - **배포**: Railway (Git push 자동 배포)
 - **RAG 없음**: Context Injection (시스템 프롬프트에 비즈니스 컨텍스트 직접 주입)
@@ -190,8 +190,8 @@ wiryeschoolcommunity/
 │   ├── BUSINESS_CONTEXT.md      # Context Injection 소스 텍스트
 │   └── PLANNED_DRIVE_STRUCTURE.md  # Google Drive 확정 구조 + 폴더 ID 참조
 ├── n8n/                         # n8n 워크플로우 JSON (n8n UI에서 import 용)
-│   ├── sync_daily.json          # Sync-1: DB → Sheets 일일 전체 push (매일 06:00)
-│   └── sync_webhook.json        # Sync-2: DB → Sheets 웹훅 즉시 push
+│   ├── sync_daily.json          # Sync-1: 삭제 예정 (Sync-2가 커버). git 백업용 보존
+│   └── sync_webhook.json        # Sync-2: DB → Sheets 웹훅 즉시 push (HTTP Request batch write)
 ├── app/
 │   ├── main.py                  # Chainlit 엔트리포인트 + 세션 상태 라우터 + LLM 의도 분류 + mid-flow 인터럽트 처리
 │   ├── config.py                # 환경 변수, 상수, 영속 Google IDs, COURSE_KEYWORDS, USE_DB_SOT, INSTRUCTOR/STAFF_SHEET_ID
@@ -298,10 +298,14 @@ drive_service = build('drive', 'v3', credentials=credentials)
 
 | 워크플로우 | 트리거 | 동작 |
 |-----------|--------|------|
-| Sync-1 (`sync_daily.json`) | 매일 06:00 | 전체 테이블 → Sheets 덮어쓰기 |
-| Sync-2 (`sync_webhook.json`) | 챗봇 웹훅 호출 | 변경된 시트만 즉시 업데이트 |
+| ~~Sync-1 (`sync_daily.json`)~~ | ~~매일 06:00~~ | **삭제** — Sync-2가 모든 탭 커버 |
+| Sync-2 (`sync_webhook.json`) | 챗봇 웹훅 호출 | HTTP Request batch write (탭당 clear+write 2회) |
 
 웹훅 엔드포인트: `N8N_WEBHOOK_URL/webhook/sheets-sync` (POST, body: `{type, term_id, ...}`)
+
+**Sync-2 구조**: Webhook → Switch by Type → Read DB (Postgres) → Build Body (Code, 이모지변환+2D array) → Clear (HTTP POST values.clear) → Write (HTTP PUT values.update). HTTP Request 노드는 기존 Google SA credential(`googleApi`)을 predefined credential로 직접 사용 (별도 토큰 발급 불필요). Google Sheets 노드 대신 HTTP Request 직접 호출로 **API 호출 99% 감소** (325회→2회/탭).
+
+**시트 보호**: 회원관리 5탭 전체 보호 + SA 이메일만 쓰기 허용. 처리상태 컬럼만 관리자 편집 가능 (신청기록 L열, 미확인입금 G열). `values.clear`는 data validation/서식/보호 설정을 유지하므로 드롭다운은 1회 설정 후 영속.
 
 ### 데이터 구조
 
@@ -453,8 +457,12 @@ Google Sheets 파일 1개. 수강생 탭 + 과목별 탭 + 과목별 인쇄용 P
 
 **DB → Sheets 동기화** (n8n)
 ```
-Sync-1 (n8n/sync_daily.json): 매일 06:00 전체 push — members, member_records, course_records → Sheets 덮어쓰기
-Sync-2 (n8n/sync_webhook.json): 웹훅 즉시 push — 챗봇이 DB 쓰기 후 n8n 웹훅 호출 → 변경 시트만 업데이트
+Sync-2 (n8n/sync_webhook.json): 웹훅 즉시 push — 챗봇이 DB 쓰기 후 n8n 웹훅 호출 → HTTP Request batch write
+  applications: 신청기록 + 미확인입금 (2탭, 4 API calls)
+  members: 회원목록 + 회원기록 + 수강기록 (3탭, 6 API calls)
+  graduation: 위와 동일 3탭
+  deposits: 미확인입금 (1탭, 2 API calls)
+Sync-1 삭제됨 — Sync-2가 모든 탭 커버
 ```
 
 ### 데이터 흐름 정리
@@ -750,7 +758,7 @@ DATABASE_URL=                   # Railway가 자동 주입 (PostgreSQL 연결 �
 - `graduation.py`: 3개 함수 async dual-write
 - `ocr.py`: `load_course_students` + `write_attendance_to_sheet` dual-write
 - `app/services/n8n.py`: fire-and-forget 웹훅 트리거 (applications/members/deposits/graduation)
-- n8n 워크플로우: Sync-1 (일일 06:00, 5탭) + Sync-2 (웹훅 즉시) — 설정 완료
+- n8n 워크플로우: Sync-2 (웹훅 즉시, HTTP Request batch write) — Sync-1 삭제, 시트 보호+드롭다운 설정
 - `registration_status` → `processing_status` 전환 완료
 - 121개 테스트 통과
 

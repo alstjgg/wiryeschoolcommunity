@@ -12,8 +12,8 @@
       "type": "n8n-nodes-base.webhook",
       "typeVersion": 2,
       "position": [
-        -448,
-        160
+        -460,
+        400
       ],
       "webhookId": "900af540-5e95-453f-a01d-ea42d2be94c0"
     },
@@ -31,13 +31,13 @@
                 },
                 "conditions": [
                   {
-                    "leftValue": "={{ $json.type }}",
+                    "leftValue": "={{ $json.body.type }}",
                     "rightValue": "applications",
                     "operator": {
                       "type": "string",
                       "operation": "equals"
                     },
-                    "id": "8a5f6e95-46b3-422a-ab40-40415bd76aef"
+                    "id": "f720c124-662c-41bc-b636-eacd0487a38b"
                   }
                 ],
                 "combinator": "and"
@@ -55,13 +55,13 @@
                 },
                 "conditions": [
                   {
-                    "leftValue": "={{ $json.type }}",
+                    "leftValue": "={{ $json.body.type }}",
                     "rightValue": "members",
                     "operator": {
                       "type": "string",
                       "operation": "equals"
                     },
-                    "id": "18de2835-5122-4ce6-9374-e1dd0175207b"
+                    "id": "2179d971-1225-4875-9737-4ee99418d07d"
                   }
                 ],
                 "combinator": "and"
@@ -79,13 +79,13 @@
                 },
                 "conditions": [
                   {
-                    "leftValue": "={{ $json.type }}",
+                    "leftValue": "={{ $json.body.type }}",
                     "rightValue": "graduation",
                     "operator": {
                       "type": "string",
                       "operation": "equals"
                     },
-                    "id": "1c24e395-7d00-4ef2-9b6b-3d66ed4e4163"
+                    "id": "77bf6c2f-1a72-4d38-9d59-86df09207684"
                   }
                 ],
                 "combinator": "and"
@@ -103,13 +103,13 @@
                 },
                 "conditions": [
                   {
-                    "leftValue": "={{ $json.type }}",
+                    "leftValue": "={{ $json.body.type }}",
                     "rightValue": "attendance",
                     "operator": {
                       "type": "string",
                       "operation": "equals"
                     },
-                    "id": "696b8cd6-4a68-4aed-904a-81abfbf5f32e"
+                    "id": "3d8bcb6b-5e0a-4d0f-a728-0286d05f5b88"
                   }
                 ],
                 "combinator": "and"
@@ -127,14 +127,13 @@
                 },
                 "conditions": [
                   {
-                    "id": "01a72e20-d6b0-4456-a436-7eb807a408f8",
-                    "leftValue": "={{ $json.type }}",
+                    "leftValue": "={{ $json.body.type }}",
                     "rightValue": "deposits",
                     "operator": {
                       "type": "string",
-                      "operation": "equals",
-                      "name": "filter.operator.equals"
-                    }
+                      "operation": "equals"
+                    },
+                    "id": "28d802ef-4adc-43ec-9a24-d46b3a5e14a8"
                   }
                 ],
                 "combinator": "and"
@@ -153,93 +152,9 @@
       "type": "n8n-nodes-base.switch",
       "typeVersion": 3.2,
       "position": [
-        -224,
-        160
+        -240,
+        400
       ]
-    },
-    {
-      "parameters": {
-        "operation": "executeQuery",
-        "query": "SELECT applied_at, term_id, name_id, name, type, course_name,\n       expected_amount, payment_status, payment_time, payer_name,\n       review_reason, processing_status\nFROM applications\nWHERE term_id = '{{ $json.term_id }}'\nORDER BY id",
-        "options": {}
-      },
-      "id": "17644abd-4bc5-4766-836c-8cb94c6d3ff6",
-      "name": "Read Applications",
-      "type": "n8n-nodes-base.postgres",
-      "typeVersion": 2.5,
-      "position": [
-        0,
-        0
-      ],
-      "credentials": {
-        "postgres": {
-          "id": "j1PLbiwu8dCOVpl5",
-          "name": "Postgres account"
-        }
-      }
-    },
-    {
-      "parameters": {
-        "operation": "executeQuery",
-        "query": "SELECT name_id, name, phone, address, grade, is_exception, course_count, avg_attendance, last_term FROM members ORDER BY name_id",
-        "options": {}
-      },
-      "id": "48f63bfb-a2ed-43cd-b611-6e1b03c633ef",
-      "name": "Read Members",
-      "type": "n8n-nodes-base.postgres",
-      "typeVersion": 2.5,
-      "position": [
-        0,
-        160
-      ],
-      "credentials": {
-        "postgres": {
-          "id": "j1PLbiwu8dCOVpl5",
-          "name": "Postgres account"
-        }
-      }
-    },
-    {
-      "parameters": {
-        "operation": "executeQuery",
-        "query": "SELECT name_id, name, changed_at, grade_from, grade_to, reason, term_id FROM member_records ORDER BY created_at",
-        "options": {}
-      },
-      "id": "78861f8a-f22d-4f71-ade2-20a8a29ee8d1",
-      "name": "Read Member Records",
-      "type": "n8n-nodes-base.postgres",
-      "typeVersion": 2.5,
-      "position": [
-        0,
-        320
-      ],
-      "credentials": {
-        "postgres": {
-          "id": "j1PLbiwu8dCOVpl5",
-          "name": "Postgres account"
-        }
-      }
-    },
-    {
-      "parameters": {
-        "operation": "executeQuery",
-        "query": "SELECT name_id, term_id, course_name, attendance FROM course_records ORDER BY created_at",
-        "options": {}
-      },
-      "id": "12393706-12ab-4779-b477-dd00b5dba0a6",
-      "name": "Read Course Records",
-      "type": "n8n-nodes-base.postgres",
-      "typeVersion": 2.5,
-      "position": [
-        0,
-        480
-      ],
-      "credentials": {
-        "postgres": {
-          "id": "j1PLbiwu8dCOVpl5",
-          "name": "Postgres account"
-        }
-      }
     },
     {
       "parameters": {},
@@ -249,49 +164,65 @@
       "typeVersion": 1,
       "position": [
         0,
-        640
+        1050
       ]
     },
     {
       "parameters": {
-        "language": "pythonNative",
-        "pythonCode": "status_map = {\n    \"confirmed\": \"✅정상\",\n    \"needs_review\": \"🔶확인필요\",\n    \"not_paid\": \"❌미입금\",\n    \"name_mismatch\": \"⚠️이름불일치\",\n    \"duplicate\": \"🔄중복\",\n    \"exempted\": \"💎면제\",\n}\nfor item in _items:\n    raw = item[\"json\"].get(\"payment_status\", \"\")\n    item[\"json\"][\"payment_status\"] = status_map.get(raw, raw)\nreturn _items"
+        "operation": "executeQuery",
+        "query": "SELECT applied_at, term_id, name_id, name, type, course_name,\n       expected_amount, payment_status, payment_time, payer_name,\n       review_reason, processing_status\nFROM applications\nWHERE term_id = '{{ $json.body.term_id }}'\nORDER BY id",
+        "options": {}
       },
+      "id": "418a3af0-d366-4eab-ba6c-12b22b2b3112",
+      "name": "Read Applications",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        0,
+        -200
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "j1PLbiwu8dCOVpl5",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const statusMap = {\n  confirmed: '✅정상',\n  needs_review: '🔶확인필요',\n  not_paid: '❌미입금',\n  name_mismatch: '⚠️이름불일치',\n  duplicate: '🔄중복',\n  exempted: '💎면제',\n};\nconst COLS = ['applied_at','term_id','name_id','name','type','course_name',\n  'expected_amount','payment_status','payment_time','payer_name',\n  'review_reason','processing_status'];\nconst rows = $input.all().map(item => {\n  return COLS.map(col => {\n    let val = item.json[col] ?? '';\n    if (col === 'payment_status') val = statusMap[val] || val;\n    return String(val);\n  });\n});\nreturn [{ json: { values: rows } }];"
+      },
+      "id": "510a8bcc-9a21-4748-9085-04aca9b7b353",
+      "name": "Build Applications Body",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        208,
-        0
-      ],
-      "id": "e36c9263-df40-4736-b879-e043f4716d06",
-      "name": "Convert payment_status"
+        220,
+        -200
+      ]
     },
     {
       "parameters": {
-        "authentication": "serviceAccount",
-        "operation": "clear",
-        "documentId": {
-          "__rl": true,
-          "value": "https://docs.google.com/spreadsheets/d/193r34mtLHd0-oX7MKJOWq1Ane9iBfbBZB5yYf78R3Bo/edit?gid=1369148408#gid=1369148408",
-          "mode": "url"
-        },
-        "sheetName": {
-          "__rl": true,
-          "value": 1369148408,
-          "mode": "list",
-          "cachedResultName": "신청기록",
-          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/193r34mtLHd0-oX7MKJOWq1Ane9iBfbBZB5yYf78R3Bo/edit#gid=1369148408"
-        },
-        "keepFirstRow": true
+        "method": "POST",
+        "url": "https://sheets.googleapis.com/v4/spreadsheets/193r34mtLHd0-oX7MKJOWq1Ane9iBfbBZB5yYf78R3Bo/values/신청기록!A2:L:clear",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleSheetsOAuth2Api",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{}",
+        "options": {}
       },
-      "type": "n8n-nodes-base.googleSheets",
-      "typeVersion": 4.7,
+      "id": "b3e99312-f22b-4973-93ef-70ea23197df5",
+      "name": "Clear 신청기록",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
       "position": [
-        416,
-        0
+        440,
+        -200
       ],
-      "id": "f17a58a6-91c1-41b2-85a3-48fc63884c15",
-      "name": "Clear Applications",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 5000,
       "credentials": {
         "googleApi": {
           "id": "JtDg23azfbja0yi3",
@@ -301,315 +232,26 @@
     },
     {
       "parameters": {
-        "authentication": "serviceAccount",
-        "operation": "append",
-        "documentId": {
-          "__rl": true,
-          "value": "https://docs.google.com/spreadsheets/d/193r34mtLHd0-oX7MKJOWq1Ane9iBfbBZB5yYf78R3Bo/edit?gid=1369148408#gid=1369148408",
-          "mode": "url"
-        },
-        "sheetName": {
-          "__rl": true,
-          "value": 1369148408,
-          "mode": "list",
-          "cachedResultName": "신청기록",
-          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/193r34mtLHd0-oX7MKJOWq1Ane9iBfbBZB5yYf78R3Bo/edit#gid=1369148408"
-        },
-        "columns": {
-          "mappingMode": "defineBelow",
-          "value": {
-            "신청일": "applied_at",
-            "회차": "term_id",
-            "이름ID": "name_id",
-            "이름": "name",
-            "유형": "type",
-            "과목명": "course_name",
-            "예상금액": "expected_amount",
-            "입금현황": "payment_status",
-            "입금시각": "payment_time",
-            "입금자명": "payer_name",
-            "확인사유": "review_reason",
-            "처리상태": "processing_status"
-          },
-          "matchingColumns": [],
-          "schema": [
-            {
-              "id": "신청일",
-              "displayName": "신청일",
-              "required": false,
-              "defaultMatch": false,
-              "display": true,
-              "type": "string",
-              "canBeUsedToMatch": true
-            },
-            {
-              "id": "회차",
-              "displayName": "회차",
-              "required": false,
-              "defaultMatch": false,
-              "display": true,
-              "type": "string",
-              "canBeUsedToMatch": true
-            },
-            {
-              "id": "이름ID",
-              "displayName": "이름ID",
-              "required": false,
-              "defaultMatch": false,
-              "display": true,
-              "type": "string",
-              "canBeUsedToMatch": true
-            },
-            {
-              "id": "이름",
-              "displayName": "이름",
-              "required": false,
-              "defaultMatch": false,
-              "display": true,
-              "type": "string",
-              "canBeUsedToMatch": true
-            },
-            {
-              "id": "유형",
-              "displayName": "유형",
-              "required": false,
-              "defaultMatch": false,
-              "display": true,
-              "type": "string",
-              "canBeUsedToMatch": true
-            },
-            {
-              "id": "과목명",
-              "displayName": "과목명",
-              "required": false,
-              "defaultMatch": false,
-              "display": true,
-              "type": "string",
-              "canBeUsedToMatch": true
-            },
-            {
-              "id": "예상금액",
-              "displayName": "예상금액",
-              "required": false,
-              "defaultMatch": false,
-              "display": true,
-              "type": "string",
-              "canBeUsedToMatch": true
-            },
-            {
-              "id": "입금시각",
-              "displayName": "입금시각",
-              "required": false,
-              "defaultMatch": false,
-              "display": true,
-              "type": "string",
-              "canBeUsedToMatch": true
-            },
-            {
-              "id": "입금자명",
-              "displayName": "입금자명",
-              "required": false,
-              "defaultMatch": false,
-              "display": true,
-              "type": "string",
-              "canBeUsedToMatch": true
-            },
-            {
-              "id": "입금현황",
-              "displayName": "입금현황",
-              "required": false,
-              "defaultMatch": false,
-              "display": true,
-              "type": "string",
-              "canBeUsedToMatch": true
-            },
-            {
-              "id": "확인사유",
-              "displayName": "확인사유",
-              "required": false,
-              "defaultMatch": false,
-              "display": true,
-              "type": "string",
-              "canBeUsedToMatch": true
-            },
-            {
-              "id": "처리상태",
-              "displayName": "처리상태",
-              "required": false,
-              "defaultMatch": false,
-              "display": true,
-              "type": "string",
-              "canBeUsedToMatch": true,
-              "removed": false
-            }
-          ],
-          "attemptToConvertTypes": false,
-          "convertFieldsToString": false
-        },
-        "options": {
-          "locationDefine": {
-            "values": {}
-          }
-        }
+        "method": "PUT",
+        "url": "https://sheets.googleapis.com/v4/spreadsheets/193r34mtLHd0-oX7MKJOWq1Ane9iBfbBZB5yYf78R3Bo/values/신청기록!A2?valueInputOption=USER_ENTERED",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleSheetsOAuth2Api",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ values: $('Build Applications Body').first().json.values }) }}",
+        "options": {}
       },
-      "type": "n8n-nodes-base.googleSheets",
-      "typeVersion": 4.7,
+      "id": "6f8a8782-9f2b-4026-a0ff-4c87a7637f00",
+      "name": "Write 신청기록",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
       "position": [
-        608,
-        0
+        660,
+        -200
       ],
-      "id": "a05e447d-1b79-4add-a6c4-e1fbb0ea26dc",
-      "name": "Write Applications",
-      "credentials": {
-        "googleApi": {
-          "id": "JtDg23azfbja0yi3",
-          "name": "Google Service Account account"
-        }
-      }
-    },
-    {
-      "parameters": {
-        "authentication": "serviceAccount",
-        "operation": "clear",
-        "documentId": {
-          "__rl": true,
-          "value": "https://docs.google.com/spreadsheets/d/193r34mtLHd0-oX7MKJOWq1Ane9iBfbBZB5yYf78R3Bo/edit?gid=1369148408#gid=1369148408",
-          "mode": "url"
-        },
-        "sheetName": {
-          "__rl": true,
-          "value": 2065638503,
-          "mode": "list",
-          "cachedResultName": "미확인입금",
-          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/193r34mtLHd0-oX7MKJOWq1Ane9iBfbBZB5yYf78R3Bo/edit#gid=2065638503"
-        },
-        "keepFirstRow": true
-      },
-      "type": "n8n-nodes-base.googleSheets",
-      "typeVersion": 4.7,
-      "position": [
-        208,
-        800
-      ],
-      "id": "32f40fd4-af39-4083-9c6e-6bdc7d4156d8",
-      "name": "Clear Unmatched",
-      "credentials": {
-        "googleApi": {
-          "id": "JtDg23azfbja0yi3",
-          "name": "Google Service Account account"
-        }
-      }
-    },
-    {
-      "parameters": {
-        "authentication": "serviceAccount",
-        "operation": "append",
-        "documentId": {
-          "__rl": true,
-          "value": "https://docs.google.com/spreadsheets/d/193r34mtLHd0-oX7MKJOWq1Ane9iBfbBZB5yYf78R3Bo/edit?gid=1369148408#gid=1369148408",
-          "mode": "url"
-        },
-        "sheetName": {
-          "__rl": true,
-          "value": 2065638503,
-          "mode": "list",
-          "cachedResultName": "미확인입금",
-          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/193r34mtLHd0-oX7MKJOWq1Ane9iBfbBZB5yYf78R3Bo/edit#gid=2065638503"
-        },
-        "columns": {
-          "mappingMode": "defineBelow",
-          "value": {
-            "입금일시": "transaction_time",
-            "회차": "term_id",
-            "입금액": "amount",
-            "입금자명": "payer_name",
-            "적요": "memo",
-            "확인사유": "review_reason",
-            "처리상태": "processing_status"
-          },
-          "matchingColumns": [],
-          "schema": [
-            {
-              "id": "입금일시",
-              "displayName": "입금일시",
-              "required": false,
-              "defaultMatch": false,
-              "display": true,
-              "type": "string",
-              "canBeUsedToMatch": true
-            },
-            {
-              "id": "회차",
-              "displayName": "회차",
-              "required": false,
-              "defaultMatch": false,
-              "display": true,
-              "type": "string",
-              "canBeUsedToMatch": true
-            },
-            {
-              "id": "입금액",
-              "displayName": "입금액",
-              "required": false,
-              "defaultMatch": false,
-              "display": true,
-              "type": "string",
-              "canBeUsedToMatch": true
-            },
-            {
-              "id": "입금자명",
-              "displayName": "입금자명",
-              "required": false,
-              "defaultMatch": false,
-              "display": true,
-              "type": "string",
-              "canBeUsedToMatch": true
-            },
-            {
-              "id": "적요",
-              "displayName": "적요",
-              "required": false,
-              "defaultMatch": false,
-              "display": true,
-              "type": "string",
-              "canBeUsedToMatch": true
-            },
-            {
-              "id": "확인사유",
-              "displayName": "확인사유",
-              "required": false,
-              "defaultMatch": false,
-              "display": true,
-              "type": "string",
-              "canBeUsedToMatch": true
-            },
-            {
-              "id": "처리상태",
-              "displayName": "처리상태",
-              "required": false,
-              "defaultMatch": false,
-              "display": true,
-              "type": "string",
-              "canBeUsedToMatch": true
-            }
-          ],
-          "attemptToConvertTypes": false,
-          "convertFieldsToString": false
-        },
-        "options": {
-          "locationDefine": {
-            "values": {}
-          }
-        }
-      },
-      "type": "n8n-nodes-base.googleSheets",
-      "typeVersion": 4.7,
-      "position": [
-        416,
-        800
-      ],
-      "id": "e56912b9-ef3b-4eef-bf3b-287f1e9978c8",
-      "name": "Write Unmatched",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 5000,
       "credentials": {
         "googleApi": {
           "id": "JtDg23azfbja0yi3",
@@ -620,17 +262,17 @@
     {
       "parameters": {
         "operation": "executeQuery",
-        "query": "SELECT transaction_time, term_id, amount, payer_name, memo,\n       review_reason, processing_status\nFROM deposits\nWHERE term_id = '{{ $json.term_id }}'\n  AND match_status = 'unmatched'\nORDER BY id",
+        "query": "SELECT name_id, name, phone, address, grade, is_exception, course_count, avg_attendance, last_term FROM members ORDER BY name_id",
         "options": {}
       },
+      "id": "f4a51aab-f1b6-453a-aa88-975ab8465822",
+      "name": "Read Members",
       "type": "n8n-nodes-base.postgres",
-      "typeVersion": 2.6,
+      "typeVersion": 2.5,
       "position": [
         0,
-        800
+        50
       ],
-      "id": "90c3980c-c61d-4925-9fc5-5fede1e0d626",
-      "name": "Read Deposits",
       "credentials": {
         "postgres": {
           "id": "j1PLbiwu8dCOVpl5",
@@ -640,30 +282,39 @@
     },
     {
       "parameters": {
-        "authentication": "serviceAccount",
-        "operation": "clear",
-        "documentId": {
-          "__rl": true,
-          "mode": "id",
-          "value": "193r34mtLHd0-oX7MKJOWq1Ane9iBfbBZB5yYf78R3Bo"
-        },
-        "sheetName": {
-          "__rl": true,
-          "mode": "name",
-          "value": "회원목록"
-        },
-        "clear": "specificRows",
-        "startIndex": 2,
-        "rowsToDelete": 10000
+        "jsCode": "const COLS = ['name_id', 'name', 'phone', 'address', 'grade', 'is_exception', 'course_count', 'avg_attendance', 'last_term'];\nconst rows = $input.all().map(item => {\n  return COLS.map(col => String(item.json[col] ?? ''));\n});\nreturn [{ json: { values: rows } }];"
       },
-      "id": "8852a665-1a27-4a93-ab10-b96784d0babb",
-      "name": "Clear Members Sheet",
-      "type": "n8n-nodes-base.googleSheets",
-      "typeVersion": 4.5,
+      "id": "f4c642c1-f204-49f3-8814-d39cf10a26ae",
+      "name": "Build Members Body",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
       "position": [
-        208,
-        160
+        220,
+        50
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://sheets.googleapis.com/v4/spreadsheets/193r34mtLHd0-oX7MKJOWq1Ane9iBfbBZB5yYf78R3Bo/values/회원목록!A2:I:clear",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleSheetsOAuth2Api",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{}",
+        "options": {}
+      },
+      "id": "858c78cb-0c63-47a6-8e83-c9142f0b03e4",
+      "name": "Clear 회원목록",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        440,
+        50
       ],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 5000,
       "credentials": {
         "googleApi": {
           "id": "JtDg23azfbja0yi3",
@@ -673,132 +324,26 @@
     },
     {
       "parameters": {
-        "authentication": "serviceAccount",
-        "operation": "append",
-        "documentId": {
-          "__rl": true,
-          "mode": "id",
-          "value": "193r34mtLHd0-oX7MKJOWq1Ane9iBfbBZB5yYf78R3Bo"
-        },
-        "sheetName": {
-          "__rl": true,
-          "mode": "name",
-          "value": "회원목록"
-        },
-        "columns": {
-          "mappingMode": "defineBelow",
-          "value": {
-            "이름ID": "name_id",
-            "이름": "name",
-            "전화번호": "phone",
-            "주소": "address",
-            "등급": "grade",
-            "예외여부": "is_exception",
-            "수강count": "course_count",
-            "출석률(누적)": "avg_attendance",
-            "마지막수강회차": "last_term"
-          },
-          "matchingColumns": [],
-          "schema": [
-            {
-              "id": "이름ID",
-              "displayName": "이름ID",
-              "required": false,
-              "defaultMatch": false,
-              "display": true,
-              "type": "string",
-              "canBeUsedToMatch": true
-            },
-            {
-              "id": "이름",
-              "displayName": "이름",
-              "required": false,
-              "defaultMatch": false,
-              "display": true,
-              "type": "string",
-              "canBeUsedToMatch": true
-            },
-            {
-              "id": "전화번호",
-              "displayName": "전화번호",
-              "required": false,
-              "defaultMatch": false,
-              "display": true,
-              "type": "string",
-              "canBeUsedToMatch": true
-            },
-            {
-              "id": "주소",
-              "displayName": "주소",
-              "required": false,
-              "defaultMatch": false,
-              "display": true,
-              "type": "string",
-              "canBeUsedToMatch": true
-            },
-            {
-              "id": "등급",
-              "displayName": "등급",
-              "required": false,
-              "defaultMatch": false,
-              "display": true,
-              "type": "string",
-              "canBeUsedToMatch": true
-            },
-            {
-              "id": "예외여부",
-              "displayName": "예외여부",
-              "required": false,
-              "defaultMatch": false,
-              "display": true,
-              "type": "string",
-              "canBeUsedToMatch": true
-            },
-            {
-              "id": "수강count",
-              "displayName": "수강count",
-              "required": false,
-              "defaultMatch": false,
-              "display": true,
-              "type": "string",
-              "canBeUsedToMatch": true
-            },
-            {
-              "id": "출석률(누적)",
-              "displayName": "출석률(누적)",
-              "required": false,
-              "defaultMatch": false,
-              "display": true,
-              "type": "string",
-              "canBeUsedToMatch": true
-            },
-            {
-              "id": "마지막수강회차",
-              "displayName": "마지막수강회차",
-              "required": false,
-              "defaultMatch": false,
-              "display": true,
-              "type": "string",
-              "canBeUsedToMatch": true
-            }
-          ],
-          "attemptToConvertTypes": false,
-          "convertFieldsToString": false
-        },
-        "options": {
-          "locationDefine": {
-            "values": {}
-          }
-        }
+        "method": "PUT",
+        "url": "https://sheets.googleapis.com/v4/spreadsheets/193r34mtLHd0-oX7MKJOWq1Ane9iBfbBZB5yYf78R3Bo/values/회원목록!A2?valueInputOption=USER_ENTERED",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleSheetsOAuth2Api",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ values: $('Build Members Body').first().json.values }) }}",
+        "options": {}
       },
-      "id": "98d2a708-abbf-40e1-a0cc-904bc16a0e5f",
-      "name": "Write Members Sheet",
-      "type": "n8n-nodes-base.googleSheets",
-      "typeVersion": 4.5,
+      "id": "035d56b8-3517-46f3-9adb-2d3c79c11e93",
+      "name": "Write 회원목록",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
       "position": [
-        416,
-        160
+        660,
+        50
       ],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 5000,
       "credentials": {
         "googleApi": {
           "id": "JtDg23azfbja0yi3",
@@ -808,30 +353,60 @@
     },
     {
       "parameters": {
-        "authentication": "serviceAccount",
-        "operation": "clear",
-        "documentId": {
-          "__rl": true,
-          "mode": "id",
-          "value": "193r34mtLHd0-oX7MKJOWq1Ane9iBfbBZB5yYf78R3Bo"
-        },
-        "sheetName": {
-          "__rl": true,
-          "mode": "name",
-          "value": "회원기록"
-        },
-        "clear": "specificRows",
-        "startIndex": 2,
-        "rowsToDelete": 10000
+        "operation": "executeQuery",
+        "query": "SELECT name_id, name, changed_at, grade_from, grade_to, reason, term_id FROM member_records ORDER BY created_at",
+        "options": {}
       },
-      "id": "f038e9cb-6890-46fe-8690-6a932544cd92",
-      "name": "Clear Member Records Sheet",
-      "type": "n8n-nodes-base.googleSheets",
-      "typeVersion": 4.5,
+      "id": "ec87d7ce-fcc3-4346-a8cb-4dd7bfc3218b",
+      "name": "Read Member Records",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
       "position": [
-        208,
-        320
+        0,
+        300
       ],
+      "credentials": {
+        "postgres": {
+          "id": "j1PLbiwu8dCOVpl5",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const COLS = ['name_id', 'name', 'changed_at', 'grade_from', 'grade_to', 'reason', 'term_id'];\nconst rows = $input.all().map(item => {\n  return COLS.map(col => String(item.json[col] ?? ''));\n});\nreturn [{ json: { values: rows } }];"
+      },
+      "id": "f75bfd51-8810-47d3-86b2-cdc92d46a98d",
+      "name": "Build Member Records Body",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://sheets.googleapis.com/v4/spreadsheets/193r34mtLHd0-oX7MKJOWq1Ane9iBfbBZB5yYf78R3Bo/values/회원기록!A2:G:clear",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleSheetsOAuth2Api",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{}",
+        "options": {}
+      },
+      "id": "6f61b387-5f2a-4d1f-9468-f67b6dd8d435",
+      "name": "Clear 회원기록",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        440,
+        300
+      ],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 5000,
       "credentials": {
         "googleApi": {
           "id": "JtDg23azfbja0yi3",
@@ -841,30 +416,26 @@
     },
     {
       "parameters": {
-        "authentication": "serviceAccount",
-        "operation": "clear",
-        "documentId": {
-          "__rl": true,
-          "mode": "id",
-          "value": "193r34mtLHd0-oX7MKJOWq1Ane9iBfbBZB5yYf78R3Bo"
-        },
-        "sheetName": {
-          "__rl": true,
-          "mode": "name",
-          "value": "수강기록"
-        },
-        "clear": "specificRows",
-        "startIndex": 2,
-        "rowsToDelete": 10000
+        "method": "PUT",
+        "url": "https://sheets.googleapis.com/v4/spreadsheets/193r34mtLHd0-oX7MKJOWq1Ane9iBfbBZB5yYf78R3Bo/values/회원기록!A2?valueInputOption=USER_ENTERED",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleSheetsOAuth2Api",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ values: $('Build Member Records Body').first().json.values }) }}",
+        "options": {}
       },
-      "id": "0577067f-9f4d-475a-9732-cf0849313d60",
-      "name": "Clear Course Records Sheet",
-      "type": "n8n-nodes-base.googleSheets",
-      "typeVersion": 4.5,
+      "id": "a176954a-3408-4749-a8ed-397ea1b48c02",
+      "name": "Write 회원기록",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
       "position": [
-        208,
-        480
+        660,
+        300
       ],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 5000,
       "credentials": {
         "googleApi": {
           "id": "JtDg23azfbja0yi3",
@@ -874,112 +445,60 @@
     },
     {
       "parameters": {
-        "authentication": "serviceAccount",
-        "operation": "append",
-        "documentId": {
-          "__rl": true,
-          "mode": "id",
-          "value": "193r34mtLHd0-oX7MKJOWq1Ane9iBfbBZB5yYf78R3Bo"
-        },
-        "sheetName": {
-          "__rl": true,
-          "mode": "name",
-          "value": "회원기록"
-        },
-        "columns": {
-          "mappingMode": "defineBelow",
-          "value": {
-            "이름ID": "name_id",
-            "이름": "name",
-            "변경일시": "changed_at",
-            "변경전등급": "grade_from",
-            "변경후등급": "grade_to",
-            "사유": "reason",
-            "관련회차": "term_id"
-          },
-          "matchingColumns": [],
-          "schema": [
-            {
-              "id": "이름ID",
-              "displayName": "이름ID",
-              "required": false,
-              "defaultMatch": false,
-              "display": true,
-              "type": "string",
-              "canBeUsedToMatch": true
-            },
-            {
-              "id": "이름",
-              "displayName": "이름",
-              "required": false,
-              "defaultMatch": false,
-              "display": true,
-              "type": "string",
-              "canBeUsedToMatch": true
-            },
-            {
-              "id": "변경일시",
-              "displayName": "변경일시",
-              "required": false,
-              "defaultMatch": false,
-              "display": true,
-              "type": "string",
-              "canBeUsedToMatch": true
-            },
-            {
-              "id": "변경전등급",
-              "displayName": "변경전등급",
-              "required": false,
-              "defaultMatch": false,
-              "display": true,
-              "type": "string",
-              "canBeUsedToMatch": true
-            },
-            {
-              "id": "변경후등급",
-              "displayName": "변경후등급",
-              "required": false,
-              "defaultMatch": false,
-              "display": true,
-              "type": "string",
-              "canBeUsedToMatch": true
-            },
-            {
-              "id": "사유",
-              "displayName": "사유",
-              "required": false,
-              "defaultMatch": false,
-              "display": true,
-              "type": "string",
-              "canBeUsedToMatch": true
-            },
-            {
-              "id": "관련회차",
-              "displayName": "관련회차",
-              "required": false,
-              "defaultMatch": false,
-              "display": true,
-              "type": "string",
-              "canBeUsedToMatch": true
-            }
-          ],
-          "attemptToConvertTypes": false,
-          "convertFieldsToString": false
-        },
-        "options": {
-          "locationDefine": {
-            "values": {}
-          }
-        }
+        "operation": "executeQuery",
+        "query": "SELECT name_id, term_id, course_name, attendance FROM course_records ORDER BY created_at",
+        "options": {}
       },
-      "id": "4758fc73-db5c-4865-8671-974e345be975",
-      "name": "Write Member Records Sheet",
-      "type": "n8n-nodes-base.googleSheets",
-      "typeVersion": 4.5,
+      "id": "7e6574e5-0c77-4376-9f0c-e8c39d61a284",
+      "name": "Read Course Records",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
       "position": [
-        416,
-        320
+        0,
+        550
       ],
+      "credentials": {
+        "postgres": {
+          "id": "j1PLbiwu8dCOVpl5",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const COLS = ['name_id', 'term_id', 'course_name', 'attendance'];\nconst rows = $input.all().map(item => {\n  return COLS.map(col => String(item.json[col] ?? ''));\n});\nreturn [{ json: { values: rows } }];"
+      },
+      "id": "0134785b-8b70-45d2-ae9c-69bf71b63d79",
+      "name": "Build Course Records Body",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        550
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://sheets.googleapis.com/v4/spreadsheets/193r34mtLHd0-oX7MKJOWq1Ane9iBfbBZB5yYf78R3Bo/values/수강기록!A2:D:clear",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleSheetsOAuth2Api",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{}",
+        "options": {}
+      },
+      "id": "98438433-13ea-4e6f-bb3d-d9cb8d9e60e3",
+      "name": "Clear 수강기록",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        440,
+        550
+      ],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 5000,
       "credentials": {
         "googleApi": {
           "id": "JtDg23azfbja0yi3",
@@ -989,82 +508,118 @@
     },
     {
       "parameters": {
-        "authentication": "serviceAccount",
-        "operation": "append",
-        "documentId": {
-          "__rl": true,
-          "mode": "id",
-          "value": "193r34mtLHd0-oX7MKJOWq1Ane9iBfbBZB5yYf78R3Bo"
-        },
-        "sheetName": {
-          "__rl": true,
-          "mode": "name",
-          "value": "수강기록"
-        },
-        "columns": {
-          "mappingMode": "defineBelow",
-          "value": {
-            "이름ID": "name_id",
-            "회차": "term_id",
-            "과목명": "course_name",
-            "출석률": "attendance"
-          },
-          "matchingColumns": [],
-          "schema": [
-            {
-              "id": "이름ID",
-              "displayName": "이름ID",
-              "required": false,
-              "defaultMatch": false,
-              "display": true,
-              "type": "string",
-              "canBeUsedToMatch": true
-            },
-            {
-              "id": "회차",
-              "displayName": "회차",
-              "required": false,
-              "defaultMatch": false,
-              "display": true,
-              "type": "string",
-              "canBeUsedToMatch": true
-            },
-            {
-              "id": "과목명",
-              "displayName": "과목명",
-              "required": false,
-              "defaultMatch": false,
-              "display": true,
-              "type": "string",
-              "canBeUsedToMatch": true
-            },
-            {
-              "id": "출석률",
-              "displayName": "출석률",
-              "required": false,
-              "defaultMatch": false,
-              "display": true,
-              "type": "string",
-              "canBeUsedToMatch": true
-            }
-          ],
-          "attemptToConvertTypes": false,
-          "convertFieldsToString": false
-        },
-        "options": {
-          "locationDefine": {
-            "values": {}
-          }
-        }
+        "method": "PUT",
+        "url": "https://sheets.googleapis.com/v4/spreadsheets/193r34mtLHd0-oX7MKJOWq1Ane9iBfbBZB5yYf78R3Bo/values/수강기록!A2?valueInputOption=USER_ENTERED",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleSheetsOAuth2Api",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ values: $('Build Course Records Body').first().json.values }) }}",
+        "options": {}
       },
-      "id": "e4821a16-1ab6-435e-82c3-cc8ffe1c0de4",
-      "name": "Write Course Records Sheet",
-      "type": "n8n-nodes-base.googleSheets",
-      "typeVersion": 4.5,
+      "id": "2068a0d1-cd1b-4627-8a5d-294c46139466",
+      "name": "Write 수강기록",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
       "position": [
-        416,
-        480
+        660,
+        550
       ],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 5000,
+      "credentials": {
+        "googleApi": {
+          "id": "JtDg23azfbja0yi3",
+          "name": "Google Service Account account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT transaction_time, term_id, amount, payer_name, memo,\n       review_reason, processing_status\nFROM deposits\nWHERE term_id = '{{ $json.body.term_id }}'\n  AND match_status = 'unmatched'\nORDER BY id",
+        "options": {}
+      },
+      "id": "dc65d54d-51ca-4ab7-af68-30a99b45e1b9",
+      "name": "Read Deposits",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        0,
+        800
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "j1PLbiwu8dCOVpl5",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const COLS = ['transaction_time', 'term_id', 'amount', 'payer_name', 'memo', 'review_reason', 'processing_status'];\nconst rows = $input.all().map(item => {\n  return COLS.map(col => String(item.json[col] ?? ''));\n});\nreturn [{ json: { values: rows } }];"
+      },
+      "id": "cf047a8e-a05a-4cb0-bb6b-d429b8eefd08",
+      "name": "Build Deposits Body",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        800
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://sheets.googleapis.com/v4/spreadsheets/193r34mtLHd0-oX7MKJOWq1Ane9iBfbBZB5yYf78R3Bo/values/미확인입금!A2:G:clear",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleSheetsOAuth2Api",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{}",
+        "options": {}
+      },
+      "id": "0d349af0-d183-4f46-883f-37a1e18a4115",
+      "name": "Clear 미확인입금",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        440,
+        800
+      ],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 5000,
+      "credentials": {
+        "googleApi": {
+          "id": "JtDg23azfbja0yi3",
+          "name": "Google Service Account account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "PUT",
+        "url": "https://sheets.googleapis.com/v4/spreadsheets/193r34mtLHd0-oX7MKJOWq1Ane9iBfbBZB5yYf78R3Bo/values/미확인입금!A2?valueInputOption=USER_ENTERED",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleSheetsOAuth2Api",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ values: $('Build Deposits Body').first().json.values }) }}",
+        "options": {}
+      },
+      "id": "56586050-361d-4cd0-929e-39ffdb35c23f",
+      "name": "Write 미확인입금",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        660,
+        800
+      ],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 5000,
       "credentials": {
         "googleApi": {
           "id": "JtDg23azfbja0yi3",
@@ -1093,11 +648,26 @@
             "node": "Read Applications",
             "type": "main",
             "index": 0
+          },
+          {
+            "node": "Read Deposits",
+            "type": "main",
+            "index": 0
           }
         ],
         [
           {
             "node": "Read Members",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Read Member Records",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Read Course Records",
             "type": "main",
             "index": 0
           }
@@ -1139,84 +709,29 @@
       "main": [
         [
           {
-            "node": "Convert payment_status",
+            "node": "Build Applications Body",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Convert payment_status": {
+    "Build Applications Body": {
       "main": [
         [
           {
-            "node": "Clear Applications",
+            "node": "Clear 신청기록",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Clear Applications": {
+    "Clear 신청기록": {
       "main": [
         [
           {
-            "node": "Write Applications",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Clear Unmatched": {
-      "main": [
-        [
-          {
-            "node": "Write Unmatched",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Read Deposits": {
-      "main": [
-        [
-          {
-            "node": "Clear Unmatched",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Clear Members Sheet": {
-      "main": [
-        [
-          {
-            "node": "Write Members Sheet",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Clear Member Records Sheet": {
-      "main": [
-        [
-          {
-            "node": "Write Member Records Sheet",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Clear Course Records Sheet": {
-      "main": [
-        [
-          {
-            "node": "Write Course Records Sheet",
+            "node": "Write 신청기록",
             "type": "main",
             "index": 0
           }
@@ -1227,7 +742,29 @@
       "main": [
         [
           {
-            "node": "Clear Members Sheet",
+            "node": "Build Members Body",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Members Body": {
+      "main": [
+        [
+          {
+            "node": "Clear 회원목록",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Clear 회원목록": {
+      "main": [
+        [
+          {
+            "node": "Write 회원목록",
             "type": "main",
             "index": 0
           }
@@ -1238,7 +775,29 @@
       "main": [
         [
           {
-            "node": "Clear Member Records Sheet",
+            "node": "Build Member Records Body",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Member Records Body": {
+      "main": [
+        [
+          {
+            "node": "Clear 회원기록",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Clear 회원기록": {
+      "main": [
+        [
+          {
+            "node": "Write 회원기록",
             "type": "main",
             "index": 0
           }
@@ -1249,7 +808,62 @@
       "main": [
         [
           {
-            "node": "Clear Course Records Sheet",
+            "node": "Build Course Records Body",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Course Records Body": {
+      "main": [
+        [
+          {
+            "node": "Clear 수강기록",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Clear 수강기록": {
+      "main": [
+        [
+          {
+            "node": "Write 수강기록",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Deposits": {
+      "main": [
+        [
+          {
+            "node": "Build Deposits Body",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Deposits Body": {
+      "main": [
+        [
+          {
+            "node": "Clear 미확인입금",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Clear 미확인입금": {
+      "main": [
+        [
+          {
+            "node": "Write 미확인입금",
             "type": "main",
             "index": 0
           }
@@ -1262,7 +876,7 @@
     "executionOrder": "v1",
     "binaryMode": "separate"
   },
-  "versionId": "a573abb0-dbc4-47c7-bdae-99dab839d23d",
+  "versionId": "39b23e88-d228-4d52-ab6d-af7796c956e1",
   "meta": {
     "templateCredsSetupCompleted": true,
     "instanceId": "622c686528632a543190385bd68c7c1bbfc713919f334307d5883821cfe3c937"
