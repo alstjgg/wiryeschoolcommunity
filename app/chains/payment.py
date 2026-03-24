@@ -585,12 +585,15 @@ JSON만 응답하세요. 설명은 메모 필드에 넣어주세요."""
 
     user_prompt = f"다음 미매칭 거래들을 매칭해주세요:\n\n{tx_text}"
 
+    logger.info("LLM matching input: %d items", len(unmatched))
+
     response = await llm.ainvoke([
         SystemMessage(content=system_prompt),
         HumanMessage(content=user_prompt),
     ])
 
     content = response.content.strip()
+    logger.info("LLM raw response: %s", content[:1000])
     if "```json" in content:
         content = content.split("```json")[1].split("```")[0].strip()
     elif "```" in content:
@@ -598,7 +601,8 @@ JSON만 응답하세요. 설명은 메모 필드에 넣어주세요."""
 
     try:
         llm_results = json.loads(content)
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as e:
+        logger.error("LLM JSON parse failed: %s / response: %s", e, content[:500])
         return unmatched
 
     for llm_item in llm_results:
