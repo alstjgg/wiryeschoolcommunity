@@ -123,6 +123,8 @@ def _sync_deposits(deposits: list[dict]) -> None:
 
 def _safe_sync(sync_type: str, data: list[dict], term_id: str) -> None:
     """Background thread entry point with error handling."""
+    logger.info("Sheets sync starting: type=%s rows=%d term=%s", sync_type, len(data), term_id)
+
     try:
         if sync_type == "applications":
             _sync_applications(data)
@@ -139,7 +141,7 @@ def _safe_sync(sync_type: str, data: list[dict], term_id: str) -> None:
             return
         logger.info("Sheets sync completed: type=%s rows=%d", sync_type, len(data))
     except Exception as e:
-        logger.warning("Sheets sync failed (non-critical): type=%s error=%s", sync_type, e)
+        logger.error("Sheets sync FAILED: type=%s error=%s", sync_type, e, exc_info=True)
 
 
 async def sync_to_sheets(
