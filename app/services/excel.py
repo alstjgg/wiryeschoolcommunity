@@ -4,6 +4,8 @@ import io
 import re
 from openpyxl import load_workbook
 
+from app.utils.normalize import normalize_name, normalize_phone, make_name_id
+
 
 def parse_bank_statement(file_bytes: bytes) -> list[dict]:
     """입금내역 파일 파싱 → 입금 거래 리스트 반환
@@ -128,18 +130,16 @@ def parse_applicant_list(file_bytes: bytes) -> list[dict]:
 
         # 신청자에서 이름 추출 (괄호 앞 부분)
         name_match = re.match(r"^([^(]+)", 신청자_raw)
-        이름 = name_match.group(1).strip() if name_match else 신청자_raw.strip()
+        이름_raw = name_match.group(1).strip() if name_match else 신청자_raw.strip()
+        이름 = normalize_name(이름_raw)
 
-        # 전화번호에서 이름ID 생성
-        phone_clean = 연락처.replace("-", "").replace(" ", "")
-        phone_suffix = phone_clean[-4:] if len(phone_clean) >= 4 else ""
-        이름ID = f"{이름}{phone_suffix}" if phone_suffix else 이름
+        이름ID = make_name_id(이름_raw, 연락처)
 
         applicants.append({
             "이름ID": 이름ID,
             "이름": 이름,
             "강좌명": 강좌명,
-            "전화번호": 연락처,
+            "전화번호": normalize_phone(연락처),
             "성별": 성별,
             "나이": 나이,
             "주소": 주소,

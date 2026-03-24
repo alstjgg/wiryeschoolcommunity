@@ -7,8 +7,7 @@ DB에는 쓰지 않음 — 호출자(payment flow)가 통합 신청서 Sheets에
 키워드 부분 일치(_get_value_by_keyword)로 필수 컬럼을 추출한다.
 """
 
-import re
-
+from app.utils.normalize import normalize_name, normalize_phone, make_name_id
 from app.config import (
     MEMBER_SIGNUP_FOLDER_ID,
     FULLMEMBER_SIGNUP_FOLDER_ID,
@@ -31,11 +30,6 @@ def _find_signup_sheet(folder_id: str, year: str) -> dict | None:
         if year in f["name"]:
             return f
     return None
-
-
-def _extract_phone_digits(raw: str) -> str:
-    """전화번호에서 숫자만 추출"""
-    return re.sub(r"[^0-9]", "", raw)
 
 
 def _get_value_by_keyword(data: dict, keywords: list[str]) -> str:
@@ -100,17 +94,18 @@ def load_member_signups_from_drive(year: str) -> dict:
     for row in rows[1:]:
         data = dict(zip(header, row + [""] * (len(header) - len(row))))
 
-        name = _get_value_by_keyword(data, ["이름", "성함"])
-        phone = _extract_phone_digits(
+        name_raw = _get_value_by_keyword(data, ["이름", "성함"])
+        phone = normalize_phone(
             _get_value_by_keyword(data, ["연락처", "전화번호"])
         )
+        name = normalize_name(name_raw)
         address = _get_value_by_keyword(data, ["주소", "거주"])
         signup_date = _get_value_by_keyword(data, ["Timestamp", "타임스탬프"])[:10]
 
         if not name or len(phone) < 4:
             continue
 
-        name_id = name + phone[-4:]
+        name_id = make_name_id(name_raw, phone)
 
         records.append({
             "이름ID": name_id,
@@ -165,17 +160,18 @@ def load_fullmember_signups_from_drive(year: str) -> dict:
     for row in rows[1:]:
         data = dict(zip(header, row + [""] * (len(header) - len(row))))
 
-        name = _get_value_by_keyword(data, ["이름", "성함"])
-        phone = _extract_phone_digits(
+        name_raw = _get_value_by_keyword(data, ["이름", "성함"])
+        phone = normalize_phone(
             _get_value_by_keyword(data, ["연락처", "전화번호"])
         )
+        name = normalize_name(name_raw)
         address = _get_value_by_keyword(data, ["주소", "거주"])
         signup_date = _get_value_by_keyword(data, ["Timestamp", "타임스탬프"])[:10]
 
         if not name or len(phone) < 4:
             continue
 
-        name_id = name + phone[-4:]
+        name_id = make_name_id(name_raw, phone)
 
         records.append({
             "이름ID": name_id,
