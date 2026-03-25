@@ -56,6 +56,15 @@ logger = logging.getLogger(__name__)
 CANCEL_KEYWORDS = ["취소", "중단", "그만", "멈춰", "stop", "cancel", "안 할게", "안할게", "나가기"]
 
 
+def _get_app_sheet_id() -> str | None:
+    """applications_sheet_id 조회 — DB SoT 모드에서는 항상 MEMBERS_SHEET_ID."""
+    from app.config import USE_DB_SOT, MEMBERS_SHEET_ID
+    sheet_id = cl.user_session.get("applications_sheet_id")
+    if not sheet_id and USE_DB_SOT:
+        sheet_id = MEMBERS_SHEET_ID
+    return sheet_id
+
+
 @cl.on_chat_start
 async def on_chat_start():
     """새 대화 시작 — 세션 초기화"""
@@ -590,7 +599,7 @@ async def write_payment_results(
 ):
     """매칭 결과를 DB/Sheets에 반영 → 요약 + 다음 단계 Action 제공"""
     try:
-        app_sheet_id = cl.user_session.get("applications_sheet_id")
+        app_sheet_id = _get_app_sheet_id()
         applications = cl.user_session.get("applications", [])
         members = cl.user_session.get("members", [])
 
@@ -648,10 +657,9 @@ async def write_payment_results(
             notes.append(f"💳 미확인입금 **{unmatched_deposits}건**이 있습니다. 미확인입금 시트에서 확인해주세요.")
         check_note = "\n\n" + "\n".join(notes) if notes else ""
 
-        # DB 모드: 회원관리 파일(MEMBERS_SHEET_ID)로 링크, Sheets 모드: 회차별 시트
-        from app.config import USE_DB_SOT, MEMBERS_SHEET_ID, APPLICATIONS_TAB, UNMATCHED_DEPOSITS_TAB
+        from app.config import APPLICATIONS_TAB, UNMATCHED_DEPOSITS_TAB
         from app.services.google_sheets import get_tab_gids
-        link_sheet_id = MEMBERS_SHEET_ID if USE_DB_SOT else app_sheet_id
+        link_sheet_id = _get_app_sheet_id()
         sheet_links = ""
         if link_sheet_id:
             try:
@@ -765,7 +773,7 @@ async def _do_attendance_preflight(term: dict):
             term_folder_id = term_folder["id"]
             cl.user_session.set("term_folder_id", term_folder_id)
 
-        app_sheet_id = cl.user_session.get("applications_sheet_id")
+        app_sheet_id = _get_app_sheet_id()
         await _check_processing_gate(term, app_sheet_id)
 
     except Exception as e:
@@ -890,7 +898,7 @@ async def _show_attendance_final_confirm():
 @cl.action_callback("gate_recheck")
 async def on_gate_recheck(action: cl.Action):
     term = cl.user_session.get("term")
-    app_sheet_id = cl.user_session.get("applications_sheet_id")
+    app_sheet_id = _get_app_sheet_id()
     await _check_processing_gate(term, app_sheet_id)
 
 
@@ -916,11 +924,11 @@ async def do_create_attendance():
     """출석부 생성 실행 — 수강생 확인 → 시트 생성 → PDF 생성 → 최종 안내"""
     term = cl.user_session.get("term") or get_current_term()
     term_folder_id = cl.user_session.get("term_folder_id")
-    app_sheet_id = cl.user_session.get("applications_sheet_id")
+    app_sheet_id = _get_app_sheet_id()
 
-    if not term_folder_id or not app_sheet_id:
+    if not term_folder_id:
         await cl.Message(
-            "회차 폴더 또는 신청서 시트 정보가 없습니다. 입금 대조를 먼저 완료해주세요."
+            "회차 폴더 정보가 없습니다. 입금 대조를 먼저 완료해주세요."
         ).send()
         await send_default_actions()
         return
