@@ -26,9 +26,9 @@ logger = logging.getLogger(__name__)
 # =========================================== 통합 신청서 시트 관리 ====
 
 APPLICATION_HEADER = [
-    "신청일", "회차", "이름ID", "이름", "유형", "과목명",
-    "예상금액", "입금시간", "입금자명(적요)", "입금현황",
-    "확인사유", "처리상태",
+    "회차", "이름ID", "이름", "유형", "과목명",
+    "예상금액", "입금액", "입금시간", "의뢰인", "적요",
+    "입금현황", "확인사유", "처리상태",
 ]
 
 def _app_to_row(app: dict) -> list[str]:
@@ -55,15 +55,16 @@ def build_applications(
             continue
         seen.add(key)
         apps.append({
-            "신청일": a.get("신청일", ""),
             "회차": term_id,
             "이름ID": a["이름ID"],
             "이름": a["이름"],
             "유형": "수강",
             "과목명": a["강좌명"],
             "예상금액": str(TUITION_FEE),
+            "입금액": "",
             "입금시간": "",
-            "입금자명(적요)": "",
+            "의뢰인": "",
+            "적요": "",
             "입금현황": "❌미입금",
             "확인사유": "",
             "처리상태": "",
@@ -80,11 +81,13 @@ def build_applications(
             **s,
             "회차": term_id,
             "예상금액": str(MEMBERSHIP_FEE),
+            "입금액": "",
+            "입금시간": "",
+            "의뢰인": "",
+            "적요": "",
             "입금현황": "❌미입금",
             "확인사유": "",
             "처리상태": "",
-            "입금시간": "",
-            "입금자명(적요)": "",
         })
 
     for f in fullmember_signups:
@@ -96,11 +99,13 @@ def build_applications(
             **f,
             "회차": term_id,
             "예상금액": str(FULL_MEMBERSHIP_FEE),
+            "입금액": "",
+            "입금시간": "",
+            "의뢰인": "",
+            "적요": "",
             "입금현황": "❌미입금",
             "확인사유": "",
             "처리상태": "",
-            "입금시간": "",
-            "입금자명(적요)": "",
         })
 
     return apps
@@ -518,7 +523,9 @@ def apply_matching_results(
                     return False
             applications[idx]["입금현황"] = r["상태"]
             applications[idx]["입금시간"] = r.get("거래일시", "")
-            applications[idx]["입금자명(적요)"] = r.get("적요", "")
+            applications[idx]["입금액"] = str(r.get("입금", ""))
+            applications[idx]["의뢰인"] = r.get("의뢰인", "")
+            applications[idx]["적요"] = r.get("적요", "")
             r["_matched"] = True
             r["_matched_name_ids"] = [applications[idx].get("이름ID", "")]
             return True

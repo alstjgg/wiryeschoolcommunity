@@ -63,11 +63,13 @@ CREATE TABLE IF NOT EXISTS applications (
     type                TEXT NOT NULL,
     course_name         TEXT,
     expected_amount     INTEGER,
+    paid_amount         INTEGER,
     payment_status      TEXT DEFAULT 'not_paid',
     review_reason       TEXT,
     processing_status   TEXT,
     payment_time        TEXT,
     payer_name          TEXT,
+    memo                TEXT,
     phone               TEXT,
     address             TEXT,
     applied_at          TEXT,
@@ -75,6 +77,10 @@ CREATE TABLE IF NOT EXISTS applications (
     created_at          TIMESTAMPTZ DEFAULT NOW(),
     updated_at          TIMESTAMPTZ DEFAULT NOW()
 );
+
+-- Migration: applications 스키마 변경
+ALTER TABLE applications ADD COLUMN IF NOT EXISTS paid_amount INTEGER;
+ALTER TABLE applications ADD COLUMN IF NOT EXISTS memo TEXT;
 
 CREATE UNIQUE INDEX IF NOT EXISTS uq_applications
 ON applications (term_id, name_id, type, COALESCE(course_name, ''));
@@ -344,9 +350,16 @@ async def upsert_applications(term_id: str, applications: list[dict]) -> None:
     async with pool.acquire() as conn:
         async with conn.transaction():
             for a in applications:
-                amount = 0
+                expected = 0
                 try:
-                    amount = int(a.get("예상금액", 0) or 0)
+                    expected = int(a.get("예상금액", 0) or 0)
+                except (ValueError, TypeError):
+                    pass
+                paid = None
+                try:
+                    v = a.get("입금액", "") or ""
+                    if v:
+                        paid = int(v)
                 except (ValueError, TypeError):
                     pass
 
@@ -354,22 +367,23 @@ async def upsert_applications(term_id: str, applications: list[dict]) -> None:
                     """
                     INSERT INTO applications (
                         term_id, name_id, name, type, course_name,
-                        expected_amount, payment_status, review_reason,
-                        processing_status, payment_time, payer_name,
-                        phone, address, applied_at, processed_at
-                    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+                        expected_amount, paid_amount, payment_status, review_reason,
+                        processing_status, payment_time, payer_name, memo,
+                        phone, address, processed_at
+                    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
                     ON CONFLICT (term_id, name_id, type, COALESCE(course_name, ''))
                     DO UPDATE SET
                         name = EXCLUDED.name,
                         expected_amount = EXCLUDED.expected_amount,
+                        paid_amount = EXCLUDED.paid_amount,
                         payment_status = EXCLUDED.payment_status,
                         review_reason = EXCLUDED.review_reason,
                         processing_status = EXCLUDED.processing_status,
                         payment_time = EXCLUDED.payment_time,
                         payer_name = EXCLUDED.payer_name,
+                        memo = EXCLUDED.memo,
                         phone = EXCLUDED.phone,
                         address = EXCLUDED.address,
-                        applied_at = EXCLUDED.applied_at,
                         processed_at = COALESCE(EXCLUDED.processed_at, applications.processed_at),
                         updated_at = NOW()
                     """,
@@ -378,15 +392,16 @@ async def upsert_applications(term_id: str, applications: list[dict]) -> None:
                     a.get("이름", ""),
                     a.get("유형", ""),
                     a.get("과목명", "") or None,
-                    amount,
+                    expected,
+                    paid,
                     _emoji_to_code(a.get("입금현황", "❌미입금")),
                     a.get("확인사유", "") or None,
                     a.get("처리상태", "") or None,
                     a.get("입금시간", "") or None,
-                    a.get("입금자명(적요)", "") or None,
+                    a.get("의뢰인", "") or None,
+                    a.get("적요", "") or None,
                     a.get("전화번호", "") or None,
                     a.get("주소", "") or None,
-                    a.get("신청일", "") or None,
                     _to_datetime(a.get("processed_at")),
                 )
 
@@ -401,19 +416,21 @@ async def load_applications(term_id: str) -> list[dict]:
         )
     return [
         {
+            "회차": r["term_id"],
             "이름ID": r["name_id"],
             "이름": r["name"],
             "유형": r["type"],
             "과목명": r["course_name"] or "",
             "예상금액": str(r["expected_amount"] or ""),
+            "입금액": str(r["paid_amount"] or ""),
             "입금현황": _code_to_emoji(r["payment_status"] or "not_paid"),
             "확인사유": r["review_reason"] or "",
             "처리상태": r["processing_status"] or "",
             "입금시간": r["payment_time"] or "",
-            "입금자명(적요)": r["payer_name"] or "",
+            "의뢰인": r["payer_name"] or "",
+            "적요": r["memo"] or "",
             "전화번호": r["phone"] or "",
             "주소": r["address"] or "",
-            "신청일": r["applied_at"] or "",
         }
         for r in rows
     ]

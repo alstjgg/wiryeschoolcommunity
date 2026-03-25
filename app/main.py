@@ -806,9 +806,9 @@ async def _check_processing_gate(term: dict, app_sheet_id: str | None):
         apps_sheet_id = app_sheet_id
         apps_tab = "신청서"
 
-    unprocessed_apps = _read_unprocessed(apps_sheet_id, apps_tab, "A1:L5000")
+    unprocessed_apps = _read_unprocessed(apps_sheet_id, apps_tab, "A1:M5000")
     unprocessed_deposits = (
-        _read_unprocessed(MEMBERS_SHEET_ID, UNMATCHED_DEPOSITS_TAB, "A1:G5000")
+        _read_unprocessed(MEMBERS_SHEET_ID, UNMATCHED_DEPOSITS_TAB, "A1:H5000")
         if USE_DB_SOT else []
     )
 
@@ -839,7 +839,7 @@ async def _check_processing_gate(term: dict, app_sheet_id: str | None):
         lines = []
         for d in unprocessed_deposits[:5]:
             ps = d.get("처리상태", "").strip() or "미입력"
-            lines.append(f"  - 입금자 {d.get('입금자명', '?')} / {d.get('입금액', '')}원 — 처리상태: {ps}")
+            lines.append(f"  - 의뢰인 {d.get('의뢰인', '?')} / {d.get('입금액', '')}원 — 처리상태: {ps}")
         if len(unprocessed_deposits) > 5:
             lines.append(f"  - ... 외 {len(unprocessed_deposits) - 5}건")
         sections.append(

@@ -24,9 +24,9 @@ logger = logging.getLogger(__name__)
 
 # 신청서 헤더 (payment.py APPLICATION_HEADER와 동일)
 _APP_HEADER = [
-    "신청일", "회차", "이름ID", "이름", "유형", "과목명",
-    "예상금액", "입금시간", "입금자명(적요)", "입금현황",
-    "확인사유", "처리상태",
+    "회차", "이름ID", "이름", "유형", "과목명",
+    "예상금액", "입금액", "입금시간", "의뢰인", "적요",
+    "입금현황", "확인사유", "처리상태",
 ]
 
 _MEMBERS_HEADER = [
@@ -35,7 +35,7 @@ _MEMBERS_HEADER = [
 ]
 
 _DEPOSITS_HEADER = [
-    "입금일시", "회차", "입금액", "입금자명", "적요", "확인사유", "처리상태",
+    "입금일시", "회차", "입금액", "의뢰인", "적요", "입금자명", "확인사유", "처리상태",
 ]
 
 # ── Sync functions (synchronous, run in background thread) ────────────────
@@ -50,7 +50,7 @@ def _sync_applications(applications: list[dict]) -> None:
     if not rows:
         logger.warning("_sync_applications: no rows to write, skipping clear+write")
         return
-    clear_range(MEMBERS_SHEET_ID, f"{APPLICATIONS_TAB}!A2:L")
+    clear_range(MEMBERS_SHEET_ID, f"{APPLICATIONS_TAB}!A2:M")
     write_sheet(MEMBERS_SHEET_ID, f"{APPLICATIONS_TAB}!A2", rows)
 
 
@@ -112,15 +112,16 @@ def _sync_deposits(deposits: list[dict]) -> None:
             str(d.get("거래일시", "") or ""),
             str(d.get("term_id", "") or d.get("회차", "") or ""),
             str(d.get("입금", "") or d.get("amount", "") or ""),
-            str(d.get("입금자명", "") or ""),
+            str(d.get("의뢰인", "") or d.get("입금자명", "") or ""),
             str(d.get("적요", "") or ""),
+            str(d.get("매칭이름", "") or ""),
             str(d.get("확인사유", "") or ""),
             str(d.get("처리상태", "") or ""),
         ])
     if not rows:
         logger.warning("_sync_deposits: no rows to write, skipping clear+write")
         return
-    clear_range(MEMBERS_SHEET_ID, f"{UNMATCHED_DEPOSITS_TAB}!A2:G")
+    clear_range(MEMBERS_SHEET_ID, f"{UNMATCHED_DEPOSITS_TAB}!A2:H")
     write_sheet(MEMBERS_SHEET_ID, f"{UNMATCHED_DEPOSITS_TAB}!A2", rows)
 
 
