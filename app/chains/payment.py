@@ -539,11 +539,15 @@ def apply_matching_results(
     return unmatched_count
 
 
-async def run_llm_matching(needs_llm: list[dict], students: list[dict]) -> list[dict]:
-    """LLM으로 강좌 특정 — 룰베이스가 이름 추출까지 완료한 건의 과목만 매칭.
+_LLM_BATCH_SIZE = 20  # 한 번에 LLM에 보내는 최대 건수
 
-    각 건에 _llm_context가 태깅되어 있으며,
-    LLM은 "이 수강생의 과목 목록 중 적요 힌트에 해당하는 과목"만 특정한다.
+
+async def run_llm_matching(needs_llm: list[dict], students: list[dict]) -> list[dict]:
+    """LLM으로 강좌 특정 — 배치 분할 호출.
+
+    룰베이스가 이름 추출까지 완료한 건의 과목만 매칭.
+    20건씩 배치로 나눠서 호출하여 max_tokens 초과 및 JSON 문법 오류를 방지.
+    한 배치가 실패해도 다음 배치는 계속 진행.
     """
     if not needs_llm:
         return []
@@ -553,20 +557,6 @@ async def run_llm_matching(needs_llm: list[dict], students: list[dict]) -> list[
         api_key=ANTHROPIC_API_KEY,
         max_tokens=4096,
     )
-
-    tx_lines = []
-    for i, tx in enumerate(needs_llm):
-        ctx = tx.get("_llm_context", {})
-        name = ctx.get("matched_name", tx.get("매칭이름", "?"))
-        hint = ctx.get("course_hint", "")
-        courses = ctx.get("candidate_courses", [])
-        amount_info = ctx.get("amount_info", {})
-        paid = amount_info.get("paid_courses", 1)
-        tx_lines.append(
-            f"{i+1}. 수강생: {name} / 힌트: '{hint}' / "
-            f"과목: {courses} / 금액: {tx['입금']:,}원({paid}과목)"
-        )
-    tx_text = "\n".join(tx_lines)
 
     system_prompt = """당신은 위례인생학교의 입금 대조 보조 AI입니다.
 각 거래에 대해 수강생의 과목 목록과 적요 힌트를 제공합니다.
@@ -589,44 +579,70 @@ JSON 배열. 각 항목:
 ]
 JSON만 응답하세요."""
 
-    user_prompt = f"다음 거래들의 과목을 특정해주세요:\n\n{tx_text}"
+    num_batches = -(-len(needs_llm) // _LLM_BATCH_SIZE)
+    logger.info("LLM matching input: %d items, %d batches", len(needs_llm), num_batches)
 
-    logger.info("LLM matching input: %d items", len(needs_llm))
+    for batch_start in range(0, len(needs_llm), _LLM_BATCH_SIZE):
+        batch = needs_llm[batch_start:batch_start + _LLM_BATCH_SIZE]
+        batch_end = batch_start + len(batch)
 
-    response = await llm.ainvoke([
-        SystemMessage(content=system_prompt),
-        HumanMessage(content=user_prompt),
-    ])
+        tx_lines = []
+        for i, tx in enumerate(batch):
+            ctx = tx.get("_llm_context", {})
+            name = ctx.get("matched_name", tx.get("매칭이름", "?"))
+            hint = ctx.get("course_hint", "")
+            courses = ctx.get("candidate_courses", [])
+            amount_info = ctx.get("amount_info", {})
+            paid = amount_info.get("paid_courses", 1)
+            tx_lines.append(
+                f"{i+1}. 수강생: {name} / 힌트: '{hint}' / "
+                f"과목: {courses} / 금액: {tx['입금']:,}원({paid}과목)"
+            )
+        tx_text = "\n".join(tx_lines)
+        user_prompt = f"다음 거래들의 과목을 특정해주세요:\n\n{tx_text}"
 
-    content = response.content.strip()
-    logger.info("LLM raw response: %s", content[:1000])
-    if "```json" in content:
-        content = content.split("```json")[1].split("```")[0].strip()
-    elif "```" in content:
-        content = content.split("```")[1].split("```")[0].strip()
+        try:
+            response = await llm.ainvoke([
+                SystemMessage(content=system_prompt),
+                HumanMessage(content=user_prompt),
+            ])
+        except Exception as e:
+            logger.error("LLM API call failed (batch %d~%d): %s", batch_start, batch_end, e)
+            continue
 
-    try:
-        llm_results = json.loads(content)
-    except json.JSONDecodeError as e:
-        logger.error("LLM JSON parse failed: %s / response: %s", e, content[:500])
-        return needs_llm
+        content = response.content.strip()
+        logger.info("LLM batch %d~%d response: %s", batch_start, batch_end, content[:500])
 
-    for llm_item in llm_results:
-        idx = llm_item.get("index", 0) - 1
-        if 0 <= idx < len(needs_llm):
-            tx = needs_llm[idx]
-            course = llm_item.get("매칭강좌")
-            if course:
-                tx["매칭강좌"] = course
-                # 강좌 특정 성공 → 해당 강좌의 이름ID로 업데이트
-                for s in students:
-                    if s["이름"] == tx.get("매칭이름") and s["강좌명"] == course:
-                        tx["매칭ID"] = s["이름ID"]
-                        break
-            tx["상태"] = llm_item.get("상태", "🔶확인필요")
-            tx["메모"] = llm_item.get("메모", tx.get("메모", ""))
-            # _llm_context 정리
-            tx.pop("_llm_context", None)
+        if "```json" in content:
+            content = content.split("```json")[1].split("```")[0].strip()
+        elif "```" in content:
+            content = content.split("```")[1].split("```")[0].strip()
+
+        try:
+            llm_results = json.loads(content)
+        except json.JSONDecodeError as e:
+            logger.error("LLM JSON parse failed (batch %d~%d): %s / response: %s",
+                         batch_start, batch_end, e, content[:500])
+            continue
+
+        for llm_item in llm_results:
+            idx = llm_item.get("index", 0) - 1
+            if 0 <= idx < len(batch):
+                tx = batch[idx]
+                course = llm_item.get("매칭강좌")
+                if course:
+                    tx["매칭강좌"] = course
+                    for s in students:
+                        if s["이름"] == tx.get("매칭이름") and s["강좌명"] == course:
+                            tx["매칭ID"] = s["이름ID"]
+                            break
+                tx["상태"] = llm_item.get("상태", "🔶확인필요")
+                tx["메모"] = llm_item.get("메모", tx.get("메모", ""))
+                tx.pop("_llm_context", None)
+
+    # 실패한 배치의 잔여 _llm_context 정리
+    for tx in needs_llm:
+        tx.pop("_llm_context", None)
 
     return needs_llm
 
