@@ -480,7 +480,7 @@ def apply_matching_results(
     applications: list[dict],
     matched_results: list[dict],
 ) -> int:
-    """매칭 결과를 applications에 반영 (입금현황, 입금시간, 입금자명).
+    """매칭 결과를 applications에 반영 (입금현황, 입금시간, 입금액, 의뢰인, 적요, 확인사유).
 
     강좌 지정 건을 먼저 처리하고, 이름만 있는 건은 남은 미입금 슬롯에 할당.
 

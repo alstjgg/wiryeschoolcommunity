@@ -102,8 +102,8 @@ def _sync_course_records(records: list[dict]) -> None:
 def _sync_deposits(deposits: list[dict]) -> None:
     """미확인입금 탭 전체 덮어쓰기 (clear A2:G + write A2).
 
-    _DEPOSITS_HEADER 순서: 입금일시, 회차, 입금액, 입금자명, 적요, 확인사유, 처리상태
-    load_deposits() dict 키: 거래일시, 입금, 입금자명, 적요, 확인사유, 처리상태
+    _DEPOSITS_HEADER 순서: 입금일시, 회차, 입금액, 의뢰인, 적요, 입금자명, 확인사유, 처리상태
+    load_deposits() dict 키: 거래일시, 입금, 의뢰인, 적요, 확인사유, 처리상태
     term_id는 호출부에서 각 dict에 주입.
     """
     rows = []

@@ -72,13 +72,12 @@ CREATE TABLE IF NOT EXISTS applications (
     memo                TEXT,
     phone               TEXT,
     address             TEXT,
-    applied_at          TEXT,
     processed_at        TIMESTAMPTZ,
     created_at          TIMESTAMPTZ DEFAULT NOW(),
     updated_at          TIMESTAMPTZ DEFAULT NOW()
 );
 
--- Migration: applications 스키마 변경
+-- Migration (v1→v2): 기존 환경에 paid_amount/memo 컬럼 추가
 ALTER TABLE applications ADD COLUMN IF NOT EXISTS paid_amount INTEGER;
 ALTER TABLE applications ADD COLUMN IF NOT EXISTS memo TEXT;
 
@@ -489,7 +488,7 @@ async def load_deposits(
             "id": r["id"],
             "거래일시": r["transaction_time"] or "",
             "입금": r["amount"] or 0,
-            "입금자명": r["payer_name"] or "",
+            "의뢰인": r["payer_name"] or "",
             "적요": r["memo"] or "",
             "match_status": r["match_status"] or "unmatched",
             "matched_name_ids": list(r["matched_name_ids"] or []),
