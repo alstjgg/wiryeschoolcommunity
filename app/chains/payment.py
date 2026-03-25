@@ -480,9 +480,10 @@ def apply_matching_results(
     applications: list[dict],
     matched_results: list[dict],
 ) -> int:
-    """매칭 결과를 applications에 반영 (입금현황, 입금시간, 입금액, 의뢰인, 적요, 확인사유).
+    """매칭 결과를 applications에 반영 — type별 인덱스로 정확한 슬롯 배정.
 
-    강좌 지정 건을 먼저 처리하고, 이름만 있는 건은 남은 미입금 슬롯에 할당.
+    3개 인덱스: 수강(이름ID+과목명), 신규가입(이름ID), 정회원(이름ID).
+    강좌 지정 건 먼저 처리, 이름만 있는 건은 남은 미입금 슬롯에 할당.
 
     각 matched_result에 deposit 추적 메타데이터를 태그:
     - _matched = True/False (매칭 성공 여부)
@@ -490,11 +491,23 @@ def apply_matching_results(
 
     Returns: 매칭되지 않은 deposit 수 (스킵 제외)
     """
-    # 이름ID + 과목명 → application 인덱스 매핑
-    app_index: dict[tuple[str, str], int] = {}
+    # 수강: (이름ID, 과목명) → index
+    tuition_index: dict[tuple[str, str], int] = {}
     for i, app in enumerate(applications):
         if app["유형"] == "수강":
-            app_index[(app["이름ID"], app["과목명"])] = i
+            tuition_index[(app["이름ID"], app["과목명"])] = i
+
+    # 신규가입: 이름ID → index
+    membership_index: dict[str, int] = {}
+    for i, app in enumerate(applications):
+        if app["유형"] == "신규가입":
+            membership_index[app["이름ID"]] = i
+
+    # 정회원: 이름ID → index
+    fullmember_index: dict[str, int] = {}
+    for i, app in enumerate(applications):
+        if app["유형"] == "정회원":
+            fullmember_index[app["이름ID"]] = i
 
     def _fill_app(idx: int, r: dict) -> None:
         """application 슬롯에 매칭 결과 반영."""
@@ -509,13 +522,36 @@ def apply_matching_results(
         """단일 결과를 application에 반영. 성공 시 True."""
         matched_id = r.get("매칭ID")
         matched_course = r.get("매칭강좌", "")
+        match_type = r.get("_match_type", "수강")
         if not matched_id:
             return False
 
-        # 전과목 합산: 해당 이름ID의 모든 미입금 슬롯에 한번에 배정
+        # 신규가입 → membership_index
+        if match_type == "신규가입":
+            idx = membership_index.get(matched_id)
+            if idx is not None and applications[idx]["입금현황"] == "❌미입금":
+                _fill_app(idx, r)
+                r["_matched"] = True
+                r["_matched_name_ids"] = [matched_id]
+                return True
+            return False
+
+        # 정회원 → fullmember_index
+        if match_type == "정회원":
+            idx = fullmember_index.get(matched_id)
+            if idx is not None and applications[idx]["입금현황"] == "❌미입금":
+                _fill_app(idx, r)
+                r["_matched"] = True
+                r["_matched_name_ids"] = [matched_id]
+                return True
+            return False
+
+        # 수강 — tuition_index
+
+        # 전과목 합산: 해당 이름ID의 모든 미입금 수강 슬롯에 한번에 배정
         if r.get("상태") == "✅정상" and "전과목합산" in r.get("메모", ""):
             applied_any = False
-            for k, idx in app_index.items():
+            for k, idx in tuition_index.items():
                 if k[0] == matched_id and applications[idx]["입금현황"] == "❌미입금":
                     _fill_app(idx, r)
                     applied_any = True
@@ -527,26 +563,26 @@ def apply_matching_results(
 
         # 정확한 (이름ID, 강좌) 키로 슬롯 찾기
         key = (matched_id, matched_course)
-        if key not in app_index:
+        if key not in tuition_index:
             # 매칭강좌 우선 탐색 → 이름 fallback 2단계
             found = False
             if matched_course:
-                for k, idx in app_index.items():
+                for k, idx in tuition_index.items():
                     if k[0] == matched_id and k[1] == matched_course and applications[idx]["입금현황"] == "❌미입금":
                         key = k
                         found = True
                         break
             if not found:
-                for k, idx in app_index.items():
+                for k, idx in tuition_index.items():
                     if k[0] == matched_id and applications[idx]["입금현황"] == "❌미입금":
                         key = k
                         break
 
-        if key in app_index:
-            idx = app_index[key]
+        if key in tuition_index:
+            idx = tuition_index[key]
             if applications[idx]["입금현황"] != "❌미입금":
                 # 이미 처리된 슬롯 → 다른 미입금 슬롯 탐색
-                for k, i2 in app_index.items():
+                for k, i2 in tuition_index.items():
                     if k[0] == matched_id and applications[i2]["입금현황"] == "❌미입금":
                         idx = i2
                         break
@@ -576,14 +612,22 @@ def apply_matching_results(
     return unmatched_count
 
 
-class CourseMatchResult(BaseModel):
-    """LLM이 반환하는 단일 거래의 강좌 매칭 결과"""
+class TransactionMatch(BaseModel):
+    """LLM이 적요에서 추출한 입금 정보"""
     matched_course: Optional[str] = Field(
         None,
-        description="수강생의 과목 목록 중 적요 힌트에 해당하는 정확한 과목명. 특정 불가하면 null.",
+        description="수강생의 과목 목록 중 적요에 해당하는 정확한 과목명. 특정 불가하면 null.",
+    )
+    match_type: Literal["tuition", "membership", "fullmember", "unknown"] = Field(
+        description=(
+            "'tuition' = 수강료 입금, "
+            "'membership' = 가입비/회비, "
+            "'fullmember' = 정회원비/연회비, "
+            "'unknown' = 판단 불가"
+        ),
     )
     status: Literal["confirmed", "needs_review"] = Field(
-        description="'confirmed' = 확실한 매칭, 'needs_review' = 불확실하거나 특정 불가",
+        description="'confirmed' = 확실한 추출, 'needs_review' = 모호하거나 확신 없음",
     )
     memo: str = Field(
         default="",
@@ -595,10 +639,10 @@ _LLM_CONCURRENCY = 5  # 동시 LLM 호출 수 제한 (Anthropic rate limit 고�
 
 
 async def run_llm_matching(needs_llm: list[dict], students: list[dict]) -> list[dict]:
-    """LLM으로 강좌 특정 — with_structured_output으로 스키마 강제 + 병렬 호출.
+    """LLM으로 과목 추출 — with_structured_output + 병렬 호출.
 
-    건당 개별 호출로 JSON 파싱 오류를 원천 차단하고,
-    asyncio.gather + Semaphore로 병렬 처리하여 속도 유지.
+    LLM은 추출만 담당: 적요에서 과목 약칭을 찾아 과목 목록과 매핑.
+    매칭 판정(슬롯 배정)은 apply_matching_results가 담당.
     """
     if not needs_llm:
         return []
@@ -608,40 +652,43 @@ async def run_llm_matching(needs_llm: list[dict], students: list[dict]) -> list[
         api_key=ANTHROPIC_API_KEY,
         max_tokens=1024,
     )
-    structured_llm = llm.with_structured_output(CourseMatchResult)
+    structured_llm = llm.with_structured_output(TransactionMatch)
 
-    system_prompt = """당신은 위례인생학교의 입금 대조 보조 AI입니다.
-수강생의 과목 목록과 적요 힌트를 제공합니다.
-적요에서 추출된 강좌 힌트를 해당 수강생의 과목 목록과 대조하여 어느 과목인지 특정해주세요.
+    system_prompt = """당신은 입금 적요에서 과목 정보를 추출하는 AI입니다.
 
-## 적요 패턴
-- "이름+강좌약어" 형태가 많음 (예: "경제뉴스로기초" → "경제뉴스로 배우는 경제해설(기초)")
-- 역순("마음챙김명상" → "나, 마음챙김 명상"), 줄임말("경제심" → 심화), 오타 가능
-- 힌트가 비어있으면 금액/맥락으로 추정하되, 확신 없으면 상태를 "🔶확인필요"로
+## 입력
+각 거래에 대해 적요, 의뢰인, 금액, 수강생의 과목 목록을 제공합니다.
 
-## 중요
-- matched_course는 반드시 과목 목록에 있는 정확한 과목명이어야 합니다. 없으면 null.
-- status = "confirmed": 힌트와 과목이 확실하게 매칭됨
-- status = "needs_review": 힌트가 없거나, 모호하거나, 확신 없음"""
+## 추출 규칙
+1. 적요에서 과목 약칭을 찾고, 과목 목록의 정확한 과목명으로 매핑하세요.
+   - "경제뉴스로기초" → "경제뉴스로 배우는 경제해설(기초)"
+   - "올인원영어" → "다시 시작하는 All In One 영어"
+   - "어반스캐치" (오타) → "어반스케치"
+   - "경제심" → "경제뉴스로 배우는 경제해설(심화)"
+2. "가입비", "회비", "신규회비" 등 → match_type="membership" (과목 아님)
+3. "정회원", "연회비" 등 → match_type="fullmember" (과목 아님)
+4. 과목 약칭이 과목 목록의 여러 과목에 해당할 수 있으면 → status="needs_review"
+   예: "경제"만으로는 "금융과 경제" vs "경제뉴스로 배우는 경제해설" 구분 불가
+5. matched_course는 반드시 과목 목록에 있는 정확한 과목명이어야 합니다. 없으면 null.
+6. 적요에 과목 힌트가 전혀 없으면 match_type="unknown", status="needs_review"."""
 
     logger.info("LLM matching input: %d items (structured output, concurrency=%d)",
                 len(needs_llm), _LLM_CONCURRENCY)
 
     semaphore = asyncio.Semaphore(_LLM_CONCURRENCY)
 
-    async def process_one(i: int, tx: dict) -> tuple[int, CourseMatchResult | None]:
+    async def process_one(i: int, tx: dict) -> tuple[int, TransactionMatch | None]:
         ctx = tx.get("_llm_context", {})
         name = ctx.get("matched_name", tx.get("매칭이름", "?"))
         hint = ctx.get("course_hint", "")
         courses = ctx.get("candidate_courses", [])
-        amount_info = ctx.get("amount_info", {})
-        paid = amount_info.get("paid_courses", 1)
 
         user_prompt = (
             f"수강생: {name}\n"
-            f"적요 힌트: '{hint}'\n"
-            f"과목 목록: {courses}\n"
-            f"금액: {tx['입금']:,}원 ({paid}과목분)"
+            f"적요: '{tx.get('적요', '')}'\n"
+            f"의뢰인: '{tx.get('의뢰인', '')}'\n"
+            f"금액: {tx['입금']:,}원\n"
+            f"과목 목록: {courses}"
         )
 
         async with semaphore:
@@ -663,13 +710,25 @@ async def run_llm_matching(needs_llm: list[dict], students: list[dict]) -> list[
         if result is None:
             continue
         tx = needs_llm[i]
-        course = result.matched_course
-        if course:
-            tx["매칭강좌"] = course
-            for s in students:
-                if s["이름"] == tx.get("매칭이름") and s["강좌명"] == course:
-                    tx["매칭ID"] = s["이름ID"]
-                    break
+
+        # LLM result → _match_type + 매칭강좌 세팅
+        if result.match_type == "membership":
+            tx["_match_type"] = "신규가입"
+            tx["매칭강좌"] = ""
+        elif result.match_type == "fullmember":
+            tx["_match_type"] = "정회원"
+            tx["매칭강좌"] = ""
+        else:
+            tx["_match_type"] = "수강"
+            course = result.matched_course
+            if course:
+                tx["매칭강좌"] = course
+                # 강좌 특정 성공 → 해당 강좌의 이름ID로 업데이트
+                for s in students:
+                    if s["이름"] == tx.get("매칭이름") and s["강좌명"] == course:
+                        tx["매칭ID"] = s["이름ID"]
+                        break
+
         tx["상태"] = "✅정상" if result.status == "confirmed" else "🔶확인필요"
         tx["메모"] = result.memo
         tx.pop("_llm_context", None)

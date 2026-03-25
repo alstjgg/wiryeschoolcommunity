@@ -255,7 +255,13 @@ def match_transaction(
             "fullmember": f"정회원비 입금 ({amount:,}원)",
             "membership_plus_fullmember": f"가입비+정회원비 합산 ({amount:,}원)",
         }
+        type_map = {
+            "membership_fee": "신규가입",
+            "fullmember": "정회원",
+            "membership_plus_fullmember": "신규가입",
+        }
         result["메모"] = type_labels.get(amount_info["type"], amount_info["type"])
+        result["_match_type"] = type_map[amount_info["type"]]
         return result
 
     # 5. 수강료 매칭
@@ -276,12 +282,13 @@ def match_transaction(
         if len(course_students) == 1:
             result["매칭ID"] = course_students[0]["이름ID"]
             result["매칭강좌"] = matched_course
-            if amount_info["auto_confirmable"]:
+            if amount_info["paid_courses"] >= 1:
+                # 힌트로 특정 과목 확인 + 금액이 1과목 이상 → 정상
                 result["상태"] = "✅정상"
                 result["메모"] = (result["메모"] + f" 적요에서 강좌명 확인: {hint}→{matched_course}").strip()
             else:
                 result["상태"] = "🔶확인필요"
-                result["메모"] = f"일부과목({amount_info['paid_courses']}/{num_courses})"
+                result["메모"] = f"금액 불일치 ({amount:,}원)"
             return result
 
     # 7. 자동 확정 가능하지만 강좌 특정 필요 → LLM으로 넘김
