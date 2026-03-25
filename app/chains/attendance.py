@@ -74,7 +74,7 @@ def _load_registered_from_sheets(
         sheet_id = applications_sheet_id
         tab = "신청서"
 
-    rows = read_sheet(sheet_id, f"{tab}!A1:L5000")
+    rows = read_sheet(sheet_id, f"{tab}!A1:M5000")
     if not rows or len(rows) < 2:
         return []
     header = rows[0]
@@ -112,7 +112,7 @@ async def _load_registered_from_db(
         sheet_id = applications_sheet_id
         tab = "신청서"
 
-    rows = read_sheet(sheet_id, f"{tab}!A1:L5000")
+    rows = read_sheet(sheet_id, f"{tab}!A1:M5000")
     status_map: dict[tuple, str] = {}
     if rows and len(rows) >= 2:
         header = rows[0]
