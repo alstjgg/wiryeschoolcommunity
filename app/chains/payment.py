@@ -528,16 +528,19 @@ def apply_matching_results(
         # 정확한 (이름ID, 강좌) 키로 슬롯 찾기
         key = (matched_id, matched_course)
         if key not in app_index:
-            # 강좌 힌트 불일치 → 슬롯 배정하지 않음 (미확인입금)
-            if r.get("_hint_mismatch"):
-                return False
-            # ✅정상 건만 이름ID fallback 허용 (단일과목 자동확정 등)
-            if r.get("상태") != "✅정상":
-                return False
-            for k, idx in app_index.items():
-                if k[0] == matched_id and applications[idx]["입금현황"] == "❌미입금":
-                    key = k
-                    break
+            # 매칭강좌 우선 탐색 → 이름 fallback 2단계
+            found = False
+            if matched_course:
+                for k, idx in app_index.items():
+                    if k[0] == matched_id and k[1] == matched_course and applications[idx]["입금현황"] == "❌미입금":
+                        key = k
+                        found = True
+                        break
+            if not found:
+                for k, idx in app_index.items():
+                    if k[0] == matched_id and applications[idx]["입금현황"] == "❌미입금":
+                        key = k
+                        break
 
         if key in app_index:
             idx = app_index[key]

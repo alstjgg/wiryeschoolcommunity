@@ -284,14 +284,6 @@ def match_transaction(
                 result["메모"] = f"일부과목({amount_info['paid_courses']}/{num_courses})"
             return result
 
-    # 6-1. 강좌 힌트가 있지만 과목 목록에 없는 경우 → 미확인입금
-    if hint and not matched_course:
-        result["매칭ID"] = matched_students[0]["이름ID"]
-        result["상태"] = "🔶확인필요"
-        result["메모"] = f"적요 힌트 '{hint}'가 신청 과목에 없음"
-        result["_hint_mismatch"] = True
-        return result
-
     # 7. 자동 확정 가능하지만 강좌 특정 필요 → LLM으로 넘김
     if amount_info["auto_confirmable"] and num_courses > 1:
         # 전과목 합산 → 전부 확정
