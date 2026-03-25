@@ -496,6 +496,15 @@ def apply_matching_results(
         if app["유형"] == "수강":
             app_index[(app["이름ID"], app["과목명"])] = i
 
+    def _fill_app(idx: int, r: dict) -> None:
+        """application 슬롯에 매칭 결과 반영."""
+        applications[idx]["입금현황"] = r["상태"]
+        applications[idx]["입금시간"] = r.get("거래일시", "")
+        applications[idx]["입금액"] = str(r.get("입금", ""))
+        applications[idx]["의뢰인"] = r.get("의뢰인", "")
+        applications[idx]["적요"] = r.get("적요", "")
+        applications[idx]["확인사유"] = r.get("메모", "")
+
     def _apply(r: dict) -> bool:
         """단일 결과를 application에 반영. 성공 시 True."""
         matched_id = r.get("매칭ID")
@@ -503,9 +512,28 @@ def apply_matching_results(
         if not matched_id:
             return False
 
+        # 전과목 합산: 해당 이름ID의 모든 미입금 슬롯에 한번에 배정
+        if r.get("상태") == "✅정상" and "전과목합산" in r.get("메모", ""):
+            applied_any = False
+            for k, idx in app_index.items():
+                if k[0] == matched_id and applications[idx]["입금현황"] == "❌미입금":
+                    _fill_app(idx, r)
+                    applied_any = True
+            if applied_any:
+                r["_matched"] = True
+                r["_matched_name_ids"] = [matched_id]
+                return True
+            return False
+
+        # 정확한 (이름ID, 강좌) 키로 슬롯 찾기
         key = (matched_id, matched_course)
         if key not in app_index:
-            # 강좌 없이 이름ID만으로 남은 미입금 슬롯 찾기
+            # 강좌 힌트 불일치 → 슬롯 배정하지 않음 (미확인입금)
+            if r.get("_hint_mismatch"):
+                return False
+            # ✅정상 건만 이름ID fallback 허용 (단일과목 자동확정 등)
+            if r.get("상태") != "✅정상":
+                return False
             for k, idx in app_index.items():
                 if k[0] == matched_id and applications[idx]["입금현황"] == "❌미입금":
                     key = k
@@ -521,11 +549,7 @@ def apply_matching_results(
                         break
                 else:
                     return False
-            applications[idx]["입금현황"] = r["상태"]
-            applications[idx]["입금시간"] = r.get("거래일시", "")
-            applications[idx]["입금액"] = str(r.get("입금", ""))
-            applications[idx]["의뢰인"] = r.get("의뢰인", "")
-            applications[idx]["적요"] = r.get("적요", "")
+            _fill_app(idx, r)
             r["_matched"] = True
             r["_matched_name_ids"] = [applications[idx].get("이름ID", "")]
             return True

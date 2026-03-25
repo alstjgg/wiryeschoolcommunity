@@ -14,9 +14,9 @@ THIRD_PARTY_SENDERS = {
 }
 
 # 가입비 키워드
-_MEMBERSHIP_KEYWORDS = {"가입", "회원가입", "가입비"}
+_MEMBERSHIP_KEYWORDS = {"가입", "가입비", "회비", "회원가입", "회원비", "신규", "신규회비", "신규회원"}
 # 정회원 키워드
-_FULLMEMBER_KEYWORDS = {"정회원", "연회비", "연회원"}
+_FULLMEMBER_KEYWORDS = {"정회원", "연회비", "연회원", "정회원비"}
 
 
 def is_third_party(의뢰인: str) -> bool:
@@ -224,7 +224,7 @@ def match_transaction(
 
     if not name:
         result["상태"] = "🔶확인필요"
-        result["메모"] = "이름매칭실패"
+        result["메모"] = "수강생 목록에서 이름을 찾지 못함"
         return result
 
     result["매칭이름"] = name
@@ -233,7 +233,7 @@ def match_transaction(
     if not is_third_party(의뢰인):
         clean_payer = re.sub(r"\(.*?\)$", "", 의뢰인).strip()
         if clean_payer and clean_payer != name and name in 적요:
-            result["메모"] = "대리입금 추정"
+            result["메모"] = f"대리입금 추정 (의뢰인: {clean_payer})"
 
     # 3. 해당 이름의 학생 찾기
     matched_students = [s for s in students if s["이름"] == name]
@@ -248,13 +248,14 @@ def match_transaction(
 
     # 가입비/정회원 유형 → 이름 매칭만 하고 cascade에서 처리
     if amount_info["type"] in ("membership_fee", "fullmember", "membership_plus_fullmember"):
-        if len(matched_students) == 1:
-            result["매칭ID"] = matched_students[0]["이름ID"]
-        else:
-            # 동명이인 — 아무 학생이나 (가입비/정회원은 이름ID 기준이라 과목 무관)
-            result["매칭ID"] = matched_students[0]["이름ID"]
+        result["매칭ID"] = matched_students[0]["이름ID"]
         result["상태"] = "🔶확인필요"
-        result["메모"] = amount_info["type"].replace("_", " ")
+        type_labels = {
+            "membership_fee": f"가입비 입금 ({amount:,}원)",
+            "fullmember": f"정회원비 입금 ({amount:,}원)",
+            "membership_plus_fullmember": f"가입비+정회원비 합산 ({amount:,}원)",
+        }
+        result["메모"] = type_labels.get(amount_info["type"], amount_info["type"])
         return result
 
     # 5. 수강료 매칭
@@ -263,6 +264,7 @@ def match_transaction(
         result["매칭ID"] = matched_students[0]["이름ID"]
         result["매칭강좌"] = matched_students[0]["강좌명"]
         result["상태"] = "✅정상"
+        result["메모"] = (result["메모"] + " 1과목 신청 — 금액 일치").strip()
         return result
 
     # 6. 강좌 힌트 추출 + 매칭 시도
@@ -276,10 +278,19 @@ def match_transaction(
             result["매칭강좌"] = matched_course
             if amount_info["auto_confirmable"]:
                 result["상태"] = "✅정상"
+                result["메모"] = (result["메모"] + f" 적요에서 강좌명 확인: {hint}→{matched_course}").strip()
             else:
                 result["상태"] = "🔶확인필요"
                 result["메모"] = f"일부과목({amount_info['paid_courses']}/{num_courses})"
             return result
+
+    # 6-1. 강좌 힌트가 있지만 과목 목록에 없는 경우 → 미확인입금
+    if hint and not matched_course:
+        result["매칭ID"] = matched_students[0]["이름ID"]
+        result["상태"] = "🔶확인필요"
+        result["메모"] = f"적요 힌트 '{hint}'가 신청 과목에 없음"
+        result["_hint_mismatch"] = True
+        return result
 
     # 7. 자동 확정 가능하지만 강좌 특정 필요 → LLM으로 넘김
     if amount_info["auto_confirmable"] and num_courses > 1:
@@ -287,13 +298,13 @@ def match_transaction(
         result["매칭ID"] = matched_students[0]["이름ID"]
         result["상태"] = "✅정상"
         result["매칭강좌"] = None  # apply_matching_results에서 전 슬롯 소진
-        result["메모"] = f"전과목합산({num_courses}과목)"
+        result["메모"] = f"전과목합산 — {num_courses}과목 전체 합산입금 ({num_courses}×{TUITION_FEE // 10000}만원)"
         return result
 
     # 8. 강좌 특정 필요 → LLM 태깅
     result["매칭ID"] = matched_students[0]["이름ID"]
     result["상태"] = "🔶확인필요"
-    result["메모"] = "강좌특정필요"
+    result["메모"] = f"다과목({num_courses}과목) — 강좌 힌트 없음" if not hint else f"다과목({num_courses}과목) — 강좌 특정 필요"
     result["_llm_context"] = {
         "matched_name": name,
         "course_hint": hint or "",
