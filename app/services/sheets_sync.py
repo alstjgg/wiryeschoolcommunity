@@ -156,7 +156,9 @@ async def sync_to_sheets(
     data: list[dict],
     term_id: str = "",
 ) -> None:
-    """Fire-and-forget background Sheets write.
+    """Sheets 동기화 — await으로 직렬 실행.
+
+    에러 발생 시 호출부의 try/except에서 잡힘.
 
     Args:
         sync_type: "applications", "members", "member_records",
@@ -166,4 +168,4 @@ async def sync_to_sheets(
     """
     if not USE_DB_SOT:
         return
-    asyncio.create_task(asyncio.to_thread(_safe_sync, sync_type, data, term_id))
+    await asyncio.to_thread(_safe_sync, sync_type, data, term_id)

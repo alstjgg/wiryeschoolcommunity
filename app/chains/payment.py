@@ -557,7 +557,7 @@ class CourseMatchResult(BaseModel):
     )
 
 
-_LLM_CONCURRENCY = 10  # 동시 LLM 호출 수 제한
+_LLM_CONCURRENCY = 5  # 동시 LLM 호출 수 제한 (Anthropic rate limit 고려)
 
 
 async def run_llm_matching(needs_llm: list[dict], students: list[dict]) -> list[dict]:
