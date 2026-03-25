@@ -613,21 +613,13 @@ def apply_matching_results(
 
 
 class TransactionMatch(BaseModel):
-    """LLM이 적요에서 추출한 입금 정보"""
+    """LLM이 적요에서 추출한 과목 매칭 결과"""
     matched_course: Optional[str] = Field(
         None,
         description="수강생의 과목 목록 중 적요에 해당하는 정확한 과목명. 특정 불가하면 null.",
     )
-    match_type: Literal["tuition", "membership", "fullmember", "unknown"] = Field(
-        description=(
-            "'tuition' = 수강료 입금, "
-            "'membership' = 가입비/회비, "
-            "'fullmember' = 정회원비/연회비, "
-            "'unknown' = 판단 불가"
-        ),
-    )
     status: Literal["confirmed", "needs_review"] = Field(
-        description="'confirmed' = 확실한 추출, 'needs_review' = 모호하거나 확신 없음",
+        description="'confirmed' = 확실한 매칭, 'needs_review' = 모호하거나 확신 없음",
     )
     memo: str = Field(
         default="",
@@ -635,7 +627,7 @@ class TransactionMatch(BaseModel):
     )
 
 
-_LLM_CONCURRENCY = 5  # 동시 LLM 호출 수 제한 (Anthropic rate limit 고려)
+_LLM_CONCURRENCY = 2  # 동시 LLM 호출 수 제한 (30k input tokens/min rate limit)
 
 
 async def run_llm_matching(needs_llm: list[dict], students: list[dict]) -> list[dict]:
@@ -665,12 +657,10 @@ async def run_llm_matching(needs_llm: list[dict], students: list[dict]) -> list[
    - "올인원영어" → "다시 시작하는 All In One 영어"
    - "어반스캐치" (오타) → "어반스케치"
    - "경제심" → "경제뉴스로 배우는 경제해설(심화)"
-2. "가입비", "회비", "신규회비" 등 → match_type="membership" (과목 아님)
-3. "정회원", "연회비" 등 → match_type="fullmember" (과목 아님)
-4. 과목 약칭이 과목 목록의 여러 과목에 해당할 수 있으면 → status="needs_review"
+2. 과목 약칭이 과목 목록의 여러 과목에 해당할 수 있으면 → status="needs_review"
    예: "경제"만으로는 "금융과 경제" vs "경제뉴스로 배우는 경제해설" 구분 불가
-5. matched_course는 반드시 과목 목록에 있는 정확한 과목명이어야 합니다. 없으면 null.
-6. 적요에 과목 힌트가 전혀 없으면 match_type="unknown", status="needs_review"."""
+3. matched_course는 반드시 과목 목록에 있는 정확한 과목명이어야 합니다. 없으면 null.
+4. 적요에 과목 힌트가 전혀 없으면 matched_course=null, status="needs_review"."""
 
     logger.info("LLM matching input: %d items (structured output, concurrency=%d)",
                 len(needs_llm), _LLM_CONCURRENCY)
@@ -692,6 +682,7 @@ async def run_llm_matching(needs_llm: list[dict], students: list[dict]) -> list[
         )
 
         async with semaphore:
+            await asyncio.sleep(0.5)  # 30k input tokens/min rate limit 준수
             try:
                 result = await structured_llm.ainvoke([
                     SystemMessage(content=system_prompt),
@@ -707,27 +698,20 @@ async def run_llm_matching(needs_llm: list[dict], students: list[dict]) -> list[
 
     resolved = 0
     for i, result in results:
-        if result is None:
-            continue
         tx = needs_llm[i]
+        if result is None:
+            # LLM 실패 → 슬롯 배정 방지 (잘못된 슬롯보다 미확인입금이 나음)
+            tx["매칭ID"] = None
+            tx.pop("_llm_context", None)
+            continue
 
-        # LLM result → _match_type + 매칭강좌 세팅
-        if result.match_type == "membership":
-            tx["_match_type"] = "신규가입"
-            tx["매칭강좌"] = ""
-        elif result.match_type == "fullmember":
-            tx["_match_type"] = "정회원"
-            tx["매칭강좌"] = ""
-        else:
-            tx["_match_type"] = "수강"
-            course = result.matched_course
-            if course:
-                tx["매칭강좌"] = course
-                # 강좌 특정 성공 → 해당 강좌의 이름ID로 업데이트
-                for s in students:
-                    if s["이름"] == tx.get("매칭이름") and s["강좌명"] == course:
-                        tx["매칭ID"] = s["이름ID"]
-                        break
+        course = result.matched_course
+        if course:
+            tx["매칭강좌"] = course
+            for s in students:
+                if s["이름"] == tx.get("매칭이름") and s["강좌명"] == course:
+                    tx["매칭ID"] = s["이름ID"]
+                    break
 
         tx["상태"] = "✅정상" if result.status == "confirmed" else "🔶확인필요"
         tx["메모"] = result.memo
