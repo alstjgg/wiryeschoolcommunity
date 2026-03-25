@@ -6,7 +6,7 @@ PostgreSQL이 SoT. DB 쓰기 후 sheets_sync.py로 백그라운드 Sheets 동기
 import asyncio
 import json
 import logging
-from typing import Optional
+from typing import Literal, Optional
 
 from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import SystemMessage, HumanMessage
@@ -544,14 +544,15 @@ def apply_matching_results(
 
 class CourseMatchResult(BaseModel):
     """LLM이 반환하는 단일 거래의 강좌 매칭 결과"""
-    매칭강좌: Optional[str] = Field(
+    matched_course: Optional[str] = Field(
         None,
         description="수강생의 과목 목록 중 적요 힌트에 해당하는 정확한 과목명. 특정 불가하면 null.",
     )
-    상태: str = Field(
-        description="'✅정상' (확실한 매칭) 또는 '🔶확인필요' (불확실하거나 특정 불가)",
+    status: Literal["confirmed", "needs_review"] = Field(
+        description="'confirmed' = 확실한 매칭, 'needs_review' = 불확실하거나 특정 불가",
     )
-    메모: str = Field(
+    memo: str = Field(
+        default="",
         description="판단 근거를 간단히 설명",
     )
 
@@ -585,8 +586,9 @@ async def run_llm_matching(needs_llm: list[dict], students: list[dict]) -> list[
 - 힌트가 비어있으면 금액/맥락으로 추정하되, 확신 없으면 상태를 "🔶확인필요"로
 
 ## 중요
-- 매칭강좌는 반드시 과목 목록에 있는 정확한 과목명이어야 합니다. 없으면 null.
-- 적요 힌트만으로는 특정 불가능한 경우 상태를 "🔶확인필요"로 설정하세요."""
+- matched_course는 반드시 과목 목록에 있는 정확한 과목명이어야 합니다. 없으면 null.
+- status = "confirmed": 힌트와 과목이 확실하게 매칭됨
+- status = "needs_review": 힌트가 없거나, 모호하거나, 확신 없음"""
 
     logger.info("LLM matching input: %d items (structured output, concurrency=%d)",
                 len(needs_llm), _LLM_CONCURRENCY)
@@ -627,17 +629,17 @@ async def run_llm_matching(needs_llm: list[dict], students: list[dict]) -> list[
         if result is None:
             continue
         tx = needs_llm[i]
-        course = result.매칭강좌
+        course = result.matched_course
         if course:
             tx["매칭강좌"] = course
             for s in students:
                 if s["이름"] == tx.get("매칭이름") and s["강좌명"] == course:
                     tx["매칭ID"] = s["이름ID"]
                     break
-        tx["상태"] = result.상태
-        tx["메모"] = result.메모
+        tx["상태"] = "✅정상" if result.status == "confirmed" else "🔶확인필요"
+        tx["메모"] = result.memo
         tx.pop("_llm_context", None)
-        if result.상태 == "✅정상":
+        if result.status == "confirmed":
             resolved += 1
 
     logger.info("LLM matching completed: %d/%d resolved", resolved, len(needs_llm))

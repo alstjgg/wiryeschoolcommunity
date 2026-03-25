@@ -47,9 +47,11 @@ def _sync_applications(applications: list[dict]) -> None:
         [str(a.get(col, "") or "") for col in _APP_HEADER]
         for a in applications
     ]
+    if not rows:
+        logger.warning("_sync_applications: no rows to write, skipping clear+write")
+        return
     clear_range(MEMBERS_SHEET_ID, f"{APPLICATIONS_TAB}!A2:L")
-    if rows:
-        write_sheet(MEMBERS_SHEET_ID, f"{APPLICATIONS_TAB}!A2", rows)
+    write_sheet(MEMBERS_SHEET_ID, f"{APPLICATIONS_TAB}!A2", rows)
 
 
 def _sync_members(members: list[dict]) -> None:
@@ -68,9 +70,11 @@ def _sync_members(members: list[dict]) -> None:
         ]
         for m in members
     ]
+    if not rows:
+        logger.warning("_sync_members: no rows to write, skipping clear+write")
+        return
     clear_range(MEMBERS_SHEET_ID, f"{MEMBERS_TAB}!A2:I")
-    if rows:
-        write_sheet(MEMBERS_SHEET_ID, f"{MEMBERS_TAB}!A2", rows)
+    write_sheet(MEMBERS_SHEET_ID, f"{MEMBERS_TAB}!A2", rows)
 
 
 def _sync_member_records(records: list[dict]) -> None:
@@ -113,9 +117,11 @@ def _sync_deposits(deposits: list[dict]) -> None:
             str(d.get("확인사유", "") or ""),
             str(d.get("처리상태", "") or ""),
         ])
+    if not rows:
+        logger.warning("_sync_deposits: no rows to write, skipping clear+write")
+        return
     clear_range(MEMBERS_SHEET_ID, f"{UNMATCHED_DEPOSITS_TAB}!A2:G")
-    if rows:
-        write_sheet(MEMBERS_SHEET_ID, f"{UNMATCHED_DEPOSITS_TAB}!A2", rows)
+    write_sheet(MEMBERS_SHEET_ID, f"{UNMATCHED_DEPOSITS_TAB}!A2", rows)
 
 
 # ── Public API ────────────────────────────────────────────────────────────
