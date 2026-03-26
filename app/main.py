@@ -707,6 +707,7 @@ async def write_payment_results(
         await send_default_actions("payment")
 
         # 미확인입금 Sheets 동기화 (fire-and-forget background)
+        from app.config import USE_DB_SOT
         if USE_DB_SOT:
             from app.services import db as _db
             from app.services.sheets_sync import sync_to_sheets
