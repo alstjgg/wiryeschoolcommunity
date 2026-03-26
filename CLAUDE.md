@@ -117,6 +117,8 @@ awaiting_term_input      # 회차 텍스트 입력 대기 (모든 플로우 공�
 awaiting_applicants_file # 수강 신청자 목록 파일 대기
 awaiting_payment_file    # 입금내역 파일 대기
 awaiting_ocr_image       # 출석부 사진 대기
+creating_attendance      # 출석부 생성 중 (텍스트 입력 시 "잠시만 기다려주세요" 응답)
+running_graduation       # 종강 처리 중 (텍스트 입력 시 "잠시만 기다려주세요" 응답)
 ```
 
 파일 업로드 대기 상태에서 텍스트가 입력되면 `handle_mid_flow_text()`로 처리: 취소 키워드 감지 → Q&A 답변 후 상태 유지 → 파일 재요청. 워크플로우를 이탈하지 않는다.
@@ -200,9 +202,9 @@ wiryeschoolcommunity/
 │   ├── chains/
 │   │   ├── qa.py                # 질의 응답 체인
 │   │   ├── payment.py           # 입금 대조 파이프라인 (DB+n8n, 매칭, deposits 추적, 등급 cascade, 강사/사무처 면제)
-│   │   ├── attendance.py        # 출석부 생성 (처리상태는 Sheets에서 읽기, DB모드: 신청기록 탭)
+│   │   ├── attendance.py        # 출석부 생성 — 단계별 함수 분리 (group_by_course, create_attendance_spreadsheet, generate_attendance_pdf, upload_pdf_to_drive). main.py에서 cl.Step으로 직렬 호출.
 │   │   ├── ocr.py               # 출석 체크 OCR (dual-write: DB+Sheets, Claude Vision)
-│   │   └── graduation.py        # 종강 처리 (dual-write, 출석률 집계, 등급 강등)
+│   │   └── graduation.py        # 종강 처리 — 단계별 함수 분리 (load_student_name_id_map, build_course_records, apply_demotion). main.py에서 cl.Step으로 직렬 호출.
 │   ├── services/
 │   │   ├── google_auth.py       # Google API 인증 (SA 파일 + JSON 환경변수 이중 지원)
 │   │   ├── google_drive.py      # Drive API 래퍼 + 동적 폴더 탐색 (find_term_folder 등)
@@ -440,19 +442,18 @@ Google Sheets 파일 1개. 수강생 탭 + 과목별 탭 + 과목별 인쇄용 P
 
 ### 파이프라인 상세
 
-**P3. 종강 처리** (on-demand, ✅ 구현 완료 — `graduation.py`)
+**P3. 종강 처리** (on-demand, ✅ 구현 완료 — `graduation.py` 단계별 함수 + `main.py` cl.Step 직렬 호출)
 ```
 트리거: 관리자가 챗봇에서 "🎓 종강 처리" Starter 버튼 클릭
 전제: 출석 체크(OCR)가 모든 과목에 대해 완료된 상태
 1. 회차 확인 → 관리자 확정
 2. 출석 체크 완료 확인 → 관리자 확정
-3. 과목별 탭에서 O/빈칸 직접 카운트 → 출석률 집계
-4. 수강생 탭 출석률(D열) 업데이트
-5. 수강기록 탭에 append (수강생 × 과목)
-6. 회원목록 재집계 (수강count, 출석률(누적), 마지막수강회차)
-7. 준회원 → 회원 일괄 강등 (매 종강 시)
-8. (1학기 종강 시) 정회원 → 회원 강등 (활동 중 사무처 직원만 제외, 강사는 강등) + 예외여부 리셋
-9. 회원기록 탭에 강등 이력 append
+3. [Step 📊 출석률 집계] load_attendance_results() — 과목별 탭 O/빈칸 카운트
+4. [Step 📝 출석률 기록] update_attendance_rates_in_sheet() — 수강생 탭 D열 업데이트
+5. [Step 📋 수강기록 저장] load_student_name_id_map() + build_course_records() + append
+6. [Step 📊 회원 통계 재집계] recalculate_member_stats()
+7. [Step 🔄 등급 강등] apply_demotion() — 준회원→회원(매 종강), 정회원→회원(겨울만, 활동 중 사무처 직원 제외)
+8. [Step 💾 저장] update_members_sheet() + append_member_records()
 ```
 
 **DB → Sheets 동기화** (sheets_sync.py, 백그라운드 스레드)
@@ -720,9 +721,9 @@ DATABASE_URL=                   # Railway가 자동 주입 (PostgreSQL 연결 �
 - 입금 대조 파이프라인: 신청자 목록 SoT, 적요+의뢰인 기반 매칭, 6가지 상태 코드
 - Excel 파싱 (`app/services/excel.py`): 입금내역 + 신청자 목록(HTML .xls, BeautifulSoup)
 - 규칙 기반 매칭 (`app/utils/matching.py`)
-- 출석부 생성 (`app/chains/attendance.py`): 수강생 탭 + 과목별 탭 + 인쇄용 PDF (NanumGothic)
+- 출석부 생성 (`app/chains/attendance.py`): 단계별 함수 분리 — `group_by_course`, `create_attendance_spreadsheet`, `generate_attendance_pdf`, `upload_pdf_to_drive`. `main.py`에서 cl.Step으로 직렬 호출 + PDF 루프 progress 표시.
 - 출석 체크 OCR (`app/chains/ocr.py`): Claude Vision, 과목별 탭 B:M 쓰기
-- 종강 처리 (`app/chains/graduation.py`): 출석률 집계, 수강기록 append, 회원목록 재집계, 등급 강등
+- 종강 처리 (`app/chains/graduation.py`): 단계별 함수 분리 — `load_student_name_id_map`, `build_course_records`, `apply_demotion`. `main.py`에서 6-Step 직렬 호출.
 - 회원관리 3탭 구조 (회원목록/회원기록/수강기록), 동적 Drive 폴더 탐색
 - 신청서 upsert (기존 행 보존, 새 key만 추가), 입금 시 회원기록 자동 기록
 - Non-blocking Action 패턴 (`cl.Message(actions=...) + @cl.action_callback`), 세션 상태 머신
@@ -795,6 +796,7 @@ DATABASE_URL=                   # Railway가 자동 주입 (PostgreSQL 연결 �
 - 합산 입금 분류 — 12만(정회원비), 13만(가입비+정회원비)
 - 강사/사무처 면제 자동 판별 — 강사관리/사무처관리 시트에서 면제 대상 자동 추출, 가입비+정회원비+수강비 전부 면제, 등급 자동 승급, 종강 시 활동 중 사무처 직원만 강등 제외
 - AskActionMessage → non-blocking 전환 — 전체 12개 blocking AskActionMessage를 `cl.Message(actions=...) + @cl.action_callback` 패턴으로 전환. 26개 새 action callback 추가 (총 33개). `@cl.on_stop` 훅 추가. 회차 입력 상태 통합 (`term_input_next`). 신청서 위치 확인 단계 제거 (Drive 자동 탐색). 처리상태 gate의 `while True` 루프를 recheck callback으로 전환.
+- 출석부 생성 + 종강 처리 리팩토링 — 모놀리식 함수를 단계별 함수로 분리. `main.py`에서 cl.Step으로 직렬 호출하여 중간 진행 상태 표시. `creating_attendance`/`running_graduation` state로 작업 중 race condition 방지. PDF 생성 루프에 `progress_msg.update()` 적용.
 
 **📋 백로그:**
 - **LangChain Agent 전환 (Phase A)**: `on_message` 라우팅(1500줄+33 callback)을 LangChain `create_agent` tool selection으로 대체. 7개 작업을 7개 coarse-grained `@tool`로 매핑. 비즈니스 파이프라인 코드는 변경 없음. 상세: `docs/LANGCHAIN_MIGRATION_PROPOSAL.md`

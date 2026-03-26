@@ -32,13 +32,26 @@ from app.chains.payment import (
     format_results,
     append_member_records,
 )
-from app.chains.attendance import create_attendance_sheet
+from app.chains.attendance import (
+    load_registered_students,
+    group_by_course,
+    create_attendance_spreadsheet,
+    generate_attendance_pdf,
+    upload_pdf_to_drive,
+)
 from app.chains.ocr import (
     load_course_students,
     process_attendance_image,
     write_attendance_to_sheet,
 )
-from app.chains.graduation import run_graduation
+from app.chains.graduation import (
+    load_attendance_results,
+    update_attendance_rates_in_sheet,
+    load_student_name_id_map,
+    build_course_records,
+    recalculate_member_stats,
+    apply_demotion,
+)
 from app.config import ANTHROPIC_API_KEY, LLM_MODEL, MEMBERS_SHEET_ID
 from app.services.excel import parse_bank_statement, parse_applicant_list
 from app.services.google_drive import find_term_folder
@@ -149,6 +162,12 @@ async def on_message(message: cl.Message):
             await handle_ocr_image(message)
         else:
             await handle_mid_flow_text(message, "awaiting_ocr_image")
+        return
+    if session_state == "creating_attendance":
+        await cl.Message("출석부를 생성하고 있습니다. 잠시만 기다려주세요...").send()
+        return
+    if session_state == "running_graduation":
+        await cl.Message("종강 처리가 진행 중입니다. 잠시만 기다려주세요...").send()
         return
 
     # Starter 버튼 메시지 라우팅
@@ -921,7 +940,8 @@ async def on_attendance_cancel_create(action: cl.Action):
 
 
 async def do_create_attendance():
-    """출석부 생성 실행 — 수강생 확인 → 시트 생성 → PDF 생성 → 최종 안내"""
+    """출석부 생성 실행 — 단계별 직렬 처리 + 중간 진행 표시"""
+    cl.user_session.set("state", "creating_attendance")
     term = cl.user_session.get("term") or get_current_term()
     term_folder_id = cl.user_session.get("term_folder_id")
     app_sheet_id = _get_app_sheet_id()
@@ -930,53 +950,85 @@ async def do_create_attendance():
         await cl.Message(
             "회차 폴더 정보가 없습니다. 입금 대조를 먼저 완료해주세요."
         ).send()
+        cl.user_session.set("state", "idle")
         await send_default_actions()
         return
 
     try:
         # Step 1: 등록 수강생 확인
         async with cl.Step(name="📊 등록 수강생 확인", type="tool") as step:
-            from app.chains.attendance import load_registered_students
-            att_term_id = (cl.user_session.get("term") or {}).get("term_id", "")
+            att_term_id = term.get("term_id", "")
             registered = await load_registered_students(
                 app_sheet_id, term_id=att_term_id,
             )
-            course_set = {s.get("과목명", "") for s in registered if s.get("과목명")}
-            step.output = (
-                f"등록완료 수강생 **{len(registered)}명** ({len(course_set)}개 과목)"
-            )
+            if not registered:
+                step.output = "등록완료 수강생 없음"
+                await cl.Message(
+                    "처리상태가 '등록완료'인 수강생이 없습니다.\n"
+                    "배움숲 등록 처리 후 신청기록 시트에서 처리상태를 '등록완료'로 설정해주세요."
+                ).send()
+                cl.user_session.set("state", "idle")
+                await send_default_actions()
+                return
 
-        if not registered:
-            await cl.Message(
-                "처리상태가 '등록완료'인 수강생이 없습니다.\n"
-                "배움숲 등록 처리 후 신청기록 시트에서 처리상태를 '등록완료'로 설정해주세요."
-            ).send()
-            await send_default_actions()
-            return
+            courses = group_by_course(registered)
+            course_names = sorted(courses.keys())
+            total_students = sum(len(v) for v in courses.values())
+            step.output = f"등록완료 수강생 **{total_students}명** ({len(course_names)}개 과목)"
 
-        # 중간 안내: 과목수 / 수강생수
+        # 중간 안내
         await cl.Message(
-            f"**{term['term_name']}**에 총 **{len(course_set)}개** 강의를 확인했습니다. "
-            f"수강생은 총 **{len(registered)}명**입니다.\n\n"
-            "출석부 시트와 인쇄용 PDF를 생성합니다..."
+            f"**{term['term_name']}**에 총 **{len(course_names)}개** 강의를 확인했습니다. "
+            f"수강생은 총 **{total_students}명**입니다.\n\n"
+            "출석부 시트를 생성합니다..."
         ).send()
 
-        # Step 2: 출석부 시트 + PDF 생성
-        async with cl.Step(name="📋 출석부 생성", type="tool") as step:
-            result = await create_attendance_sheet(
-                term["term_id"], term_folder_id, app_sheet_id
+        # Step 2: 출석부 시트 생성 (폴더 + 스프레드시트 + 탭 + 데이터)
+        async with cl.Step(name="📋 출석부 시트 생성", type="tool") as step:
+            sheet_result = create_attendance_spreadsheet(
+                term["term_id"], term_folder_id, courses,
             )
-            pdf_count = sum(1 for v in result["pdf_urls"].values() if v)
+            cl.user_session.set("attendance_sheet_id", sheet_result["spreadsheet_id"])
             step.output = (
-                f"수강생 탭 + 과목별 탭 **{len(result['courses'])}개** 생성, "
-                f"PDF **{pdf_count}개** 업로드 완료"
+                f"수강생 탭 + 과목별 탭 **{len(course_names)}개** 생성 완료"
             )
-            cl.user_session.set("attendance_sheet_id", result["spreadsheet_id"])
 
-        # 최종 안내
+        await cl.Message(
+            f"출석부 시트 생성 완료. 과목별 PDF를 생성합니다... (0/{len(course_names)})"
+        ).send()
+
+        # Step 3: 과목별 PDF 생성 + 업로드
+        pdf_urls: dict[str, str | None] = {}
+        progress_msg = await cl.Message(
+            content=f"PDF 생성 중... (0/{len(course_names)})"
+        ).send()
+
+        for idx, course_name in enumerate(course_names):
+            try:
+                pdf_bytes = generate_attendance_pdf(
+                    term["term_id"], course_name, courses[course_name],
+                )
+                pdf_url = upload_pdf_to_drive(
+                    pdf_bytes, term["term_id"], course_name,
+                    sheet_result["attendance_folder_id"],
+                )
+                pdf_urls[course_name] = pdf_url
+            except Exception:
+                pdf_urls[course_name] = None
+
+            # 4~5과목마다 진행 메시지 업데이트
+            if (idx + 1) % 4 == 0 or idx + 1 == len(course_names):
+                progress_msg.content = (
+                    f"PDF 생성 중... ({idx + 1}/{len(course_names)})"
+                )
+                await progress_msg.update()
+
+        pdf_count = sum(1 for v in pdf_urls.values() if v)
+
+        # 최종 안내 메시지
         pdf_lines = []
-        for course in result["courses"]:
-            url = result["pdf_urls"].get(course)
+        for course in course_names:
+            url = pdf_urls.get(course)
             if url:
                 pdf_lines.append(f"  - [{course}]({url})")
             else:
@@ -986,14 +1038,14 @@ async def do_create_attendance():
 
         await cl.Message(
             content=(
-                f"[{term['term_name']} 출석부 폴더]({result['attendance_folder_url']})에 "
-                f"과목별 출석부를 생성했습니다.\n\n"
-                f"- 과목 수: **{len(result['courses'])}개**\n"
-                f"- 총 수강생: **{result['total_students']}명**\n\n"
-                f"[출석부 시트 열기]({result['spreadsheet_url']})"
+                f"✅ 출석부 생성이 완료되었습니다!\n\n"
+                f"- 과목 수: **{len(course_names)}개**\n"
+                f"- 총 수강생: **{total_students}명**\n"
+                f"- PDF: **{pdf_count}개** 생성\n\n"
+                f"[{term['term_name']} 출석부 폴더]({sheet_result['attendance_folder_url']})\n"
+                f"[출석부 시트 열기]({sheet_result['spreadsheet_url']})"
                 f"{pdf_section}\n\n"
                 "과목별 PDF를 출력하여 강사에게 전달해주세요.\n"
-                "수강생들은 매 강의 시 해당 회차 칸에 사인하며 출석을 확인합니다.\n"
                 "종강 후 출석 체크(사진 촬영 → OCR)를 진행해주세요."
             )
         ).send()
@@ -1376,7 +1428,8 @@ async def on_graduation_not_ready(action: cl.Action):
 
 
 async def _run_graduation_process(term: dict):
-    """종강 처리 실행"""
+    """종강 처리 실행 — 단계별 직렬 처리 + 중간 진행 표시"""
+    cl.user_session.set("state", "running_graduation")
     term_id = term["term_id"]
     attendance_sheet_id = cl.user_session.get("attendance_sheet_id")
 
@@ -1385,15 +1438,15 @@ async def _run_graduation_process(term: dict):
             "출석부 시트를 찾을 수 없습니다.\n"
             "출석부 생성 및 출석 체크가 완료되었는지 확인해주세요."
         ).send()
+        cl.user_session.set("state", "idle")
         await send_default_actions()
         return
 
     try:
+        # Step 1: 출석률 집계
         async with cl.Step(name="📊 출석률 집계", type="tool") as step:
-            from app.chains.graduation import load_attendance_results
-            grad_term_id = (cl.user_session.get("term") or {}).get("term_id", "")
             results = await load_attendance_results(
-                attendance_sheet_id, term_id=grad_term_id,
+                attendance_sheet_id, term_id=term_id,
             )
             step.output = f"총 **{len(results)}건** (수강생 × 과목) 집계 완료"
 
@@ -1402,42 +1455,80 @@ async def _run_graduation_process(term: dict):
                 "출석 데이터가 없습니다. "
                 "출석 체크(OCR)가 완료되었는지 확인해주세요."
             ).send()
+            cl.user_session.set("state", "idle")
             await send_default_actions()
             return
 
-        async with cl.Step(name="💾 수강기록 저장 + 등급 강등", type="tool") as step:
-            summary = await run_graduation(term_id, attendance_sheet_id)
-            step.output = (
-                f"수강기록 **{summary['course_records_added']}건** 추가, "
-                f"준회원 강등 **{summary['junior_demoted']}명**"
-                + (f", 정회원 강등 **{summary['full_demoted']}명**"
-                   if summary["full_demoted"] else "")
+        # Step 2: 수강생 탭 출석률 업데이트
+        async with cl.Step(name="📝 출석률 기록", type="tool") as step:
+            await update_attendance_rates_in_sheet(
+                attendance_sheet_id, results, term_id,
             )
+            step.output = f"수강생 탭 출석률 **{len(results)}건** 업데이트"
 
+        await cl.Message("출석률 집계 완료. 수강기록을 저장합니다...").send()
+
+        # Step 3: 수강기록 저장
+        async with cl.Step(name="📋 수강기록 저장", type="tool") as step:
+            name_to_id = load_student_name_id_map(attendance_sheet_id)
+            course_records = build_course_records(results, name_to_id, term_id)
+            if course_records:
+                await append_course_records(course_records)
+            step.output = f"수강기록 **{len(course_records)}건** 추가"
+
+        # Step 4: 회원목록 재집계
+        async with cl.Step(name="📊 회원 통계 재집계", type="tool") as step:
+            members = await load_members_from_sheet()
+            members = await recalculate_member_stats(members)
+            step.output = f"회원 **{len(members)}명** 통계 재집계 완료"
+
+        await cl.Message("회원 통계 재집계 완료. 등급 강등을 처리합니다...").send()
+
+        # Step 5: 등급 강등
+        async with cl.Step(name="🔄 등급 강등", type="tool") as step:
+            from app.chains.payment import get_active_staff_ids
+            active_staff_ids = get_active_staff_ids()
+            change_records = apply_demotion(members, term_id, active_staff_ids)
+
+            junior_count = sum(1 for r in change_records if r["사유"] == "종강강등")
+            full_count = sum(1 for r in change_records if r["사유"] == "겨울학기강등")
+
+            parts = []
+            if junior_count:
+                parts.append(f"준회원 → 회원 **{junior_count}명**")
+            if full_count:
+                parts.append(f"정회원 → 회원 **{full_count}명**")
+            step.output = ", ".join(parts) if parts else "등급 변경 없음"
+
+        # Step 6: 저장
+        async with cl.Step(name="💾 저장", type="tool") as step:
+            await update_members_sheet(members)
+            if change_records:
+                await append_member_records(change_records)
+            step.output = "회원목록 + 등급변경 이력 저장 완료"
+
+        # 최종 안내
         members_link = (
             f"https://docs.google.com/spreadsheets/d/{MEMBERS_SHEET_ID}"
         )
 
         result_msg = (
-            f"## {term['term_name']} 종강 처리 완료\n\n"
-            f"- 수강기록 추가: **{summary['course_records_added']}건**\n"
-            f"- 준회원 → 회원 강등: **{summary['junior_demoted']}명**\n"
+            f"✅ **{term['term_name']}** 종강 처리가 완료되었습니다!\n\n"
+            f"- 수강기록 추가: **{len(course_records)}건**\n"
+            f"- 준회원 → 회원 강등: **{junior_count}명**\n"
         )
-        if summary["full_demoted"]:
-            result_msg += (
-                f"- 정회원 → 회원 강등: **{summary['full_demoted']}명**\n"
-            )
+        if full_count:
+            result_msg += f"- 정회원 → 회원 강등: **{full_count}명**\n"
         result_msg += f"\n[회원관리 시트 열기]({members_link})"
 
         await cl.Message(content=result_msg).send()
         await send_default_actions("graduation")
 
-        # Sheets 동기화는 개별 write 함수 (update_members_sheet, append_member_records 등)에서
-        # background sync로 처리됨 — 별도 트리거 불필요
-
     except Exception as e:
         await cl.Message(f"종강 처리 중 오류: {str(e)}").send()
         await send_default_actions()
+
+    cl.user_session.set("state", "idle")
 
 
 # ===================================================== LLM 의도 분류 =====

@@ -258,50 +258,29 @@ def get_members_to_demote(
     return junior_demote, full_demote
 
 
-# ================================================= 종강 처리 =====
+# ================================================= 단계별 함수 =====
 
-async def run_graduation(
-    term_id: str,
-    attendance_sheet_id: str,
-) -> dict:
-    """종강 처리 전체 실행.
-
-    1. 과목별 탭에서 출석률 집계
-    2. 수강생 탭 출석률 업데이트
-    3. 수강기록 탭에 append
-    4. 회원목록 재집계
-    5. 등급 강등 + 회원기록 append
-
-    Returns: {
-        "course_records_added": int,
-        "junior_demoted": int,
-        "full_demoted": int,
-    }
-    """
-    now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
-    is_winter = term_id.endswith("-1")
-
-    # 1. 출석률 집계 (과목별 탭 O/빈칸 직접 카운트)
-    attendance_results = await load_attendance_results(
-        attendance_sheet_id, term_id=term_id,
-    )
-
-    # 2. 수강생 탭 출석률 컬럼 업데이트
-    await update_attendance_rates_in_sheet(
-        attendance_sheet_id, attendance_results, term_id,
-    )
-
-    # 3. 이름ID 조회 (수강생 탭에서 — Sheets에만 있는 매핑)
-    student_rows = read_sheet(attendance_sheet_id, "수강생!A1:D5000")
-    name_to_id: dict[tuple, str] = {}
+def load_student_name_id_map(
+    spreadsheet_id: str,
+) -> dict[tuple[str, str], str]:
+    """수강생 탭에서 (이름, 과목명) → 이름ID 매핑 읽기."""
+    student_rows = read_sheet(spreadsheet_id, "수강생!A1:D5000")
+    name_to_id: dict[tuple[str, str], str] = {}
     if student_rows and len(student_rows) >= 2:
         header = student_rows[0]
         for row in student_rows[1:]:
             data = dict(zip(header, row + [""] * (len(header) - len(row))))
             key = (data.get("이름", ""), data.get("과목명", ""))
             name_to_id[key] = data.get("이름ID", "")
+    return name_to_id
 
-    # 4. 수강기록 append
+
+def build_course_records(
+    attendance_results: list[dict],
+    name_to_id: dict[tuple[str, str], str],
+    term_id: str,
+) -> list[dict]:
+    """출석률 집계 결과를 수강기록 형식으로 변환."""
     course_records = []
     for r in attendance_results:
         name_id = name_to_id.get((r["이름"], r["과목명"]), "")
@@ -311,16 +290,25 @@ async def run_graduation(
             "과목명": r["과목명"],
             "출석률": r["출석률"],
         })
-    if course_records:
-        await append_course_records(course_records)
+    return course_records
 
-    # 5. 회원목록 재집계
-    members = await load_members_from_sheet()
-    members = await recalculate_member_stats(members)
 
-    # 6. 등급 강등 (활동 중 사무처 직원은 제외)
-    from app.chains.payment import get_active_staff_ids
-    active_staff_ids = get_active_staff_ids()
+def apply_demotion(
+    members: list[dict],
+    term_id: str,
+    active_staff_ids: set[str] | None = None,
+) -> list[dict]:
+    """등급 강등 실행 — member dict 직접 수정 + change_records 반환.
+
+    준회원 → 회원: 매 종강 시
+    정회원 → 회원: 1학기(겨울) 종강 시만 (활동 중 사무처 직원 제외)
+    """
+    if active_staff_ids is None:
+        active_staff_ids = set()
+
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+    is_winter = term_id.endswith("-1")
+
     junior_demote, full_demote = get_members_to_demote(
         members, is_winter, active_staff_ids,
     )
@@ -337,7 +325,7 @@ async def run_graduation(
 
     for m in full_demote:
         m["등급"] = "회원"
-        m["예외여부"] = ""  # 강등 시 리셋 (다음 사이클 강의하면 재설정)
+        m["예외여부"] = ""  # 강등 시 리셋
         change_records.append({
             "이름ID": m["이름ID"], "이름": m["이름"],
             "변경일시": now_str,
@@ -345,13 +333,4 @@ async def run_graduation(
             "사유": "겨울학기강등", "관련회차": term_id,
         })
 
-    # 7. 회원목록 + 회원기록 저장
-    await update_members_sheet(members)
-    if change_records:
-        await append_member_records(change_records)
-
-    return {
-        "course_records_added": len(course_records),
-        "junior_demoted": len(junior_demote),
-        "full_demoted": len(full_demote),
-    }
+    return change_records

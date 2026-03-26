@@ -154,42 +154,11 @@ async def load_registered_students(
 
 # ============================================= 출석부 시트 생성 =====
 
-async def create_attendance_sheet(
-    term_id: str,
-    term_folder_id: str,
-    applications_sheet_id: str,
-) -> dict:
-    """출석부 Google Sheets + 과목별 인쇄용 PDF 생성.
+def group_by_course(registered: list[dict]) -> dict[str, list[dict]]:
+    """등록완료 수강생을 과목별로 그룹핑.
 
-    1. 신청서에서 등록완료 수강생 로드
-    2. 과목별 그룹핑
-    3. 출석부 폴더 생성 (term_folder_id/출석부/)
-    4. 출석부 시트 생성
-       - 탭1 수강생: 이름ID, 이름, 과목명, 출석률(빈칸)
-       - 탭N 과목명: 이름, 1~12회차 (헤더+빈 셀)
-    5. 과목별 PDF 생성 + Drive 업로드
-
-    Returns:
-        {
-            "spreadsheet_id": str,
-            "spreadsheet_url": str,
-            "attendance_folder_url": str,
-            "courses": list[str],
-            "total_students": int,
-            "pdf_urls": {course_name: url or None},
-        }
+    Returns: {"과목명": [수강생 dict, ...], ...} (키: sorted)
     """
-    registered = await load_registered_students(
-        applications_sheet_id, term_id=term_id,
-    )
-
-    if not registered:
-        raise ValueError(
-            "처리상태가 '등록완료'인 수강생이 없습니다. "
-            "입금 대조 후 배움숲에서 등록 처리를 완료하고 신청기록 시트에서 처리상태를 '등록완료'로 설정해주세요."
-        )
-
-    # 과목별 그룹핑
     courses: dict[str, list] = {}
     for s in registered:
         course = s.get("과목명", "")
@@ -198,7 +167,23 @@ async def create_attendance_sheet(
         if course not in courses:
             courses[course] = []
         courses[course].append(s)
+    return dict(sorted(courses.items()))
 
+
+def create_attendance_spreadsheet(
+    term_id: str,
+    term_folder_id: str,
+    courses: dict[str, list[dict]],
+) -> dict:
+    """출석부 폴더 + Google Sheets 생성 + 탭 데이터 입력.
+
+    Returns: {
+        "spreadsheet_id": str,
+        "spreadsheet_url": str,
+        "attendance_folder_id": str,
+        "attendance_folder_url": str,
+    }
+    """
     course_names = sorted(courses.keys())
 
     # 출석부 폴더 생성
@@ -260,7 +245,6 @@ async def create_attendance_sheet(
     write_sheet(spreadsheet_id, "수강생!A1", student_rows)
 
     # 탭2+: 과목별 탭 데이터 입력
-    # 컬럼: 이름 | 1회차 ~ 12회차 (이름ID, 출석률 없음)
     course_header = ["이름"] + [f"{i}회차" for i in range(1, MAX_SESSIONS + 1)]
 
     for course_name in course_names:
@@ -271,32 +255,17 @@ async def create_attendance_sheet(
             data_rows.append(row)
         write_sheet(spreadsheet_id, f"{course_name}!A1", data_rows)
 
-    # 과목별 PDF 생성 + Drive 업로드
-    pdf_urls: dict[str, str | None] = {}
-    for course_name in course_names:
-        try:
-            students = courses[course_name]
-            pdf_bytes = _generate_attendance_pdf(term_id, course_name, students)
-            pdf_url = _save_pdf_to_drive(
-                pdf_bytes, term_id, course_name, attendance_folder_id
-            )
-            pdf_urls[course_name] = pdf_url
-        except Exception:
-            pdf_urls[course_name] = None
-
     return {
         "spreadsheet_id": spreadsheet_id,
         "spreadsheet_url": spreadsheet_url,
+        "attendance_folder_id": attendance_folder_id,
         "attendance_folder_url": attendance_folder_url,
-        "courses": course_names,
-        "total_students": sum(len(v) for v in courses.values()),
-        "pdf_urls": pdf_urls,
     }
 
 
 # ================================================= PDF 생성 =====
 
-def _generate_attendance_pdf(
+def generate_attendance_pdf(
     term_id: str,
     course_name: str,
     students: list[dict],
@@ -398,7 +367,7 @@ def _generate_attendance_pdf(
     return buf.getvalue()
 
 
-def _save_pdf_to_drive(
+def upload_pdf_to_drive(
     pdf_bytes: bytes,
     term_id: str,
     course_name: str,
