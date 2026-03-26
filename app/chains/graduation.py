@@ -1,10 +1,9 @@
 """종강 처리 파이프라인 — 출석률 집계 → 수강기록 → 회원목록 재집계 → 등급 강등
 
-전제: 출석부 시트의 과목별 탭에 출석 체크(OCR)가 완료된 상태.
+전제: 출석부 시트의 출석부 탭에 출석 체크(OCR)가 완료된 상태.
 
-출석부 시트 구조:
-  탭 수강생: 이름ID(A) | 이름(B) | 과목명(C) | 출석률(D)  ← 종강 처리 시 D열 채움
-  탭 {과목}: 이름(A) | 1~12회차(B~M)
+출석부 시트 구조 (단일 탭):
+  탭 "출석부": 이름ID(A) | 이름(B) | 과목명(C) | 1~12회차(D~O) | 출석률(P)
 """
 
 import logging
@@ -29,42 +28,34 @@ logger = logging.getLogger(__name__)
 # =========================================== 출석률 집계 =====
 
 def _load_attendance_from_sheets(spreadsheet_id: str) -> list[dict]:
-    """출석부 Sheets에서 과목별 수강생 출석률을 집계."""
-    from app.services.google_auth import get_sheets_service
-    svc = get_sheets_service()
-    meta = svc.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
+    """출석부 Sheets에서 수강생 출석률을 집계."""
+    col_end = chr(ord("A") + 3 + MAX_SESSIONS)  # "P"
+    rows = read_sheet(spreadsheet_id, f"출석부!A1:{col_end}5000")
+    if not rows or len(rows) < 2:
+        return []
 
     results = []
-    col_end = chr(ord("B") + MAX_SESSIONS - 1)  # "M"
-
-    for sheet in meta.get("sheets", []):
-        course_name = sheet["properties"]["title"]
-        if course_name == "수강생":
+    for row in rows[1:]:
+        padded = row + [""] * (3 + MAX_SESSIONS + 1 - len(row))
+        name = padded[1]  # B열: 이름
+        course_name = padded[2]  # C열: 과목명
+        if not name or not course_name:
             continue
 
-        rows = read_sheet(spreadsheet_id, f"{course_name}!A1:{col_end}500")
-        if not rows or len(rows) < 2:
-            continue
+        # D열(index 3)부터 12개가 1회차~12회차
+        attended = sum(
+            1 for j in range(MAX_SESSIONS) if padded[3 + j] == "O"
+        )
+        total = sum(
+            1 for j in range(MAX_SESSIONS) if padded[3 + j] != ""
+        )
+        rate = round(attended / total * 100, 1) if total > 0 else 0.0
 
-        for row in rows[1:]:
-            padded = row + [""] * (1 + MAX_SESSIONS - len(row))
-            name = padded[0]
-            if not name:
-                continue
-
-            attended = sum(
-                1 for i in range(1, 1 + MAX_SESSIONS) if padded[i] == "O"
-            )
-            total = sum(
-                1 for i in range(1, 1 + MAX_SESSIONS) if padded[i] != ""
-            )
-            rate = round(attended / total * 100, 1) if total > 0 else 0.0
-
-            results.append({
-                "이름": name,
-                "과목명": course_name,
-                "출석률": str(rate),
-            })
+        results.append({
+            "이름": name,
+            "과목명": course_name,
+            "출석률": str(rate),
+        })
 
     return results
 
@@ -114,21 +105,24 @@ def _update_attendance_rates_in_sheets(
     spreadsheet_id: str,
     attendance_results: list[dict],
 ) -> None:
-    """Sheets 수강생 탭의 출석률(D열) 업데이트."""
-    rows = read_sheet(spreadsheet_id, "수강생!A1:D5000")
+    """Sheets 출석부 탭의 출석률(P열) 업데이트."""
+    col_end = chr(ord("A") + 3 + MAX_SESSIONS)  # "P"
+    rows = read_sheet(spreadsheet_id, f"출석부!A1:{col_end}5000")
     if not rows or len(rows) < 2:
         return
 
+    # (이름, 과목명) → 행번호 매핑
     key_to_row: dict[tuple, int] = {}
     for i, row in enumerate(rows[1:], start=2):
-        padded = row + [""] * (4 - len(row))
-        key_to_row[(padded[1], padded[2])] = i
+        padded = row + [""] * (3 + MAX_SESSIONS + 1 - len(row))
+        key_to_row[(padded[1], padded[2])] = i  # (이름, 과목명)
 
+    rate_col = chr(ord("A") + 3 + MAX_SESSIONS)  # "P"
     for r in attendance_results:
         key = (r["이름"], r["과목명"])
         if key in key_to_row:
             row_idx = key_to_row[key]
-            write_sheet(spreadsheet_id, f"수강생!D{row_idx}", [[r["출석률"]]])
+            write_sheet(spreadsheet_id, f"출석부!{rate_col}{row_idx}", [[r["출석률"]]])
 
 
 async def update_attendance_rates_in_sheet(
@@ -263,15 +257,17 @@ def get_members_to_demote(
 def load_student_name_id_map(
     spreadsheet_id: str,
 ) -> dict[tuple[str, str], str]:
-    """수강생 탭에서 (이름, 과목명) → 이름ID 매핑 읽기."""
-    student_rows = read_sheet(spreadsheet_id, "수강생!A1:D5000")
+    """출석부 탭에서 (이름, 과목명) → 이름ID 매핑 읽기."""
+    rows = read_sheet(spreadsheet_id, "출석부!A1:C5000")
     name_to_id: dict[tuple[str, str], str] = {}
-    if student_rows and len(student_rows) >= 2:
-        header = student_rows[0]
-        for row in student_rows[1:]:
-            data = dict(zip(header, row + [""] * (len(header) - len(row))))
-            key = (data.get("이름", ""), data.get("과목명", ""))
-            name_to_id[key] = data.get("이름ID", "")
+    if rows and len(rows) >= 2:
+        for row in rows[1:]:
+            padded = row + [""] * (3 - len(row))
+            name_id = padded[0]   # A열: 이름ID
+            name = padded[1]      # B열: 이름
+            course = padded[2]    # C열: 과목명
+            if name and course:
+                name_to_id[(name, course)] = name_id
     return name_to_id
 
 

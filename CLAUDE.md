@@ -321,7 +321,7 @@ DB SoT 모드에서 DB 쓰기 후 Sheets를 백그라운드로 동기화. `sheet
 | **수강기록** | History (영속) | `course_records` | 회원관리 → 수강기록 | 전체 수강 이력 |
 | **신청기록** | Working (전 회차 누적) | `applications` | 회원관리 → 신청기록 | 통합 신청서 — 수강+신규가입+정회원, 회차 필터로 열람 |
 | **미확인입금** | Working (전 회차 누적) | `deposits` (unmatched) | 회원관리 → 미확인입금 | 자동 매칭 안 된 입금 건만 표시 |
-| **출석부** | Working (회차별) | `attendance` | 회차폴더 → 출석부 | 수강생 탭 + 과목별 탭, 12회차 출석 |
+| **출석부** | Working (회차별) | `attendance` | 회차폴더 → 출석부 | 단일 "출석부" 탭 (이름ID/이름/과목명/1~12회차/출석률) |
 
 회원관리 시트(`MEMBERS_SHEET_ID`)는 5탭 구조: `회원목록`, `회원기록`, `수강기록`, `신청기록`, `미확인입금`.
 탭명 상수: `MEMBERS_TAB`, `MEMBER_RECORDS_TAB`, `COURSE_RECORDS_TAB` (`config.py`).
@@ -386,20 +386,17 @@ DB SoT 모드에서 DB 쓰기 후 Sheets를 백그라운드로 동기화. `sheet
 
 강사/사무처 면제 대상은 Pass 1~2에서 입금현황=💎면제로 처리, 자동 등급 승급 + `is_exception=TRUE` 설정.
 
-### 출석부 (Working, 회차별, 1파일 다중시트)
+### 출석부 (Working, 회차별, 단일 탭)
 
-Google Sheets 파일 1개. 수강생 탭 + 과목별 탭 + 과목별 인쇄용 PDF.
+Google Sheets 파일 1개. 단일 "출석부" 탭 + 과목별 인쇄용 PDF.
 
 ```
 출석부 시트
-├── 탭: 수강생       → 이름ID(A) | 이름(B) | 과목명(C) | 출석률(D)
-├── 탭: {과목명1}    → 이름(A) | 1회차(B) | ... | 12회차(M)
-└── 탭: {과목명2}    → 동일 구조
+└── 탭: 출석부  → 이름ID(A) | 이름(B) | 과목명(C) | 1회차(D) | ... | 12회차(O) | 출석률(P)
 ```
 
-- **수강생 탭**: 전체 수강생 현황. 출석률(D열)은 종강 처리 시 `graduation.py`가 채움 (생성 시 빈칸).
-- **과목별 탭**: 이름ID·출석률 없음. OCR 기록 범위: B열(1회차)~M열(12회차). 출석="O", 결석="".
-- **PDF**: 과목별 A4 가로 PDF. NanumGothic 12pt, 페이지 분할. Drive 출석부 폴더에 업로드.
+- **출석부 탭**: 전 과목 수강생 통합. OCR 기록 범위: D열(1회차)~O열(12회차). 출석="O", 결석="". 출석률(P열)은 종강 처리 시 `graduation.py`가 채움 (생성 시 빈칸).
+- **PDF**: 과목별 A4 가로 PDF. NanumGothic 12pt, 페이지 분할. Drive 출석부 폴더에 업로드. 페이지번호는 `onPage` 캔버스 콜백으로 렌더링 (빈 페이지 방지).
 - 신청기록의 `처리상태`가 `등록완료`인 수강자만 포함
 
 ---
@@ -448,8 +445,8 @@ Google Sheets 파일 1개. 수강생 탭 + 과목별 탭 + 과목별 인쇄용 P
 전제: 출석 체크(OCR)가 모든 과목에 대해 완료된 상태
 1. 회차 확인 → 관리자 확정
 2. 출석 체크 완료 확인 → 관리자 확정
-3. [Step 📊 출석률 집계] load_attendance_results() — 과목별 탭 O/빈칸 카운트
-4. [Step 📝 출석률 기록] update_attendance_rates_in_sheet() — 수강생 탭 D열 업데이트
+3. [Step 📊 출석률 집계] load_attendance_results() — 출석부 탭 D~O열 O/빈칸 카운트
+4. [Step 📝 출석률 기록] update_attendance_rates_in_sheet() — 출석부 탭 P열 업데이트
 5. [Step 📋 수강기록 저장] load_student_name_id_map() + build_course_records() + append
 6. [Step 📊 회원 통계 재집계] recalculate_member_stats()
 7. [Step 🔄 등급 강등] apply_demotion() — 준회원→회원(매 종강), 정회원→회원(겨울만, 활동 중 사무처 직원 제외)
@@ -474,8 +471,8 @@ Google Sheets 파일 1개. 수강생 탭 + 과목별 탭 + 과목별 인쇄용 P
 | Raw → DB → n8n → Sheets | 입금 대조 시 | 배움숲 엑셀 + Drive 신청서 → `applications` DB upsert → n8n이 신청기록 탭에 push |
 | Raw → DB → n8n → Sheets | 입금 대조 시 | 은행 입금내역 → `deposits` DB INSERT → 매칭 → `applications` 입금현황 갱신 → n8n push |
 | DB + Sheets → Sheets | 출석부 생성 시 | 처리상태='등록완료' 필터 (DB apps + Sheets 처리상태 머지) → 출석부 시트 생성 + PDF |
-| Image → Sheets | 출석 체크 시 | 종이 출석부 사진 → Claude Vision OCR → 과목별 탭 O/빈칸 |
-| Sheets → DB → n8n → Sheets | 종강 처리 시 | 과목별 탭 출석률 집계 → 수강기록 append → 회원목록 재집계 → 등급 강등 |
+| Image → Sheets | 출석 체크 시 | 종이 출석부 사진 → Claude Vision OCR → 출석부 탭 D~O열 O/빈칸 |
+| Sheets → DB → n8n → Sheets | 종강 처리 시 | 출석부 탭 출석률 집계 → 수강기록 append → 회원목록 재집계 → 등급 강등 |
 
 ### 신청자 목록 (배움숲 다운로드 원본, SoT)
 
@@ -722,7 +719,7 @@ DATABASE_URL=                   # Railway가 자동 주입 (PostgreSQL 연결 �
 - Excel 파싱 (`app/services/excel.py`): 입금내역 + 신청자 목록(HTML .xls, BeautifulSoup)
 - 규칙 기반 매칭 (`app/utils/matching.py`)
 - 출석부 생성 (`app/chains/attendance.py`): 단계별 함수 분리 — `group_by_course`, `create_attendance_spreadsheet`, `generate_attendance_pdf`, `upload_pdf_to_drive`. `main.py`에서 cl.Step으로 직렬 호출 + PDF 루프 progress 표시.
-- 출석 체크 OCR (`app/chains/ocr.py`): Claude Vision, 과목별 탭 B:M 쓰기
+- 출석 체크 OCR (`app/chains/ocr.py`): Claude Vision, 출석부 탭 D:O 쓰기
 - 종강 처리 (`app/chains/graduation.py`): 단계별 함수 분리 — `load_student_name_id_map`, `build_course_records`, `apply_demotion`. `main.py`에서 6-Step 직렬 호출.
 - 회원관리 3탭 구조 (회원목록/회원기록/수강기록), 동적 Drive 폴더 탐색
 - 신청서 upsert (기존 행 보존, 새 key만 추가), 입금 시 회원기록 자동 기록
@@ -735,7 +732,7 @@ DATABASE_URL=                   # Railway가 자동 주입 (PostgreSQL 연결 �
 - 워크플로우 중 인터럽트 처리 (`handle_mid_flow_text`): 취소 감지, Q&A 답변 후 상태 유지
 - 모든 작업 종료 후 공통 기본 Action 버튼 (`send_default_actions`)
 - 신청서 시트: 필터 + 처리상태 드롭다운 자동 설정
-- 출석부 시트: 과목별 탭 BasicFilter 자동 설정
+- 출석부 시트: 단일 "출석부" 탭 구조
 - Railway 배포, 단위 테스트 121개 통과
 - 커스텀 테마 (Palette C 마을회관): `public/theme.json` + `public/stylesheet.css`
 - Noto Sans KR 폰트, 본문 18px, WCAG AA 접근성
@@ -781,7 +778,7 @@ DATABASE_URL=                   # Railway가 자동 주입 (PostgreSQL 연결 �
 
 **✅ 완료:**
 - 종강 처리 — 출석률 집계, 수강기록 추가, 등급 강등, 회원목록 재집계, 회원기록 기록
-- 출석 체크 (OCR) — Claude Vision으로 종이 출석부 디지털화 → 과목별 탭 O/빈칸
+- 출석 체크 (OCR) — Claude Vision으로 종이 출석부 디지털화 → 출석부 탭 D~O열 O/빈칸
 - 과목별 출석부 PDF 생성 — A4 가로, NanumGothic 12pt, Drive 업로드
 - Theme/CSS 커스터마이징 — Palette C 마을회관 + Noto Sans KR 타이포그래피
 - 신청서 upsert — 기존 행 보존, 새 key만 추가

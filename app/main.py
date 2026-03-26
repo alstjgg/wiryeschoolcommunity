@@ -991,12 +991,8 @@ async def do_create_attendance():
             )
             cl.user_session.set("attendance_sheet_id", sheet_result["spreadsheet_id"])
             step.output = (
-                f"수강생 탭 + 과목별 탭 **{len(course_names)}개** 생성 완료"
+                f"출석부 탭 생성 완료 ({len(course_names)}개 과목, {total_students}명)"
             )
-
-        await cl.Message(
-            f"출석부 시트 생성 완료. 과목별 PDF를 생성합니다... (0/{len(course_names)})"
-        ).send()
 
         # Step 3: 과목별 PDF 생성 + 업로드
         pdf_urls: dict[str, str | None] = {}
@@ -1305,10 +1301,10 @@ async def on_ocr_done(action: cl.Action):
 
 
 def _extract_course_name(text: str, attendance_sheet_id: str) -> str:
-    """메시지 텍스트에서 출석부 과목 탭명을 추출.
+    """메시지 텍스트에서 출석부 과목명을 추출.
 
     세션에 저장된 current_ocr_course가 있으면 우선 사용.
-    없으면 출석부 시트 탭명과 fuzzy 매칭.
+    없으면 출석부 시트의 과목명 목록과 fuzzy 매칭.
     """
     saved = cl.user_session.get("current_ocr_course", "")
     if saved:
@@ -1317,24 +1313,23 @@ def _extract_course_name(text: str, attendance_sheet_id: str) -> str:
     if not text:
         return ""
 
-    from app.services.google_auth import get_sheets_service
     from app.utils.matching import fuzzy_course_match
 
-    svc = get_sheets_service()
-    meta = svc.spreadsheets().get(spreadsheetId=attendance_sheet_id).execute()
-    course_tabs = [
-        s["properties"]["title"]
-        for s in meta.get("sheets", [])
-        if s["properties"]["title"] != "수강생"
-    ]
+    # 출석부 탭 C열(과목명)에서 고유 과목 목록 추출
+    rows = read_sheet(attendance_sheet_id, "출석부!C1:C5000")
+    if not rows or len(rows) < 2:
+        return ""
+    course_list = list(dict.fromkeys(
+        row[0] for row in rows[1:] if row and row[0]
+    ))
 
     # 정확 매칭 우선
-    for tab in course_tabs:
-        if tab in text:
-            return tab
+    for course in course_list:
+        if course in text:
+            return course
 
-    # fuzzy 매칭 (텍스트 전체를 힌트로 사용)
-    matched = fuzzy_course_match(text, course_tabs)
+    # fuzzy 매칭
+    matched = fuzzy_course_match(text, course_list)
     return matched or ""
 
 
@@ -1398,7 +1393,7 @@ async def _confirm_ocr_done_before_graduation(term: dict):
         content=(
             f"종강 처리 전 아래 사항을 확인해주세요.\n\n"
             f"1. ✅ 모든 강좌의 출석 체크(사진 → OCR)가 완료되었습니다.\n"
-            f"2. ✅ {sheet_link}에서 과목별 탭의 출석 데이터가 올바르게 "
+            f"2. ✅ {sheet_link}에서 출석 데이터가 올바르게 "
             f"입력되었습니다.\n\n"
             "확인 후 종강 처리를 시작합니다."
         ),

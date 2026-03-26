@@ -3,9 +3,12 @@
 종이 출석부의 (이름 × 회차) 셀에 수강생 사인 여부를 인식.
 출석 = "O", 결석 = "" (빈칸). 지각 처리 없음.
 
-출석부 시트 구조 (과목별 탭):
-  A열: 이름 (1행: 헤더 "이름", 2행~: 수강생 이름)
-  B~M열: 1회차~12회차
+출석부 시트 구조 (단일 탭 "출석부"):
+  A열: 이름ID
+  B열: 이름
+  C열: 과목명
+  D~O열: 1회차~12회차
+  P열: 출석률
 """
 
 import base64
@@ -25,21 +28,24 @@ def _load_course_students_from_sheets(
     spreadsheet_id: str,
     course_name: str,
 ) -> list[dict]:
-    """Sheets에서 특정 과목 탭의 수강생 목록과 출석 데이터 로드."""
-    col_count = 1 + MAX_SESSIONS
-    col_end = chr(ord("A") + col_count - 1)
-    rows = read_sheet(spreadsheet_id, f"{course_name}!A1:{col_end}500")
+    """Sheets 출석부 탭에서 특정 과목의 수강생 목록과 출석 데이터 로드."""
+    # 컬럼: 이름ID(A) | 이름(B) | 과목명(C) | 1회차(D) | ... | 12회차(O) | 출석률(P)
+    col_end = chr(ord("A") + 3 + MAX_SESSIONS)  # "P"
+    rows = read_sheet(spreadsheet_id, f"출석부!A1:{col_end}5000")
     if not rows or len(rows) < 2:
         return []
 
+    header = rows[0]
     students = []
     for i, row in enumerate(rows[1:], start=2):
-        padded = row + [""] * (col_count - len(row))
-        name = padded[0]
+        padded = row + [""] * (len(header) - len(row))
+        if padded[2] != course_name:  # C열: 과목명 필터
+            continue
+        name = padded[1]  # B열: 이름
         if not name:
             continue
         attendance = {
-            str(j + 1): padded[1 + j]
+            str(j + 1): padded[3 + j]  # D열부터 시작
             for j in range(MAX_SESSIONS)
         }
         students.append({
@@ -207,17 +213,19 @@ async def write_attendance_to_sheet(
     students: list[dict],
     term_id: str = "",
 ) -> int:
-    """OCR 결과를 출석부에 반영.
+    """OCR 결과를 출석부 시트에 반영.
 
     DB 모드: DB attendance 테이블에 upsert + Sheets에도 반영.
     Sheets 모드: Sheets에만 반영.
 
-    쓰기 범위: B{row}:M{row} (1회차~12회차, B열부터 시작)
+    쓰기 범위: D{row}:O{row} (1회차~12회차, D열부터 시작)
     Returns: 업데이트된 수강생 수
     """
     name_to_row = {s["이름"]: s["row_index"] for s in students}
 
-    col_end = chr(ord("B") + MAX_SESSIONS - 1)  # "M"
+    # D열(1회차) ~ O열(12회차)
+    col_start = "D"
+    col_end = chr(ord("D") + MAX_SESSIONS - 1)  # "O"
     updated = 0
 
     for result in ocr_results:
@@ -240,7 +248,7 @@ async def write_attendance_to_sheet(
 
         # Sheets에 항상 반영 (관리자 view)
         values = [attendance.get(str(i), "") for i in range(1, MAX_SESSIONS + 1)]
-        range_notation = f"{course_name}!B{row_index}:{col_end}{row_index}"
+        range_notation = f"출석부!{col_start}{row_index}:{col_end}{row_index}"
         write_sheet(spreadsheet_id, range_notation, [values])
         updated += 1
 

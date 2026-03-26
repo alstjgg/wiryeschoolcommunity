@@ -1,8 +1,9 @@
 """출석부 생성 파이프라인 — Dual-Write (DB + Sheets) + 인쇄용 PDF
 
-출석부 시트 구조:
-  탭1 수강생: 이름ID, 이름, 과목명, 출석률 (종강 처리 시 출석률 채워짐)
-  탭N {과목명}: 이름, 1회차~12회차 (OCR 기록용 + PDF 출력 원본)
+출석부 시트 구조 (단일 탭):
+  탭 "출석부": 이름ID | 이름 | 과목명 | 1회차~12회차 | 출석률
+  - 1~12회차: OCR 기록용 (O/빈칸)
+  - 출석률: 종강 처리 시 채워짐
 
 처리상태는 Sheets에서만 관리자가 편집 가능 (드롭다운: 등록완료/환불완료/취소완료/보류).
 DB 모드에서도 처리상태는 Sheets에서 읽은 뒤 DB applications와 머지하여 필터링.
@@ -175,7 +176,9 @@ def create_attendance_spreadsheet(
     term_folder_id: str,
     courses: dict[str, list[dict]],
 ) -> dict:
-    """출석부 폴더 + Google Sheets 생성 + 탭 데이터 입력.
+    """출석부 폴더 + Google Sheets 생성 + 단일 출석부 탭 데이터 입력.
+
+    출석부 탭 구조: 이름ID | 이름 | 과목명 | 1회차~12회차 | 출석률
 
     Returns: {
         "spreadsheet_id": str,
@@ -208,15 +211,12 @@ def create_attendance_spreadsheet(
     spreadsheet_id = file["id"]
     spreadsheet_url = file.get("webViewLink", "")
 
-    # 탭 생성: 수강생 탭 + 과목별 탭
-    tab_titles = ["수강생"] + course_names
-    add_requests = [
-        {"addSheet": {"properties": {"title": title, "index": i}}}
-        for i, title in enumerate(tab_titles)
-    ]
+    # "출석부" 탭 생성
     sheets_svc.spreadsheets().batchUpdate(
         spreadsheetId=spreadsheet_id,
-        body={"requests": add_requests},
+        body={"requests": [
+            {"addSheet": {"properties": {"title": "출석부", "index": 0}}}
+        ]},
     ).execute()
 
     # 기본 Sheet1 삭제
@@ -231,29 +231,22 @@ def create_attendance_spreadsheet(
             ).execute()
             break
 
-    # 탭1: 수강생 탭 데이터 입력
-    student_header = ["이름ID", "이름", "과목명", "출석률"]
-    student_rows = [student_header]
+    # 데이터 입력: 이름ID | 이름 | 과목명 | 1회차~12회차 | 출석률
+    header = (
+        ["이름ID", "이름", "과목명"]
+        + [f"{i}회차" for i in range(1, MAX_SESSIONS + 1)]
+        + ["출석률"]
+    )
+    all_rows = [header]
     for course_name in course_names:
         for s in courses[course_name]:
-            student_rows.append([
+            row = [
                 s.get("이름ID", ""),
                 s.get("이름", ""),
                 course_name,
-                "",  # 출석률: 종강 처리 시 채워짐
-            ])
-    write_sheet(spreadsheet_id, "수강생!A1", student_rows)
-
-    # 탭2+: 과목별 탭 데이터 입력
-    course_header = ["이름"] + [f"{i}회차" for i in range(1, MAX_SESSIONS + 1)]
-
-    for course_name in course_names:
-        students = courses[course_name]
-        data_rows = [course_header]
-        for s in students:
-            row = [s.get("이름", "")] + [""] * MAX_SESSIONS
-            data_rows.append(row)
-        write_sheet(spreadsheet_id, f"{course_name}!A1", data_rows)
+            ] + [""] * MAX_SESSIONS + [""]
+            all_rows.append(row)
+    write_sheet(spreadsheet_id, "출석부!A1", all_rows)
 
     return {
         "spreadsheet_id": spreadsheet_id,
@@ -319,13 +312,6 @@ def generate_attendance_pdf(
         leading=20,
         spaceAfter=8,
     )
-    pagenum_style = ParagraphStyle(
-        "pagenum",
-        fontName=font_name,
-        fontSize=10,
-        alignment=2,  # RIGHT
-        spaceBefore=6,
-    )
 
     tbl_style = TableStyle([
         ("BACKGROUND",     (0, 0), (-1, 0),  colors.HexColor("#E8E8E8")),
@@ -343,6 +329,14 @@ def generate_attendance_pdf(
         ("LINEBELOW",      (0, 0), (-1, 0),  1.0, colors.HexColor("#666666")),
     ])
 
+    def _add_page_number(canvas, doc):
+        """캔버스에 직접 페이지번호를 그림 (story 밖에서)."""
+        canvas.saveState()
+        canvas.setFont(font_name, 10)
+        page_text = f"{doc.page} / {total_pages}"
+        canvas.drawRightString(PAGE_W - MARGIN, MARGIN - 5, page_text)
+        canvas.restoreState()
+
     story = []
     title_text = f"{course_name}  \u2014  {term_id} 출석부"
 
@@ -356,14 +350,10 @@ def generate_attendance_pdf(
         tbl.setStyle(tbl_style)
         story.append(tbl)
 
-        story.append(Paragraph(
-            f"{page_idx + 1} / {total_pages}", pagenum_style
-        ))
-
         if page_idx < len(pages) - 1:
             story.append(PageBreak())
 
-    doc.build(story)
+    doc.build(story, onFirstPage=_add_page_number, onLaterPages=_add_page_number)
     return buf.getvalue()
 
 
