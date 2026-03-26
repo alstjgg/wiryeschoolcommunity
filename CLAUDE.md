@@ -789,7 +789,7 @@ DATABASE_URL=                   # Railway가 자동 주입 (PostgreSQL 연결 �
 - 피드백 수집 — Chainlit thumbs up/down → PostgreSQL feedbacks 테이블
 - Starter 버튼 정비 — 작업 순서 정렬 (7개), CSS min-width/flex 레이아웃
 - 신청서 폴더 통합 — ASIS(개인 드라이브) → TOBE(공유 드라이브) 전환 완료
-- FAQ/Context Injection 보강 — 입금대조절차, 처리상태, 등급전환, 시트구조 등 5개 토픽 추가
+- FAQ/Context Injection 보강 — 18개 토픽 (`BUSINESS_CONTEXT` dict): 회차구조, 회원제도, 수강료, 입금패턴, 입금대조절차, 처리상태, 등급전환, 시트구조, 주요링크, 업무일정, 환불규정, 강사사무처면제, 외부시스템, 출석관리, 종강처리, 강의계획서, 드라이브구조, 용어정리
 - 합산 입금 분류 — 12만(정회원비), 13만(가입비+정회원비)
 - 강사/사무처 면제 자동 판별 — 강사관리/사무처관리 시트에서 면제 대상 자동 추출, 가입비+정회원비+수강비 전부 면제, 등급 자동 승급, 종강 시 활동 중 사무처 직원만 강등 제외
 - AskActionMessage → non-blocking 전환 — 전체 12개 blocking AskActionMessage를 `cl.Message(actions=...) + @cl.action_callback` 패턴으로 전환. 26개 새 action callback 추가 (총 33개). `@cl.on_stop` 훅 추가. 회차 입력 상태 통합 (`term_input_next`). 신청서 위치 확인 단계 제거 (Drive 자동 탐색). 처리상태 gate의 `while True` 루프를 recheck callback으로 전환.
