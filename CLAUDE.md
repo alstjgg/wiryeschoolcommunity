@@ -190,9 +190,6 @@ wiryeschoolcommunity/
 │   ├── BUSINESS_CONTEXT.md      # Context Injection 소스 텍스트
 │   ├── PLANNED_DRIVE_STRUCTURE.md  # Google Drive 확정 구조 + 폴더 ID 참조
 │   └── LANGCHAIN_MIGRATION_PROPOSAL.md  # LangChain Agent 전환 제안서 (Phase A: 라우터 전환)
-├── n8n/                         # n8n 워크플로우 JSON (비활성, git 백업용 보존)
-│   ├── sync_daily.json          # Sync-1: 비활성 (챗봇이 직접 Sheets 동기화)
-│   └── sync_webhook.json        # Sync-2: 비활성 (sheets_sync.py로 대체)
 ├── app/
 │   ├── main.py                  # Chainlit 엔트리포인트 + 세션 상태 라우터 + LLM 의도 분류 + mid-flow 인터럽트 처리
 │   ├── config.py                # 환경 변수, 상수, 영속 Google IDs, COURSE_KEYWORDS, USE_DB_SOT, INSTRUCTOR/STAFF_SHEET_ID
@@ -201,7 +198,7 @@ wiryeschoolcommunity/
 │   │   └── term.py              # 현재 회차 자동 판별 + 자유 텍스트 회차 파싱 (parse_term_input)
 │   ├── chains/
 │   │   ├── qa.py                # 질의 응답 체인
-│   │   ├── payment.py           # 입금 대조 파이프라인 (DB+n8n, 매칭, deposits 추적, 등급 cascade, 강사/사무처 면제)
+│   │   ├── payment.py           # 입금 대조 파이프라인 (DB, 매칭, deposits 추적, 등급 cascade, 강사/사무처 면제)
 │   │   ├── attendance.py        # 출석부 생성 — 단계별 함수 분리 (group_by_course, create_attendance_spreadsheet, generate_attendance_pdf, upload_pdf_to_drive). main.py에서 cl.Step으로 직렬 호출.
 │   │   ├── ocr.py               # 출석 체크 OCR (dual-write: DB+Sheets, Claude Vision)
 │   │   └── graduation.py        # 종강 처리 — 단계별 함수 분리 (load_student_name_id_map, build_course_records, apply_demotion). main.py에서 cl.Step으로 직렬 호출.
@@ -213,18 +210,12 @@ wiryeschoolcommunity/
 │   │   ├── signup_loader.py     # Drive에서 신규가입/정회원가입 신청서 로드 → 파싱 결과 반환
 │   │   ├── chat_data_layer.py   # Chainlit 채팅 기록 PostgreSQL 영속성 (BaseDataLayer 구현)
 │   │   ├── db.py                # 비즈니스 데이터 PostgreSQL CRUD (asyncpg, 7 테이블)
-│   │   └── sheets_sync.py       # 백그라운드 Sheets 동기화 (asyncio.to_thread, fire-and-forget)
+│   │   └── sheets_sync.py       # Sheets 동기화 (asyncio.to_thread, await 직렬)
 │   └── utils/
 │       ├── __init__.py
 │       └── matching.py          # 이름/강좌 추출, 규칙 기반 입금 매칭
 ├── assets/
-│   └── fonts/                   # NanumGothic TTF (빌드 시 다운로드, .gitignore)
-├── scripts/
-│   ├── download_fonts.py        # NanumGothic 폰트 다운로드 (빌드 시 자동 실행)
-│   ├── init_db_schema.py        # DB 비즈니스 테이블 생성 (최초 1회)
-│   ├── migrate_v4.py            # v4.0 스키마 마이그레이션 (processing_status, deposits)
-│   ├── populate_members.py      # 회원관리 시트 초기 데이터 생성
-│   └── populate_students.py     # 수강생 시트 초기 데이터 생성
+│   └── fonts/                   # NanumGothic TTF (git 커밋됨)
 ├── .python-version              # Python 3.12 고정 (Railway mise 빌드용)
 ├── nixpacks.toml                # Railway Nixpacks 빌드 설정
 ├── Procfile                     # PaaS 실행 명령
@@ -244,8 +235,6 @@ GOOGLE_DELEGATED_USER=wirye@wiryeschoolcomunity.com  # Delegation 대상 (오타
 DATABASE_URL=                   # Railway 자동 주입 (PostgreSQL)
 USE_DB_SOT=false                # true=PostgreSQL SoT, false=Sheets SoT (기본)
 ```
-
-n8n 환경 변수는 "인프라 구성 > n8n 배포 방법" 섹션 참조.
 
 ## Google API 인증 패턴
 
@@ -298,17 +287,15 @@ drive_service = build('drive', 'v3', credentials=credentials)
 
 DB SoT 모드에서 DB 쓰기 후 Sheets를 백그라운드로 동기화. `sheets_sync.py`의 `sync_to_sheets()` 사용.
 
-**구조**: `asyncio.create_task(asyncio.to_thread(_safe_sync, ...))` — 동기 Sheets API를 백그라운드 스레드에서 fire-and-forget 실행. 챗봇 응답에 latency 영향 없음.
+**구조**: `await asyncio.to_thread(_safe_sync, ...)` — 동기 Sheets API를 별도 스레드에서 await 직렬 실행.
 
 | sync_type | 대상 탭 | 패턴 | 호출 시점 |
 |-----------|---------|------|----------|
-| `applications` | 신청기록 | clear A2:L + write | 입금 대조 시 신청서 upsert 후 |
+| `applications` | 신청기록 | clear A2:M + write | 입금 대조 시 신청서 upsert 후 |
 | `members` | 회원목록 | clear A2:I + write | 등급 cascade 후 |
 | `member_records` | 회원기록 | append | 등급 변경 이력 추가 시 |
 | `course_records` | 수강기록 | append | 종강 처리 시 |
-| `deposits` | 미확인입금 | clear A2:G + write | 입금 매칭 후 unmatched 건만 |
-
-**n8n 비활성**: n8n Sync-1/Sync-2 워크플로우는 비활성. `n8n/` 폴더는 git 백업용 보존. n8n Railway 프로젝트는 유지하되 워크플로우는 꺼둠.
+| `deposits` | 미확인입금 | clear A2:H + write | 입금 매칭 후 unmatched 건만 |
 
 **시트 보호**: 회원관리 5탭 전체 보호 + SA 이메일만 쓰기 허용. 처리상태 컬럼만 관리자 편집 가능 (신청기록 L열, 미확인입금 G열). `values.clear`는 data validation/서식/보호 설정을 유지하므로 드롭다운은 1회 설정 후 영속.
 
@@ -356,7 +343,7 @@ DB SoT 모드에서 DB 쓰기 후 Sheets를 백그라운드로 동기화. `sheet
 
 - **유형**: `수강`(수강료 2만), `신규가입`(가입비 1만), `정회원`(정회원비 12만)
 - **과목명**: 수강 유형만 값 있음. 신규가입/정회원은 빈칸.
-- **입금현황**: Agent가 자동 채움 (✅정상 / 🔶확인필요 / ⚠️이름불일치 / ❌미입금 / 🔄중복 / 💎면제). DB에는 코드(confirmed 등) 저장, n8n Code 노드에서 이모지로 변환.
+- **입금현황**: Agent가 자동 채움 (✅정상 / 🔶확인필요 / ⚠️이름불일치 / ❌미입금 / 🔄중복 / 💎면제). DB에는 코드(confirmed 등) 저장, `db.py` 경계에서 이모지로 변환.
 - **처리상태**: 드롭다운 (등록완료/환불완료/취소완료/보류). 관리자가 Sheets에서 직접 편집. 출석부 생성 시 필터 기준 (`등록완료`만 포함).
 - **DB 전용 컬럼** (Sheets 비노출): `phone`, `address`, `processed_at`
 - **데이터 소스**:
@@ -456,23 +443,22 @@ Google Sheets 파일 1개. 단일 "출석부" 탭 + 과목별 인쇄용 PDF.
 **DB → Sheets 동기화** (sheets_sync.py, 백그라운드 스레드)
 ```
 챗봇 DB 쓰기 → sync_to_sheets() → asyncio.to_thread(_safe_sync) → clear_range + write_sheet
-  applications: 신청기록 (clear A2:L + write)
+  applications: 신청기록 (clear A2:M + write)
   members: 회원목록 (clear A2:I + write)
   member_records: 회원기록 (append)
   course_records: 수강기록 (append)
-  deposits: 미확인입금 (clear A2:G + write, unmatched만)
-챗봇이 직접 Sheets API 호출 (n8n 비활성)
+  deposits: 미확인입금 (clear A2:H + write, unmatched만)
 ```
 
 ### 데이터 흐름 정리
 
 | 방향 | 시점 | 내용 |
 |------|------|------|
-| Raw → DB → n8n → Sheets | 입금 대조 시 | 배움숲 엑셀 + Drive 신청서 → `applications` DB upsert → n8n이 신청기록 탭에 push |
-| Raw → DB → n8n → Sheets | 입금 대조 시 | 은행 입금내역 → `deposits` DB INSERT → 매칭 → `applications` 입금현황 갱신 → n8n push |
+| Raw → DB → Sheets | 입금 대조 시 | 배움숲 엑셀 + Drive 신청서 → `applications` DB upsert → sheets_sync가 신청기록 탭에 push |
+| Raw → DB → Sheets | 입금 대조 시 | 은행 입금내역 → `deposits` DB INSERT → 매칭 → `applications` 입금현황 갱신 → sheets_sync push |
 | DB + Sheets → Sheets | 출석부 생성 시 | 처리상태='등록완료' 필터 (DB apps + Sheets 처리상태 머지) → 출석부 시트 생성 + PDF |
 | Image → Sheets | 출석 체크 시 | 종이 출석부 사진 → Claude Vision OCR → 출석부 탭 D~O열 O/빈칸 |
-| Sheets → DB → n8n → Sheets | 종강 처리 시 | 출석부 탭 출석률 집계 → 수강기록 append → 회원목록 재집계 → 등급 강등 |
+| Sheets → DB → Sheets | 종강 처리 시 | 출석부 탭 출석률 집계 → 수강기록 append → 회원목록 재집계 → 등급 강등 |
 
 ### 신청자 목록 (배움숲 다운로드 원본, SoT)
 
@@ -645,54 +631,13 @@ TERM_SEASONS = {1: "겨울", 2: "봄", 3: "여름", 4: "가을"}
 ### Railway 프로젝트 구조
 
 ```
-Railway 프로젝트 1 (기존)              Railway 프로젝트 2 (n8n)
-├── web (Chainlit 챗봇)               └── n8n (Docker: n8nio/n8n)
-│   └── ai-wiryeschoolcommunity.          └── n8n-production-81b4.up.railway.app
-│       up.railway.app                    └── 기존 Postgres에 public URL로 연결
-├── Postgres (공유 DB)
+Railway 프로젝트
+├── web (Chainlit 챗봇)
+│   └── ai-wiryeschoolcommunity.up.railway.app
+├── Postgres (DB)
 │   └── yamanote.proxy.rlwy.net:26189
 │   └── postgres-volume
 ```
-
-n8n은 Railway 템플릿("n8n w/ postgres")으로 별도 프로젝트에 배포. 템플릿이 생성한 Postgres-us3E는 삭제 완료. n8n은 기존 Postgres의 public URL로 연결.
-
-### n8n 배포 방법
-
-Railway 템플릿 "n8n (w/ postgres)"으로 배포 후 기존 PostgreSQL로 연결 전환:
-
-```
-1. Railway 대시보드 → "+ New" → "Template" → "n8n (w/ postgres)" 선택 → Deploy
-2. 새 프로젝트로 n8n + Postgres가 생성됨
-3. n8n 서비스 Variables에서 DB 연결 정보를 기존 Postgres의 public URL로 변경
-4. 템플릿이 생성한 새 Postgres 서비스 삭제
-5. n8n 웹 UI 접속 → admin 계정 생성
-```
-
-**주의**: n8n과 기존 Postgres가 다른 프로젝트에 있으므로 `*.railway.internal` (internal host)은 사용 불가. 반드시 `DATABASE_PUBLIC_URL`에서 추출한 public host + port를 사용.
-
-n8n 환경 변수 (실제 배포 설정):
-
-| 변수명 | 값 | 설명 |
-|--------|-----|------|
-| `DB_TYPE` | `postgresdb` | DB 종류 |
-| `DB_POSTGRESDB_HOST` | `yamanote.proxy.rlwy.net` | 기존 Postgres public host |
-| `DB_POSTGRESDB_PORT` | `26189` | 기존 Postgres public port |
-| `DB_POSTGRESDB_DATABASE` | `railway` | |
-| `DB_POSTGRESDB_USER` | `postgres` | |
-| `DB_POSTGRESDB_PASSWORD` | (기존 Postgres PGPASSWORD) | |
-| `N8N_PORT` | `5678` | n8n 기본 포트 |
-| `PORT` | `5678` | Railway 포트 매핑 |
-| `WEBHOOK_URL` | `https://n8n-production-81b4.up.railway.app` | 외부 webhook 수신 URL |
-| `N8N_ENCRYPTION_KEY` | (자동 생성) | credential 암호화 키 |
-
-n8n은 기존 PostgreSQL에 자체 테이블(`execution_entity`, `workflow_entity`, `credentials_entity` 등)을 자동 생성. 챗봇의 채팅기록/비즈니스 테이블과 같은 DB에 공존.
-
-### n8n Credential 참조 (P4 워크플로우 JSON에서 사용, 현재 비활성)
-
-| 노드 타입 | credential key | credential name | credential ID |
-|----------|----------------|-----------------|---------------|
-| `n8n-nodes-base.postgres` | `postgres` | `Postgres account` | `j1PLbiwu8dCOVpl5` |
-| `n8n-nodes-base.googleSheets` | `googleApi` | `Google Service Account account` | `JtDg23azfbja0yi3` |
 
 ### Railway 환경 변수 (web 서비스)
 
@@ -743,22 +688,13 @@ DATABASE_URL=                   # Railway가 자동 주입 (PostgreSQL 연결 �
 
 인프라 셋업 + 통합 신청서 설계 + Sheets SoT 확정.
 
-**2-0. n8n 배포 + PostgreSQL 연결** ✅ 완료
-- Railway 템플릿 "n8n (w/ postgres)"로 별도 프로젝트에 배포
-- 기존 Postgres public URL로 연결 전환 (yamanote.proxy.rlwy.net:26189)
-- n8n 웹 UI 접속 확인, admin 계정 생성 완료
-- Credential 등록 완료:
-  - PostgreSQL: `Postgres account` (id: `j1PLbiwu8dCOVpl5`)
-  - Google SA: `Google Service Account account` (id: `JtDg23azfbja0yi3`, key: `googleApi`)
-- P4 워크플로우로 정상 동작 검증 완료
-
-**2-1. PostgreSQL 비즈니스 스키마** ✅ 완료 (Phase 2.5)
+**2-1. PostgreSQL 비즈니스 스키마** ✅ 완료
 - `app/services/db.py`: 7 테이블 (members, member_records, course_records, applications, deposits, attendance, feedbacks)
-- Dual-Write 모드: `USE_DB_SOT=true`이면 DB가 SoT, Sheets는 secondary write
-- `scripts/init_db_schema.py` + `scripts/migrate_v4.py`: Railway PostgreSQL에 테이블 생성/마이그레이션 완료
+- DB가 SoT, Sheets는 `sheets_sync.py`로 동기화
+- 스키마 DDL은 `db.py`의 `_BUSINESS_SCHEMA_SQL`에 정의, `get_pool()` 첫 호출 시 자동 생성
 
-**2-2. DB SoT + 백그라운드 Sheets 동기화** ✅ 완료
-- `payment.py`: 5개 write 함수 DB+Sheets sync 패턴으로 전환 (DB 쓰기 → `sync_to_sheets()`, n8n 제거)
+**2-2. DB SoT + Sheets 동기화** ✅ 완료
+- `payment.py`: 5개 write 함수 DB+Sheets sync 패턴 (DB 쓰기 → `sync_to_sheets()`)
 - `payment.py`: `apply_matching_results()` deposit 매칭 추적 (match_status/matched_name_ids), unmatched count 반환
 - `payment.py`: `format_results()` 미확인입금 카운트 표시 (`| 미확인입금: N건`)
 - `payment.py`: `apply_grade_cascade()` 등급 전환 cascade (idempotent 3-pass)
@@ -769,10 +705,8 @@ DATABASE_URL=                   # Railway가 자동 주입 (PostgreSQL 연결 �
 - `attendance.py`: DB 모드에서 `MEMBERS_SHEET_ID`/`신청기록` 탭에서 처리상태 읽기 + term_id 필터
 - `graduation.py`: 3개 함수 async dual-write
 - `ocr.py`: `load_course_students` + `write_attendance_to_sheet` dual-write
-- `app/services/sheets_sync.py`: fire-and-forget 백그라운드 Sheets 동기화 (asyncio.to_thread)
-- n8n 워크플로우 비활성 — `sheets_sync.py`로 대체 (백그라운드 스레드, fire-and-forget)
+- `app/services/sheets_sync.py`: Sheets 동기화 (asyncio.to_thread, await 직렬)
 - `registration_status` → `processing_status` 전환 완료
-- 121개 테스트 통과
 
 ### Phase 3 — 기능 확장 + UX 개선
 
@@ -809,5 +743,5 @@ DATABASE_URL=                   # Railway가 자동 주입 (PostgreSQL 연결 �
 - **데이터 읽기/쓰기는 DB SoT**. `payment.py` 공개 API는 DB-only (폴백 없음). `db.py`의 CRUD 함수 + `sheets_sync.py`의 `sync_to_sheets()` 사용. `main.py`/`ocr.py`/`graduation.py`는 아직 `USE_DB_SOT` 분기 잔존.
 - LLM 호출은 최소화 — 코드로 처리 가능하면 코드로
 - 에러 시 사용자에게 한국어로 안내 메시지 반환
-- Docker 사용 안 함 (챗봇). n8n만 Docker 배포. Railway는 Procfile 기반 배포.
+- Docker 사용 안 함. Railway는 Procfile 기반 배포.
 - 상세 기획은 `docs/DEV_DOCUMENT.md` 참조
