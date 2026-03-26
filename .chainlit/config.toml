@@ -61,6 +61,10 @@ name = "위례인생학교 업무 도우미"
 
 default_theme = "light"
 
+# Custom logo for light/dark themes
+logo_light = "/public/logo_light.png"
+logo_dark = "/public/logo_dark.png"
+
 # layout = "wide"
 
 # Description of the assistant. This is used for HTML tags.
