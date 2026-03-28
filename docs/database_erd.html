@@ -1,0 +1,105 @@
+<style>
+#erd svg.erDiagram .divider path { stroke-opacity: 0.5; }
+#erd svg.erDiagram .row-rect-odd path,
+#erd svg.erDiagram .row-rect-odd rect,
+#erd svg.erDiagram .row-rect-even path,
+#erd svg.erDiagram .row-rect-even rect { stroke: none !important; }
+</style>
+<div id="erd"></div>
+<script type="module">
+import mermaid from 'https://esm.sh/mermaid@11/dist/mermaid.esm.min.mjs';
+const dark = matchMedia('(prefers-color-scheme: dark)').matches;
+await document.fonts.ready;
+mermaid.initialize({
+  startOnLoad: false,
+  theme: 'base',
+  fontFamily: '"Anthropic Sans", sans-serif',
+  themeVariables: {
+    darkMode: dark,
+    fontSize: '13px',
+    fontFamily: '"Anthropic Sans", sans-serif',
+    lineColor: dark ? '#9c9a92' : '#73726c',
+    textColor: dark ? '#c2c0b6' : '#3d3d3a',
+  },
+});
+const { svg } = await mermaid.render('erd-svg', `erDiagram
+  MEMBERS ||--o{ MEMBER_RECORDS : "grade changes"
+  MEMBERS ||--o{ COURSE_RECORDS : "course history"
+  MEMBERS ||--o{ APPLICATIONS : "applies"
+  APPLICATIONS ||--o{ ATTENDANCE : "enrolled in"
+  MEMBERS {
+    text name_id PK "이름ID (이름+폰뒤4자리)"
+    text name "이름"
+    text phone "전화번호"
+    text grade "회원 준회원 정회원"
+    boolean is_exception "강사 사무처 예외"
+    int course_count "수강count (재집계)"
+    real avg_attendance "출석률 누적 (재집계)"
+    text last_term "마지막수강회차"
+  }
+  MEMBER_RECORDS {
+    serial id PK
+    text name_id FK
+    text changed_at "변경일시"
+    text grade_from "변경전등급"
+    text grade_to "변경후등급"
+    text reason "사유"
+    text term_id "관련회차"
+  }
+  COURSE_RECORDS {
+    serial id PK
+    text name_id FK
+    text term_id "회차 (2026-1)"
+    text course_name "과목명"
+    real attendance "출석률"
+  }
+  APPLICATIONS {
+    serial id PK
+    text term_id "회차"
+    text name_id FK
+    text type "수강 신규가입 정회원"
+    text course_name "과목명"
+    text payment_status "입금현황 이모지"
+    boolean registration_status "등록상태 체크박스"
+    text payer_name "입금자명"
+  }
+  ATTENDANCE {
+    serial id PK
+    text term_id "회차"
+    text course_name "과목명"
+    text student_name "수강생 이름"
+    jsonb session_data "1~12회차 O/빈칸"
+    real attendance_rate "출석률"
+  }
+  FEEDBACKS {
+    text id PK
+    text thread_id "대화 스레드"
+    text step_id "메시지 단위"
+    int value "1 또는 -1"
+    text comment "코멘트"
+  }
+`);
+document.getElementById('erd').innerHTML = svg;
+document.querySelectorAll('#erd svg.erDiagram .node').forEach(node => {
+  const firstPath = node.querySelector('path[d]');
+  if (!firstPath) return;
+  const d = firstPath.getAttribute('d');
+  const nums = d.match(/-?[\d.]+/g)?.map(Number);
+  if (!nums || nums.length < 8) return;
+  const xs = [nums[0], nums[2], nums[4], nums[6]];
+  const ys = [nums[1], nums[3], nums[5], nums[7]];
+  const x = Math.min(...xs), y = Math.min(...ys);
+  const w = Math.max(...xs) - x, h = Math.max(...ys) - y;
+  const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+  rect.setAttribute('x', x); rect.setAttribute('y', y);
+  rect.setAttribute('width', w); rect.setAttribute('height', h);
+  rect.setAttribute('rx', '8');
+  for (const a of ['fill', 'stroke', 'stroke-width', 'class', 'style']) {
+    if (firstPath.hasAttribute(a)) rect.setAttribute(a, firstPath.getAttribute(a));
+  }
+  firstPath.replaceWith(rect);
+});
+document.querySelectorAll('#erd svg.erDiagram .row-rect-odd path, #erd svg.erDiagram .row-rect-even path').forEach(p => {
+  p.setAttribute('stroke', 'none');
+});
+</script>
