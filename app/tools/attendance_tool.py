@@ -1,0 +1,233 @@
+"""출석부 생성 tool — 처리상태 gate check → 출석부 시트 + PDF 생성"""
+
+import logging
+
+import chainlit as cl
+from langchain_core.tools import tool
+
+from app.chains.attendance import (
+    load_registered_students,
+    group_by_course,
+    create_attendance_spreadsheet,
+    generate_attendance_pdf,
+    upload_pdf_to_drive,
+)
+from app.config import USE_DB_SOT, MEMBERS_SHEET_ID, APPLICATIONS_TAB, UNMATCHED_DEPOSITS_TAB
+from app.context.term import get_current_term
+from app.services.google_drive import find_term_folder
+from app.services.google_sheets import read_sheet
+
+logger = logging.getLogger(__name__)
+
+
+def _get_app_sheet_id() -> str | None:
+    sheet_id = cl.user_session.get("applications_sheet_id")
+    if not sheet_id and USE_DB_SOT:
+        sheet_id = MEMBERS_SHEET_ID
+    return sheet_id
+
+
+def _check_processing_gate(term: dict, app_sheet_id: str | None) -> str | None:
+    """Check for unprocessed items. Returns None if clear, or a message describing blockers."""
+    term_id = term.get("term_id", "")
+
+    def _read_unprocessed(sid: str, tab: str, col_range: str) -> list[dict]:
+        result = []
+        if not sid:
+            return result
+        rows = read_sheet(sid, f"{tab}!{col_range}")
+        if not rows or len(rows) < 2:
+            return result
+        header = rows[0]
+        for row in rows[1:]:
+            data = dict(zip(header, row + [""] * (len(header) - len(row))))
+            if term_id and data.get("회차", "").strip() != term_id:
+                continue
+            status = data.get("처리상태", "").strip()
+            if not status or status == "보류":
+                result.append(data)
+        return result
+
+    if USE_DB_SOT:
+        apps_sheet_id = MEMBERS_SHEET_ID
+        apps_tab = APPLICATIONS_TAB
+    else:
+        apps_sheet_id = app_sheet_id
+        apps_tab = "신청서"
+
+    unprocessed_apps = _read_unprocessed(apps_sheet_id, apps_tab, "A1:M5000")
+    unprocessed_deposits = (
+        _read_unprocessed(MEMBERS_SHEET_ID, UNMATCHED_DEPOSITS_TAB, "A1:H5000")
+        if USE_DB_SOT else []
+    )
+
+    if not unprocessed_apps and not unprocessed_deposits:
+        return None  # Gate passed
+
+    sections = []
+    if unprocessed_apps:
+        lines = []
+        for a in unprocessed_apps[:5]:
+            name = a.get("이름", "?")
+            course = a.get("과목명", "")
+            label = f"{name}({course})" if course else name
+            ps = a.get("처리상태", "").strip() or "미입력"
+            lines.append(f"  - {label} — 입금현황: {a.get('입금현황', '')}, 처리상태: {ps}")
+        if len(unprocessed_apps) > 5:
+            lines.append(f"  - ... 외 {len(unprocessed_apps) - 5}건")
+        sections.append(
+            f"**신청기록 미처리: {len(unprocessed_apps)}건**\n"
+            + "\n".join(lines)
+            + "\n  → 신청기록 시트에서 처리상태를 입력해주세요"
+        )
+
+    if unprocessed_deposits:
+        lines = []
+        for d in unprocessed_deposits[:5]:
+            ps = d.get("처리상태", "").strip() or "미입력"
+            lines.append(f"  - 의뢰인 {d.get('의뢰인', '?')} / {d.get('입금액', '')}원 — 처리상태: {ps}")
+        if len(unprocessed_deposits) > 5:
+            lines.append(f"  - ... 외 {len(unprocessed_deposits) - 5}건")
+        sections.append(
+            f"**미확인입금 미처리: {len(unprocessed_deposits)}건**\n"
+            + "\n".join(lines)
+            + "\n  → 미확인입금 시트에서 처리상태를 입력해주세요"
+        )
+
+    link_id = MEMBERS_SHEET_ID if USE_DB_SOT else apps_sheet_id
+    sheet_link = (
+        f"\n\n[회원관리 시트 열기](https://docs.google.com/spreadsheets/d/{link_id})"
+        if link_id else ""
+    )
+
+    return (
+        f"**{term.get('term_name', '')}** 출석부 생성을 위해 처리가 필요한 건이 있습니다.\n\n"
+        + "\n\n".join(sections)
+        + f"\n\n모든 건의 처리상태를 입력해주세요 (등록완료/환불완료/취소완료).{sheet_link}"
+        + "\n\n처리 완료 후 다시 '출석부 생성'을 요청해주세요."
+    )
+
+
+@tool
+async def create_attendance(term_id: str = "") -> str:
+    """출석부를 생성합니다.
+
+    입금 대조에서 처리상태가 '등록완료'인 수강생만 포함하여
+    출석부 시트(Google Sheets)와 과목별 인쇄용 PDF를 생성합니다.
+
+    사전 조건: 입금 대조 완료 + 처리상태 입력 완료.
+    처리상태가 미입력이거나 보류인 건이 있으면 출석부 생성을 차단합니다.
+
+    Args:
+        term_id: 회차 ID (예: "2026-1"). 비어있으면 현재 회차 자동 판별.
+    """
+    # 회차 결정
+    term = cl.user_session.get("term")
+    if not term:
+        term = get_current_term()
+    if term_id:
+        term["term_id"] = term_id
+    cl.user_session.set("term", term)
+
+    att_term_id = term["term_id"]
+
+    # 회차 폴더 탐색
+    term_folder_id = cl.user_session.get("term_folder_id")
+    if not term_folder_id:
+        term_folder = find_term_folder(att_term_id)
+        if not term_folder:
+            return (
+                f"Drive에서 **{term['term_name']}** 폴더를 찾을 수 없습니다.\n"
+                f"학사운영 → {term['year']} → 회차 폴더가 있는지 확인해주세요."
+            )
+        term_folder_id = term_folder["id"]
+        cl.user_session.set("term_folder_id", term_folder_id)
+
+    # 처리상태 gate check
+    app_sheet_id = _get_app_sheet_id()
+    gate_msg = _check_processing_gate(term, app_sheet_id)
+    if gate_msg:
+        return gate_msg
+
+    # 출석부 생성 시작
+    cl.user_session.set("state", "creating_attendance")
+
+    try:
+        # Step 1: 등록 수강생 확인
+        async with cl.Step(name="📊 등록 수강생 확인", type="tool") as step:
+            registered = await load_registered_students(
+                app_sheet_id, term_id=att_term_id,
+            )
+            if not registered:
+                step.output = "등록완료 수강생 없음"
+                cl.user_session.set("state", "idle")
+                return (
+                    "처리상태가 '등록완료'인 수강생이 없습니다.\n"
+                    "배움숲 등록 처리 후 신청기록 시트에서 처리상태를 '등록완료'로 설정해주세요."
+                )
+
+            courses = group_by_course(registered)
+            course_names = sorted(courses.keys())
+            total_students = sum(len(v) for v in courses.values())
+            step.output = f"등록완료 수강생 **{total_students}명** ({len(course_names)}개 과목)"
+
+        # Step 2: 출석부 시트 생성
+        async with cl.Step(name="📋 출석부 시트 생성", type="tool") as step:
+            sheet_result = create_attendance_spreadsheet(
+                att_term_id, term_folder_id, courses,
+            )
+            cl.user_session.set("attendance_sheet_id", sheet_result["spreadsheet_id"])
+            step.output = f"출석부 탭 생성 완료 ({len(course_names)}개 과목, {total_students}명)"
+
+        # Step 3: 과목별 PDF 생성 + 업로드
+        pdf_urls: dict[str, str | None] = {}
+        progress_msg = await cl.Message(
+            content=f"PDF 생성 중... (0/{len(course_names)})"
+        ).send()
+
+        for idx, course_name in enumerate(course_names):
+            try:
+                pdf_bytes = generate_attendance_pdf(
+                    att_term_id, course_name, courses[course_name],
+                )
+                pdf_url = upload_pdf_to_drive(
+                    pdf_bytes, att_term_id, course_name,
+                    sheet_result["attendance_folder_id"],
+                )
+                pdf_urls[course_name] = pdf_url
+            except Exception:
+                pdf_urls[course_name] = None
+
+            if (idx + 1) % 4 == 0 or idx + 1 == len(course_names):
+                progress_msg.content = f"PDF 생성 중... ({idx + 1}/{len(course_names)})"
+                await progress_msg.update()
+
+        pdf_count = sum(1 for v in pdf_urls.values() if v)
+
+        # 최종 안내
+        pdf_lines = []
+        for course in course_names:
+            url = pdf_urls.get(course)
+            if url:
+                pdf_lines.append(f"  - [{course}]({url})")
+            else:
+                pdf_lines.append(f"  - {course} (PDF 생성 실패)")
+
+        pdf_section = "\n\n**과목별 인쇄용 PDF**:\n" + "\n".join(pdf_lines)
+
+        return (
+            f"✅ 출석부 생성이 완료되었습니다!\n\n"
+            f"- 과목 수: **{len(course_names)}개**\n"
+            f"- 총 수강생: **{total_students}명**\n"
+            f"- PDF: **{pdf_count}개** 생성\n\n"
+            f"[{term['term_name']} 출석부 폴더]({sheet_result['attendance_folder_url']})\n"
+            f"[출석부 시트 열기]({sheet_result['spreadsheet_url']})"
+            f"{pdf_section}\n\n"
+            "과목별 PDF를 출력하여 강사에게 전달해주세요.\n"
+            "종강 후 출석 체크(사진 촬영 → OCR)를 진행해주세요."
+        )
+
+    except Exception as e:
+        return f"출석부 생성 중 오류: {e}"
+    finally:
+        cl.user_session.set("state", "idle")

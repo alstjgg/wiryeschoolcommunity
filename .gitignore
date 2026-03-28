@@ -27,7 +27,7 @@ sa-key.json
 .DS_Store
 Thumbs.db
 
-# Fonts (downloaded at build time)
-assets/fonts/
+# # Fonts (downloaded at build time)
+# assets/fonts/
 
 # Chainlit
