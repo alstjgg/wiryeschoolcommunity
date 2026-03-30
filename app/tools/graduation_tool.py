@@ -64,7 +64,6 @@ async def process_graduation(term_id: str = "") -> str:
     Args:
         term_id: 회차 ID (예: "2026-1"). 비어있으면 현재 회차 자동 판별.
     """
-    # 회차 결정
     term = cl.user_session.get("term")
     if not term:
         term = get_current_term()
@@ -74,7 +73,6 @@ async def process_graduation(term_id: str = "") -> str:
 
     term_id = term["term_id"]
 
-    # 출석부 시트 찾기
     attendance_sheet_id = _resolve_attendance_sheet_id(term)
     if not attendance_sheet_id:
         return (
@@ -83,61 +81,55 @@ async def process_graduation(term_id: str = "") -> str:
         )
 
     cl.user_session.set("state", "running_graduation")
+    progress = cl.Message(content=f"🎓 **{term['term_name']}** 종강 처리를 시작합니다...")
+    await progress.send()
 
     try:
-        # Step 1: 출석률 집계
-        async with cl.Step(name="📊 출석률 집계", type="tool") as step:
-            results = await load_attendance_results(
-                attendance_sheet_id, term_id=term_id,
-            )
-            step.output = f"총 **{len(results)}건** (수강생 × 과목) 집계 완료"
+        # 1. 출석률 집계
+        progress.content = "📊 출석률을 집계하고 있습니다..."
+        await progress.update()
+        results = await load_attendance_results(attendance_sheet_id, term_id=term_id)
 
         if not results:
             cl.user_session.set("state", "idle")
-            return "출석 데이터가 없습니다. 출석 체크(OCR)가 완료되었는지 확인해주세요."
+            progress.content = "출석 데이터가 없습니다. 출석 체크(OCR)가 완료되었는지 확인해주세요."
+            await progress.update()
+            return "출석 데이터가 없습니다."
 
-        # Step 2: 출석률 기록
-        async with cl.Step(name="📝 출석률 기록", type="tool") as step:
-            await update_attendance_rates_in_sheet(
-                attendance_sheet_id, results, term_id,
-            )
-            step.output = f"출석부 탭 출석률 **{len(results)}건** 업데이트"
+        # 2. 출석률 기록
+        progress.content = f"📝 출석률 **{len(results)}건** 집계 완료. 출석부에 기록 중..."
+        await progress.update()
+        await update_attendance_rates_in_sheet(attendance_sheet_id, results, term_id)
 
-        # Step 3: 수강기록 저장
-        async with cl.Step(name="📋 수강기록 저장", type="tool") as step:
-            name_to_id = load_student_name_id_map(attendance_sheet_id)
-            course_records = build_course_records(results, name_to_id, term_id)
-            if course_records:
-                await append_course_records(course_records)
-            step.output = f"수강기록 **{len(course_records)}건** 추가"
+        # 3. 수강기록 저장
+        progress.content = "📋 수강기록을 저장하고 있습니다..."
+        await progress.update()
+        name_to_id = load_student_name_id_map(attendance_sheet_id)
+        course_records = build_course_records(results, name_to_id, term_id)
+        if course_records:
+            await append_course_records(course_records)
 
-        # Step 4: 회원목록 재집계
-        async with cl.Step(name="📊 회원 통계 재집계", type="tool") as step:
-            members = await load_members_from_sheet()
-            members = await recalculate_member_stats(members)
-            step.output = f"회원 **{len(members)}명** 통계 재집계 완료"
+        # 4. 회원목록 재집계
+        progress.content = f"📊 수강기록 **{len(course_records)}건** 저장 완료. 회원 통계 재집계 중..."
+        await progress.update()
+        members = await load_members_from_sheet()
+        members = await recalculate_member_stats(members)
 
-        # Step 5: 등급 강등
-        async with cl.Step(name="🔄 등급 강등", type="tool") as step:
-            active_staff_ids = get_active_staff_ids()
-            change_records = apply_demotion(members, term_id, active_staff_ids)
+        # 5. 등급 강등
+        progress.content = f"🔄 회원 **{len(members)}명** 재집계 완료. 등급 강등 처리 중..."
+        await progress.update()
+        active_staff_ids = get_active_staff_ids()
+        change_records = apply_demotion(members, term_id, active_staff_ids)
 
-            junior_count = sum(1 for r in change_records if r["사유"] == "종강강등")
-            full_count = sum(1 for r in change_records if r["사유"] == "겨울학기강등")
+        junior_count = sum(1 for r in change_records if r["사유"] == "종강강등")
+        full_count = sum(1 for r in change_records if r["사유"] == "겨울학기강등")
 
-            parts = []
-            if junior_count:
-                parts.append(f"준회원 → 회원 **{junior_count}명**")
-            if full_count:
-                parts.append(f"정회원 → 회원 **{full_count}명**")
-            step.output = ", ".join(parts) if parts else "등급 변경 없음"
-
-        # Step 6: 저장
-        async with cl.Step(name="💾 저장", type="tool") as step:
-            await update_members_sheet(members)
-            if change_records:
-                await append_member_records(change_records)
-            step.output = "회원목록 + 등급변경 이력 저장 완료"
+        # 6. 저장
+        progress.content = "💾 저장 중..."
+        await progress.update()
+        await update_members_sheet(members)
+        if change_records:
+            await append_member_records(change_records)
 
         members_link = f"https://docs.google.com/spreadsheets/d/{MEMBERS_SHEET_ID}"
 
@@ -150,6 +142,8 @@ async def process_graduation(term_id: str = "") -> str:
             result_msg += f"- 정회원 → 회원 강등: **{full_count}명**\n"
         result_msg += f"\n[회원관리 시트 열기]({members_link})"
 
+        progress.content = result_msg
+        await progress.update()
         return result_msg
 
     except Exception as e:

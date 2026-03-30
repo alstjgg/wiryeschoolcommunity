@@ -2,7 +2,14 @@
 
 create_agent()로 ReAct 에이전트를 생성하고,
 7개 tool 중 적합한 것을 선택하여 관리자 요청을 처리한다.
+
+Checkpointer:
+  - DATABASE_URL 있으면 AsyncPostgresSaver (세션 영속성)
+  - 없으면 MemorySaver (로컬 개발용)
 """
+
+import logging
+import os
 
 from langchain.agents import create_agent
 from langchain_anthropic import ChatAnthropic
@@ -11,6 +18,8 @@ from langgraph.checkpoint.memory import MemorySaver
 from app.config import ANTHROPIC_API_KEY, LLM_MODEL
 from app.context.business import get_system_prompt
 from app.tools import ALL_TOOLS
+
+logger = logging.getLogger(__name__)
 
 AGENT_SYSTEM_PROMPT = """당신은 위례인생학교의 업무 도우미 AI입니다.
 관리자의 요청을 이해하고 적합한 도구를 선택하여 처리합니다.
@@ -31,15 +40,42 @@ AGENT_SYSTEM_PROMPT = """당신은 위례인생학교의 업무 도우미 AI입�
 - "종강 처리", "종강", "학기 마무리", "출석률 계산", "등급 강등" → process_graduation
 - "계획서 검토", "강의 계획서" → review_plan
 - "보고서 생성", "보고서" → generate_report
+- 수강생/회원/강좌 데이터 조회 → query_data
 - 업무 관련 질문, 정보 요청, "~이 뭐야?", "~가 뭔가요?" → answer_question
 
 ## 비즈니스 컨텍스트
 {business_context}
 """
 
+# 싱글턴 checkpointer (서버 수명 동안 재사용)
+_checkpointer = None
 
-def create_wirye_agent():
-    """세션별 Agent 인스턴스 생성."""
+
+async def _get_checkpointer():
+    """DATABASE_URL이 있으면 AsyncPostgresSaver, 없으면 MemorySaver."""
+    global _checkpointer
+    if _checkpointer is not None:
+        return _checkpointer
+
+    dsn = os.environ.get("DATABASE_URL")
+    if dsn:
+        try:
+            from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+            checkpointer = AsyncPostgresSaver.from_conn_string(dsn)
+            await checkpointer.setup()
+            _checkpointer = checkpointer
+            logger.info("PostgresSaver checkpointer initialized")
+            return _checkpointer
+        except Exception as e:
+            logger.warning("PostgresSaver init failed, falling back to MemorySaver: %s", e)
+
+    _checkpointer = MemorySaver()
+    logger.info("MemorySaver checkpointer initialized (no DATABASE_URL)")
+    return _checkpointer
+
+
+async def create_wirye_agent():
+    """세션별 Agent 인스턴스 생성 (async — checkpointer 초기화 포함)."""
     llm = ChatAnthropic(
         model=LLM_MODEL,
         api_key=ANTHROPIC_API_KEY,
@@ -50,9 +86,11 @@ def create_wirye_agent():
         business_context=get_system_prompt(),
     )
 
+    checkpointer = await _get_checkpointer()
+
     return create_agent(
         model=llm,
         tools=ALL_TOOLS,
         system_prompt=system_prompt,
-        checkpointer=MemorySaver(),
+        checkpointer=checkpointer,
     )

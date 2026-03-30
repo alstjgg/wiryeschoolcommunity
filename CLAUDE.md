@@ -9,7 +9,7 @@
 ## 기술 스택
 
 - **언어**: Python 3.12 (`.python-version`으로 고정)
-- **LLM 프레임워크**: LangChain 1.0 `create_agent` + LangGraph 1.0 (Agent 라우터 + 7개 @tool)
+- **LLM 프레임워크**: LangChain 1.0 `create_agent` + LangGraph 1.0 (Agent 라우터 + 8개 @tool, AsyncPostgresSaver checkpointer)
 - **채팅 UI**: Chainlit (WebSocket 기반, Conversation Starter 버튼 지원)
 - **LLM**: Claude API (Anthropic) — 한국어 + Vision
 - **데이터 SoT**: `USE_DB_SOT` 플래그로 전환
@@ -60,16 +60,17 @@ async def on_message(message: cl.Message):
 
 대상 사용자(55세+, 비개발자)를 위한 Chainlit 기능 활용 방침.
 
-### Step — 중간 진행 상황 공유
-복잡한 작업에서 각 단계를 관리자에게 시각적으로 보여줌. "지금 뭘 하고 있는지" 피드백이 신뢰 구축에 핵심. `cot = "tool_call"` 설정으로 `type="tool"` Step만 UI에 표시됨 — **반드시 `type="tool"` 지정**.
+### 진행 상태 메시지 — cl.Message send/update 패턴
+복잡한 작업에서 각 단계를 관리자에게 직접 메시지로 보여줌. "지금 뭘 하고 있는지" 피드백이 신뢰 구축에 핵심. `cl.Message`를 보낸 뒤 `.update()`로 내용을 갱신하여 단계별 진행 표시.
 ```python
-async with cl.Step(name="📊 데이터 읽기", type="tool") as step:
-    ...  # 관리자에게 "수강생 시트를 읽고 있어요..." 표시
-    step.output = "수강생 **85명** 로드 완료"
-
-async with cl.Step(name="🔍 입금 매칭 중", type="tool") as step:
-    ...  # "85건 중 78건 매칭 완료..." 중간 결과 표시
-    step.output = "✅ 78건 매칭 / 🔶 7건 미매칭"
+progress = cl.Message(content="📊 데이터를 읽고 있습니다...")
+await progress.send()
+# ... 작업 수행 ...
+progress.content = "📊 수강생 **85명** 로드 완료. 입금 매칭 중..."
+await progress.update()
+# ... 다음 작업 ...
+progress.content = "✅ 78건 매칭 / 🔶 7건 미매칭"
+await progress.update()
 ```
 
 ### Action — 사용자 선택지 제공 (non-blocking)
@@ -184,13 +185,14 @@ wiryeschoolcommunity/
 │   ├── main.py                  # Chainlit 엔트리포인트 — Agent invoke + 파일 태깅 + Starter/Action 버튼 (~285줄)
 │   ├── agent.py                 # [신규] LangChain create_agent — 시스템 프롬프트 + 7개 tool 바인딩
 │   ├── config.py                # 환경 변수, 상수, 영속 Google IDs, COURSE_KEYWORDS, USE_DB_SOT, INSTRUCTOR/STAFF_SHEET_ID
-│   ├── tools/                   # [신규] @tool 함수 모듈 — Agent가 호출하는 7개 tool
+│   ├── tools/                   # @tool 함수 모듈 — Agent가 호출하는 8개 tool
 │   │   ├── __init__.py          # ALL_TOOLS 리스트 export
 │   │   ├── qa_tool.py           # 업무 Q&A
 │   │   ├── payment_tool.py      # 입금 대조 (2-file multi-turn)
 │   │   ├── attendance_tool.py   # 출석부 생성 (처리상태 gate + PDF)
 │   │   ├── ocr_tool.py          # 출석 체크 OCR (이미지 → Claude Vision)
 │   │   ├── graduation_tool.py   # 종강 처리 (6-step pipeline)
+│   │   ├── query_tool.py        # 데이터 조회 (자연어 → 구조화 쿼리 → DB)
 │   │   ├── plan_tool.py         # 계획서 검토 (placeholder)
 │   │   └── report_tool.py       # 보고서 생성 (placeholder)
 │   ├── context/
@@ -738,9 +740,15 @@ DATABASE_URL=                   # Railway가 자동 주입 (PostgreSQL 연결 �
 - Starter/Action 버튼 동일 유지 (버튼 클릭 → Agent invoke)
 - `classify_intent_llm` 제거 — Agent의 tool selection이 의도 분류를 대체
 
+**✅ Phase B 완료 — Agent 기능 확장:**
+- PostgresSaver checkpointer (MemorySaver → AsyncPostgresSaver, 대화 state 영속화)
+- on_chat_resume 개선 (메시지 replay 루프 제거 → checkpointer 기반 복원)
+- 데이터 조회 tool (`query_data`) — 자연어 → LLM 의도 파싱 → 미리 정의된 DB 조회 함수 (NL-to-SQL 아님)
+- Q&A 품질 개선 — prompt caching (`cache_control: ephemeral`), 간결한 답변 스타일, max_tokens 1024
+- cl.Step → cl.Message 전환 — 모든 tool에서 진행 상태를 일반 메시지로 직접 표시
+
 **📋 백로그:**
-- **비즈니스 컨텍스트 최적화**: (1) Prompt caching 즉시 적용 (비용 90%↓, 지연 50%↓), (2) selective context injection (tool별 관련 컨텍스트만 주입), (3) 컨텍스트 ~100K 토큰 초과 시 RAG 도입
-- **Phase B**: 데이터 조회 tool, Q&A 고도화, cl.Step→cl.Message 전환, 세션 영속성(PostgresSaver)
+- **비즈니스 컨텍스트 최적화**: selective context injection (tool별 관련 컨텍스트만 주입), 컨텍스트 ~100K 토큰 초과 시 RAG 도입
 - 보고서 생성: DB SQL 집계 → PDF (placeholder 버튼 배치 완료)
 - 계획서 검토: PDF 파싱 → 오탈자/말투 수정 → 배움숲 멘트 생성 (placeholder 배치 완료)
 - 첫 화면 로고+타이틀 PNG 이미지 제작 (`public/logo_light.png` → CSS 워크어라운드 제거)

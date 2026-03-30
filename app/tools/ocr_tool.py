@@ -85,7 +85,6 @@ async def check_attendance_ocr(
         course_name: 과목명. 비어있으면 메시지에서 추출을 시도합니다.
         term_id: 회차 ID (예: "2026-1"). 비어있으면 현재 회차.
     """
-    # 회차 결정
     term = cl.user_session.get("term")
     if not term:
         term = get_current_term()
@@ -95,7 +94,6 @@ async def check_attendance_ocr(
 
     ocr_term_id = term["term_id"]
 
-    # 출석부 시트 찾기
     attendance_sheet_id = _resolve_attendance_sheet_id(term)
     if not attendance_sheet_id:
         return (
@@ -103,7 +101,6 @@ async def check_attendance_ocr(
             "출석부 생성이 먼저 완료되어야 합니다."
         )
 
-    # 파일이 없으면 업로드 요청
     if not file_path:
         cl.user_session.set("state", "awaiting_ocr_image")
         return (
@@ -115,7 +112,6 @@ async def check_attendance_ocr(
             "예) `경제뉴스 기초 출석부입니다` + 사진 첨부"
         )
 
-    # 과목명 추출
     if not course_name:
         course_name = _extract_course_name(course_name, attendance_sheet_id)
     if not course_name:
@@ -125,35 +121,37 @@ async def check_attendance_ocr(
         )
 
     try:
-        # Step 1: 수강생 목록 로드
-        async with cl.Step(name="📸 출석부 이미지 분석", type="tool") as step:
-            with open(file_path, "rb") as f:
-                image_bytes = f.read()
-            students = await load_course_students(
-                attendance_sheet_id, course_name, term_id=ocr_term_id,
-            )
-            if not students:
-                step.output = f"'{course_name}' 과목을 찾을 수 없습니다."
-                return f"출석부 시트에서 **{course_name}** 과목을 찾을 수 없습니다.\n과목명을 정확히 입력해주세요."
-            step.output = f"**{course_name}** 수강생 **{len(students)}명** 확인"
+        # 1. 수강생 목록 로드 + 이미지 읽기
+        progress = cl.Message(content=f"📸 **{course_name}** 출석부 이미지를 분석하고 있습니다...")
+        await progress.send()
 
-        # Step 2: OCR 실행
-        async with cl.Step(name="🤖 출석 인식", type="tool") as step:
-            ocr_result = await process_attendance_image(
-                image_bytes, course_name, students,
-            )
-            recognized = len(ocr_result["results"])
-            unrecognized = len(ocr_result["unrecognized"])
-            step.output = f"인식 **{recognized}명** / 미인식 **{unrecognized}명**"
+        with open(file_path, "rb") as f:
+            image_bytes = f.read()
+        students = await load_course_students(
+            attendance_sheet_id, course_name, term_id=ocr_term_id,
+        )
+        if not students:
+            progress.content = f"출석부 시트에서 **{course_name}** 과목을 찾을 수 없습니다.\n과목명을 정확히 입력해주세요."
+            await progress.update()
+            return progress.content
 
-        # Step 3: 시트 반영
-        async with cl.Step(name="💾 출석부 시트 반영", type="tool") as step:
-            updated = await write_attendance_to_sheet(
-                attendance_sheet_id, course_name,
-                ocr_result["results"], students,
-                term_id=ocr_term_id,
-            )
-            step.output = f"**{updated}명** 반영 완료"
+        # 2. OCR 실행
+        progress.content = f"🤖 **{course_name}** 수강생 **{len(students)}명** 확인. 출석 인식 중..."
+        await progress.update()
+
+        ocr_result = await process_attendance_image(image_bytes, course_name, students)
+        recognized = len(ocr_result["results"])
+        unrecognized = len(ocr_result["unrecognized"])
+
+        # 3. 시트 반영
+        progress.content = f"💾 인식 **{recognized}명** 완료. 출석부 시트에 반영 중..."
+        await progress.update()
+
+        updated = await write_attendance_to_sheet(
+            attendance_sheet_id, course_name,
+            ocr_result["results"], students,
+            term_id=ocr_term_id,
+        )
 
         # 결과 요약
         preview_lines = [f"**{course_name}** 출석 인식 결과:\n"]
@@ -171,8 +169,12 @@ async def check_attendance_ocr(
         preview_lines.append(f"\n✅ **{updated}명** 출석부 시트에 반영 완료")
         preview_lines.append("\n다른 과목도 처리하시려면 사진과 과목명을 보내주세요.")
 
+        final = "\n".join(preview_lines)
+        progress.content = final
+        await progress.update()
+
         cl.user_session.set("state", "idle")
-        return "\n".join(preview_lines)
+        return final
 
     except Exception as e:
         cl.user_session.set("state", "idle")

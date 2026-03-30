@@ -62,7 +62,7 @@ def _check_processing_gate(term: dict, app_sheet_id: str | None) -> str | None:
     )
 
     if not unprocessed_apps and not unprocessed_deposits:
-        return None  # Gate passed
+        return None
 
     sections = []
     if unprocessed_apps:
@@ -121,7 +121,6 @@ async def create_attendance(term_id: str = "") -> str:
     Args:
         term_id: 회차 ID (예: "2026-1"). 비어있으면 현재 회차 자동 판별.
     """
-    # 회차 결정
     term = cl.user_session.get("term")
     if not term:
         term = get_current_term()
@@ -131,7 +130,6 @@ async def create_attendance(term_id: str = "") -> str:
 
     att_term_id = term["term_id"]
 
-    # 회차 폴더 탐색
     term_folder_id = cl.user_session.get("term_folder_id")
     if not term_folder_id:
         term_folder = find_term_folder(att_term_id)
@@ -143,68 +141,59 @@ async def create_attendance(term_id: str = "") -> str:
         term_folder_id = term_folder["id"]
         cl.user_session.set("term_folder_id", term_folder_id)
 
-    # 처리상태 gate check
     app_sheet_id = _get_app_sheet_id()
     gate_msg = _check_processing_gate(term, app_sheet_id)
     if gate_msg:
         return gate_msg
 
-    # 출석부 생성 시작
     cl.user_session.set("state", "creating_attendance")
+    progress = cl.Message(content=f"📋 **{term['term_name']}** 출석부 생성을 시작합니다...")
+    await progress.send()
 
     try:
-        # Step 1: 등록 수강생 확인
-        async with cl.Step(name="📊 등록 수강생 확인", type="tool") as step:
-            registered = await load_registered_students(
-                app_sheet_id, term_id=att_term_id,
+        # 1. 등록 수강생 확인
+        progress.content = "📊 등록 수강생을 확인하고 있습니다..."
+        await progress.update()
+
+        registered = await load_registered_students(app_sheet_id, term_id=att_term_id)
+        if not registered:
+            cl.user_session.set("state", "idle")
+            progress.content = (
+                "처리상태가 '등록완료'인 수강생이 없습니다.\n"
+                "배움숲 등록 처리 후 신청기록 시트에서 처리상태를 '등록완료'로 설정해주세요."
             )
-            if not registered:
-                step.output = "등록완료 수강생 없음"
-                cl.user_session.set("state", "idle")
-                return (
-                    "처리상태가 '등록완료'인 수강생이 없습니다.\n"
-                    "배움숲 등록 처리 후 신청기록 시트에서 처리상태를 '등록완료'로 설정해주세요."
-                )
+            await progress.update()
+            return progress.content
 
-            courses = group_by_course(registered)
-            course_names = sorted(courses.keys())
-            total_students = sum(len(v) for v in courses.values())
-            step.output = f"등록완료 수강생 **{total_students}명** ({len(course_names)}개 과목)"
+        courses = group_by_course(registered)
+        course_names = sorted(courses.keys())
+        total_students = sum(len(v) for v in courses.values())
 
-        # Step 2: 출석부 시트 생성
-        async with cl.Step(name="📋 출석부 시트 생성", type="tool") as step:
-            sheet_result = create_attendance_spreadsheet(
-                att_term_id, term_folder_id, courses,
-            )
-            cl.user_session.set("attendance_sheet_id", sheet_result["spreadsheet_id"])
-            step.output = f"출석부 탭 생성 완료 ({len(course_names)}개 과목, {total_students}명)"
+        # 2. 출석부 시트 생성
+        progress.content = f"📋 수강생 **{total_students}명** ({len(course_names)}개 과목) 확인. 출석부 시트 생성 중..."
+        await progress.update()
 
-        # Step 3: 과목별 PDF 생성 + 업로드
+        sheet_result = create_attendance_spreadsheet(att_term_id, term_folder_id, courses)
+        cl.user_session.set("attendance_sheet_id", sheet_result["spreadsheet_id"])
+
+        # 3. 과목별 PDF 생성 + 업로드
         pdf_urls: dict[str, str | None] = {}
-        progress_msg = await cl.Message(
-            content=f"PDF 생성 중... (0/{len(course_names)})"
-        ).send()
-
         for idx, course_name in enumerate(course_names):
             try:
-                pdf_bytes = generate_attendance_pdf(
-                    att_term_id, course_name, courses[course_name],
-                )
+                pdf_bytes = generate_attendance_pdf(att_term_id, course_name, courses[course_name])
                 pdf_url = upload_pdf_to_drive(
-                    pdf_bytes, att_term_id, course_name,
-                    sheet_result["attendance_folder_id"],
+                    pdf_bytes, att_term_id, course_name, sheet_result["attendance_folder_id"],
                 )
                 pdf_urls[course_name] = pdf_url
             except Exception:
                 pdf_urls[course_name] = None
 
             if (idx + 1) % 4 == 0 or idx + 1 == len(course_names):
-                progress_msg.content = f"PDF 생성 중... ({idx + 1}/{len(course_names)})"
-                await progress_msg.update()
+                progress.content = f"PDF 생성 중... ({idx + 1}/{len(course_names)})"
+                await progress.update()
 
         pdf_count = sum(1 for v in pdf_urls.values() if v)
 
-        # 최종 안내
         pdf_lines = []
         for course in course_names:
             url = pdf_urls.get(course)
@@ -212,10 +201,9 @@ async def create_attendance(term_id: str = "") -> str:
                 pdf_lines.append(f"  - [{course}]({url})")
             else:
                 pdf_lines.append(f"  - {course} (PDF 생성 실패)")
-
         pdf_section = "\n\n**과목별 인쇄용 PDF**:\n" + "\n".join(pdf_lines)
 
-        return (
+        final = (
             f"✅ 출석부 생성이 완료되었습니다!\n\n"
             f"- 과목 수: **{len(course_names)}개**\n"
             f"- 총 수강생: **{total_students}명**\n"
@@ -226,6 +214,10 @@ async def create_attendance(term_id: str = "") -> str:
             "과목별 PDF를 출력하여 강사에게 전달해주세요.\n"
             "종강 후 출석 체크(사진 촬영 → OCR)를 진행해주세요."
         )
+
+        progress.content = final
+        await progress.update()
+        return final
 
     except Exception as e:
         return f"출석부 생성 중 오류: {e}"

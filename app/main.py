@@ -13,7 +13,7 @@ import app.services.chat_data_layer  # noqa: F401
 import chainlit as cl
 
 from app.agent import create_wirye_agent
-from app.context.term import get_current_term, parse_term_input
+from app.context.term import get_current_term
 
 logger = logging.getLogger(__name__)
 
@@ -27,8 +27,9 @@ CANCEL_KEYWORDS = ["취소", "중단", "그만", "멈춰", "stop", "cancel", "�
 @cl.on_chat_start
 async def on_chat_start():
     """새 대화 시작 — Agent 초기화"""
-    agent = create_wirye_agent()
-    thread_id = str(uuid.uuid4())
+    agent = await create_wirye_agent()
+    # Chainlit이 부여하는 thread_id 사용 → PostgresSaver와 동기화
+    thread_id = cl.context.session.thread_id or str(uuid.uuid4())
     cl.user_session.set("agent", agent)
     cl.user_session.set("thread_id", thread_id)
     cl.user_session.set("state", "idle")
@@ -36,23 +37,14 @@ async def on_chat_start():
 
 @cl.on_chat_resume
 async def on_chat_resume(thread: dict):
-    """과거 대화를 열었을 때 메시지 히스토리 복원"""
-    for step in thread.get("steps", []):
-        step_type = step.get("type", "")
-        output = step.get("output") or ""
-        if not output:
-            continue
-        if step_type == "user_message":
-            await cl.Message(
-                author=step.get("name") or "관리자",
-                content=output,
-                type="user_message",
-            ).send()
-        elif step_type in ("assistant_message", "llm"):
-            await cl.Message(content=output).send()
-    # Agent 재초기화
-    agent = create_wirye_agent()
-    thread_id = str(uuid.uuid4())
+    """과거 대화 복원 — Agent 재초기화, 메시지 replay 없음.
+
+    Chainlit이 자체적으로 steps를 렌더링하고,
+    PostgresSaver가 thread_id 기반으로 Agent state를 복원한다.
+    """
+    agent = await create_wirye_agent()
+    # 같은 thread_id → PostgresSaver에서 이전 checkpoint 자동 로드
+    thread_id = thread.get("id", str(uuid.uuid4()))
     cl.user_session.set("agent", agent)
     cl.user_session.set("thread_id", thread_id)
     cl.user_session.set("state", "idle")
@@ -142,8 +134,8 @@ async def _invoke_agent(content: str, file_paths: list[str] | None = None):
 
     if not agent or not thread_id:
         # Agent가 없으면 재초기화
-        agent = create_wirye_agent()
-        thread_id = str(uuid.uuid4())
+        agent = await create_wirye_agent()
+        thread_id = cl.context.session.thread_id or str(uuid.uuid4())
         cl.user_session.set("agent", agent)
         cl.user_session.set("thread_id", thread_id)
 

@@ -44,32 +44,22 @@ def _get_app_sheet_id() -> str | None:
     return sheet_id
 
 
-async def _load_signup_data(year: str) -> tuple[list[dict], list[dict]]:
+async def _load_signup_data(year: str, progress: cl.Message) -> tuple[list[dict], list[dict]]:
     """Drive에서 신규가입·정회원가입 신청서를 자동 로드."""
     member_records = []
     fullmember_records = []
 
-    async with cl.Step(name="📋 신규가입 신청서 로드", type="tool") as step:
-        result = load_member_signups_from_drive(year)
-        if result["found"] and not result["error"]:
-            member_records = result["records"]
-            step.output = (
-                f"신규가입 신청서 로드 완료: **{result['count']}건** "
-                f"({result['file_name']})"
-            )
-        else:
-            step.output = f"⚠️ {result['error']} (입금 대조는 계속 진행합니다)"
+    progress.content = "📋 신규가입 신청서를 로드하고 있습니다..."
+    await progress.update()
+    result = load_member_signups_from_drive(year)
+    if result["found"] and not result["error"]:
+        member_records = result["records"]
 
-    async with cl.Step(name="📋 정회원가입 신청서 로드", type="tool") as step:
-        result = load_fullmember_signups_from_drive(year)
-        if result["found"] and not result["error"]:
-            fullmember_records = result["records"]
-            step.output = (
-                f"정회원가입 신청서 로드 완료: **{result['count']}건** "
-                f"({result['file_name']})"
-            )
-        else:
-            step.output = f"⚠️ {result['error']} (입금 대조는 계속 진행합니다)"
+    progress.content = "📋 정회원가입 신청서를 로드하고 있습니다..."
+    await progress.update()
+    result = load_fullmember_signups_from_drive(year)
+    if result["found"] and not result["error"]:
+        fullmember_records = result["records"]
 
     return member_records, fullmember_records
 
@@ -78,62 +68,61 @@ async def _do_applicants_step(file_path: str, term: dict) -> str | None:
     """신청자 목록 파일 파싱 + 통합 신청서 생성. 성공 시 None, 에러 시 메시지."""
     term_id = term["term_id"]
 
-    # Step 1: 신청자 목록 파싱
-    async with cl.Step(name="📊 신청자 목록 분석", type="tool") as step:
-        with open(file_path, "rb") as f:
-            file_bytes = f.read()
-        applicants = parse_applicant_list(file_bytes)
-        if not applicants:
-            step.output = "파일에서 신청자 데이터를 찾을 수 없습니다."
-            return "파일에서 신청자 데이터를 찾을 수 없습니다. 파일 형식을 확인해주세요."
-        courses = set(a.get("강좌명", "") for a in applicants if a.get("강좌명"))
-        step.output = f"수강 신청자 **{len(applicants)}명** 확인 ({len(courses)}개 과목)"
+    progress = cl.Message(content="📊 신청자 목록을 분석하고 있습니다...")
+    await progress.send()
 
-    # Step 2: Drive에서 신규가입/정회원가입 신청서 로드
-    member_records, fullmember_records = await _load_signup_data(str(term["year"]))
+    with open(file_path, "rb") as f:
+        file_bytes = f.read()
+    applicants = parse_applicant_list(file_bytes)
+    if not applicants:
+        progress.content = "파일에서 신청자 데이터를 찾을 수 없습니다. 파일 형식을 확인해주세요."
+        await progress.update()
+        return progress.content
+    courses = set(a.get("강좌명", "") for a in applicants if a.get("강좌명"))
 
-    # Step 3: 통합 신청서 생성 + Sheets 저장
-    async with cl.Step(name="📝 통합 신청서 생성", type="tool") as step:
-        applications = build_applications(
-            applicants, member_records, fullmember_records, term_id=term_id,
-        )
+    progress.content = f"📊 수강 신청자 **{len(applicants)}명** ({len(courses)}개 과목) 확인. 신청서를 로드하고 있습니다..."
+    await progress.update()
 
-        term_folder_id = cl.user_session.get("term_folder_id")
-        if not term_folder_id:
-            term_folder = find_term_folder(term_id)
-            if term_folder:
-                term_folder_id = term_folder["id"]
-                cl.user_session.set("term_folder_id", term_folder_id)
+    member_records, fullmember_records = await _load_signup_data(str(term["year"]), progress)
 
-        if term_folder_id:
-            try:
-                app_sheet_id = await write_applications_sheet(
-                    term_folder_id, applications, term_id=term_id,
-                )
-                cl.user_session.set("applications_sheet_id", app_sheet_id)
-            except Exception as e:
-                logger.error("write_applications_sheet failed: %s", e)
+    progress.content = "📝 통합 신청서를 생성하고 있습니다..."
+    await progress.update()
 
-        수강_count = sum(1 for a in applications if a["유형"] == "수강")
-        신규_count = sum(1 for a in applications if a["유형"] == "신규가입")
-        정회원_count = sum(1 for a in applications if a["유형"] == "정회원")
-        step.output = (
-            f"수강 {수강_count}건, 신규가입 {신규_count}건, "
-            f"정회원 {정회원_count}건 → 시트 저장 완료"
-        )
+    applications = build_applications(
+        applicants, member_records, fullmember_records, term_id=term_id,
+    )
+
+    term_folder_id = cl.user_session.get("term_folder_id")
+    if not term_folder_id:
+        term_folder = find_term_folder(term_id)
+        if term_folder:
+            term_folder_id = term_folder["id"]
+            cl.user_session.set("term_folder_id", term_folder_id)
+
+    if term_folder_id:
+        try:
+            app_sheet_id = await write_applications_sheet(
+                term_folder_id, applications, term_id=term_id,
+            )
+            cl.user_session.set("applications_sheet_id", app_sheet_id)
+        except Exception as e:
+            logger.error("write_applications_sheet failed: %s", e)
+
+    수강_count = sum(1 for a in applications if a["유형"] == "수강")
+    신규_count = sum(1 for a in applications if a["유형"] == "신규가입")
+    정회원_count = sum(1 for a in applications if a["유형"] == "정회원")
 
     cl.user_session.set("applications", applications)
     cl.user_session.set("payment_step", "awaiting_payment")
 
-    await cl.Message(
-        content=(
-            f"**{term['term_name']}** 통합 신청서 생성 완료:\n\n"
-            f"- 수강 신청: **{수강_count}건**\n"
-            f"- 신규가입: **{신규_count}건**\n"
-            f"- 정회원: **{정회원_count}건**\n\n"
-            "입금내역 파일(.xls 또는 .xlsx)을 업로드해주세요."
-        )
-    ).send()
+    progress.content = (
+        f"**{term['term_name']}** 통합 신청서 생성 완료:\n\n"
+        f"- 수강 신청: **{수강_count}건**\n"
+        f"- 신규가입: **{신규_count}건**\n"
+        f"- 정회원: **{정회원_count}건**\n\n"
+        "입금내역 파일(.xls 또는 .xlsx)을 업로드해주세요."
+    )
+    await progress.update()
     return None
 
 
@@ -141,21 +130,22 @@ async def _do_payment_step(file_path: str, term: dict) -> str:
     """입금내역 파일 파싱 + 매칭 + cascade → 결과 반환."""
     term_id = term["term_id"]
 
-    # Step 1: 입금내역 파싱
-    async with cl.Step(name="💰 입금내역 분석", type="tool") as step:
-        with open(file_path, "rb") as f:
-            file_bytes = f.read()
-        transactions = parse_bank_statement(file_bytes)
-        if not transactions:
-            step.output = "거래 데이터를 찾을 수 없습니다."
-            return "입금내역에서 거래 데이터를 찾을 수 없습니다. 파일 형식을 확인해주세요."
-        step.output = f"입금 거래 **{len(transactions)}건** 확인"
+    progress = cl.Message(content="💰 입금내역을 분석하고 있습니다...")
+    await progress.send()
+
+    with open(file_path, "rb") as f:
+        file_bytes = f.read()
+    transactions = parse_bank_statement(file_bytes)
+    if not transactions:
+        progress.content = "입금내역에서 거래 데이터를 찾을 수 없습니다. 파일 형식을 확인해주세요."
+        await progress.update()
+        return progress.content
 
     applications = cl.user_session.get("applications", [])
     if not applications:
         return "신청서 데이터가 없습니다. 입금 대조를 처음부터 다시 시작해주세요."
 
-    # Step 1.5: 입금내역 DB 저장 + deposit ID 추적
+    # 입금내역 DB 저장 + deposit ID 추적
     if USE_DB_SOT and term_id:
         try:
             from app.services import db
@@ -170,33 +160,27 @@ async def _do_payment_step(file_path: str, term: dict) -> str:
         except Exception as e:
             logger.warning("deposits INSERT failed (non-critical): %s", e)
 
-    # Step 2: 회원 정보 로드 + 면제 처리
-    async with cl.Step(name="👥 회원 정보 로드", type="tool") as step:
-        members = await load_members_from_sheet()
-        exception_ids = get_exception_ids(term_id) if term_id else set()
-        exempted = apply_exemptions(applications, members, exception_ids)
-        students = applications_to_students(applications)
-        exc_count = sum(1 for e in exempted if e.get("확인사유") == "강사/사무처 면제")
-        regular_count = len(exempted) - exc_count
-        parts = [f"회원 **{len(members)}명** 로드"]
-        if regular_count:
-            parts.append(f"정회원 면제 **{regular_count}건**")
-        if exc_count:
-            parts.append(f"강사/사무처 면제 **{exc_count}건**")
-        step.output = ", ".join(parts)
+    # 회원 정보 로드 + 면제 처리
+    progress.content = f"👥 입금 거래 **{len(transactions)}건** 확인. 회원 정보를 로드하고 있습니다..."
+    await progress.update()
 
-    # Step 3: 규칙 기반 매칭
-    async with cl.Step(name="🔍 규칙 기반 매칭", type="tool") as step:
-        all_results, needs_llm = run_code_matching(transactions, students)
-        code_matched = sum(1 for r in all_results if r["상태"] == "✅정상")
-        step.output = f"✅ {code_matched}건 매칭 / 🔶 {len(needs_llm)}건 강좌특정필요"
+    members = await load_members_from_sheet()
+    exception_ids = get_exception_ids(term_id) if term_id else set()
+    exempted = apply_exemptions(applications, members, exception_ids)
+    students = applications_to_students(applications)
 
-    # Step 4: LLM 매칭
+    # 규칙 기반 매칭
+    progress.content = f"🔍 회원 **{len(members)}명** 로드 완료. 입금 매칭 중..."
+    await progress.update()
+
+    all_results, needs_llm = run_code_matching(transactions, students)
+    code_matched = sum(1 for r in all_results if r["상태"] == "✅정상")
+
+    # LLM 매칭
     if needs_llm:
-        async with cl.Step(name="🤖 AI 매칭", type="tool") as step:
-            await run_llm_matching(needs_llm, students)
-            llm_resolved = sum(1 for r in needs_llm if r["상태"] != "🔶확인필요")
-            step.output = f"AI 분석 완료: **{llm_resolved}건** 추가 매칭"
+        progress.content = f"🤖 ✅ {code_matched}건 매칭 완료. AI가 {len(needs_llm)}건을 추가 분석 중..."
+        await progress.update()
+        await run_llm_matching(needs_llm, students)
 
     # deposit ID 전파
     for r in all_results:
@@ -231,20 +215,18 @@ async def _do_payment_step(file_path: str, term: dict) -> str:
         if app.get("입금현황") not in ("❌미입금", ""):
             app.setdefault("processed_at", now)
 
-    # Step 5: 등급 전환 cascade
-    async with cl.Step(name="🔄 등급 전환", type="tool") as step:
-        grade_changes = apply_grade_cascade(
-            applications, members, term_id, exception_ids,
-        )
-        if grade_changes:
-            step.output = f"등급 변경 **{len(grade_changes)}건** 처리"
-        else:
-            step.output = "등급 변경 없음"
+    # 등급 전환 cascade
+    progress.content = "🔄 등급 전환을 처리하고 있습니다..."
+    await progress.update()
+
+    grade_changes = apply_grade_cascade(
+        applications, members, term_id, exception_ids,
+    )
 
     # 시트에 자동 반영
     return await _write_payment_results(
         applications, members, all_results, exempted,
-        grade_changes, unmatched_deposits, term,
+        grade_changes, unmatched_deposits, term, progress,
     )
 
 
@@ -256,41 +238,36 @@ async def _write_payment_results(
     grade_changes: list[dict],
     unmatched_deposits: int,
     term: dict,
+    progress: cl.Message,
 ) -> str:
     """매칭 결과를 DB/Sheets에 반영 → 요약 반환."""
     app_sheet_id = _get_app_sheet_id()
     term_id = term.get("term_id", "")
 
-    async with cl.Step(name="💾 신청서 업데이트", type="tool") as step:
-        errors = []
-        if applications:
+    progress.content = "💾 신청서에 결과를 반영하고 있습니다..."
+    await progress.update()
+
+    errors = []
+    if applications:
+        try:
+            await update_applications_sheet(
+                app_sheet_id, applications, term_id=term_id,
+            )
+        except Exception as e:
+            logger.error("update_applications_sheet failed: %s", e)
+            errors.append(f"입금현황 반영 실패: {e}")
+
+        if grade_changes:
             try:
-                await update_applications_sheet(
-                    app_sheet_id, applications, term_id=term_id,
-                )
-                step.output = f"입금현황 **{len(applications)}건** 반영 완료"
+                await append_member_records(grade_changes)
             except Exception as e:
-                logger.error("update_applications_sheet failed: %s", e)
-                errors.append(f"입금현황 반영 실패: {e}")
-                step.output = "입금현황 반영 중 오류 발생"
-
-            if grade_changes:
-                try:
-                    await append_member_records(grade_changes)
-                    step.output += f", 등급변경 {len(grade_changes)}건 기록"
-                except Exception as e:
-                    logger.error("append_member_records failed: %s", e)
-                    errors.append(f"등급변경 기록 실패: {e}")
-                try:
-                    await update_members_sheet(members)
-                except Exception as e:
-                    logger.error("update_members_sheet failed: %s", e)
-                    errors.append(f"회원목록 업데이트 실패: {e}")
-
-            if errors:
-                step.output += f"\n⚠️ 일부 오류: {'; '.join(errors)}"
-        else:
-            step.output = "신청서 데이터가 없어 반영하지 못했습니다."
+                logger.error("append_member_records failed: %s", e)
+                errors.append(f"등급변경 기록 실패: {e}")
+            try:
+                await update_members_sheet(members)
+            except Exception as e:
+                logger.error("update_members_sheet failed: %s", e)
+                errors.append(f"회원목록 업데이트 실패: {e}")
 
     # 숫자 요약
     summary_line = format_results(
