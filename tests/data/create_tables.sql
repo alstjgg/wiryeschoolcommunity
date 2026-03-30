@@ -91,6 +91,9 @@ CREATE TABLE IF NOT EXISTS course_records (
     created_at  TIMESTAMPTZ DEFAULT NOW()
 );
 
+CREATE UNIQUE INDEX IF NOT EXISTS uq_course_records
+ON course_records (name_id, term_id, course_name);
+
 CREATE TABLE IF NOT EXISTS applications (
     id                  SERIAL PRIMARY KEY,
     term_id             TEXT NOT NULL,

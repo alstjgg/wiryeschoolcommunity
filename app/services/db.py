@@ -191,7 +191,7 @@ async def insert_member_records(records: list[dict]) -> None:
 # ======================================================= Course Records ====
 
 async def insert_course_records(records: list[dict]) -> None:
-    """수강기록 일괄 INSERT."""
+    """수강기록 일괄 UPSERT. 동일 (name_id, term_id, course_name) 재실행 시 출석률만 업데이트."""
     if not records:
         return
     pool = await get_pool()
@@ -200,17 +200,21 @@ async def insert_course_records(records: list[dict]) -> None:
             for r in records:
                 rate = 0.0
                 try:
-                    rate = float(r.get("출석률", 0))
+                    rate = float(r.get("출석률", 0) or r.get("attendance", 0) or 0)
                 except (ValueError, TypeError):
                     pass
                 await conn.execute(
                     """
                     INSERT INTO course_records (name_id, term_id, course_name, attendance)
                     VALUES ($1, $2, $3, $4)
+                    ON CONFLICT (name_id, term_id, course_name)
+                    DO UPDATE SET
+                        attendance = EXCLUDED.attendance,
+                        created_at = NOW()
                     """,
-                    r.get("이름ID", ""),
-                    r.get("회차", ""),
-                    r.get("과목명", ""),
+                    r.get("이름ID", "") or r.get("name_id", ""),
+                    r.get("회차", "") or r.get("term_id", ""),
+                    r.get("과목명", "") or r.get("course_name", ""),
                     rate,
                 )
 
@@ -278,7 +282,7 @@ async def upsert_applications(term_id: str, applications: list[dict]) -> None:
                         paid_amount = EXCLUDED.paid_amount,
                         payment_status = EXCLUDED.payment_status,
                         review_reason = EXCLUDED.review_reason,
-                        processing_status = EXCLUDED.processing_status,
+                        processing_status = COALESCE(NULLIF(EXCLUDED.processing_status, ''), applications.processing_status),
                         payment_time = EXCLUDED.payment_time,
                         payer_name = EXCLUDED.payer_name,
                         memo = EXCLUDED.memo,

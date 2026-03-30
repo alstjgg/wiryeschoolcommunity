@@ -277,8 +277,8 @@ drive_service = build('drive', 'v3', credentials=credentials)
 |--------|---------|------|
 | `members` | `name_id` (TEXT PK) | 회원 현재 상태 |
 | `member_records` | `id` (SERIAL) | 등급 변경 이력 |
-| `course_records` | `id` (SERIAL) | 수강 이력 |
-| `applications` | `(term_id, name_id, type, course_name)` UK | 통합 신청서 (`processing_status`, `processed_at`) |
+| `course_records` | `id` (SERIAL), UK `(name_id, term_id, course_name)` | 수강 이력. 재실행 시 출석률만 업데이트 (`ON CONFLICT DO UPDATE`). |
+| `applications` | `(term_id, name_id, type, course_name)` UK | 통합 신청서 (`processing_status`, `processed_at`). upsert 시 `processing_status`는 COALESCE 보호 (빈값이면 기존값 유지). |
 | `deposits` | `id` (SERIAL), UK `(term_id, transaction_time, amount, payer_name, memo)` | 입금내역 원본 (`match_status`, `matched_name_ids`). 중복 INSERT 방지 (`ON CONFLICT DO NOTHING`). |
 | `attendance` | `(term_id, course_name, student_name)` UK | 출석 데이터 |
 | `feedbacks` | `id` (TEXT PK) | Chainlit thumbs up/down |
