@@ -14,6 +14,7 @@ sa-key.json
 *.json
 !package.json
 !public/theme.json
+!.chainlit/translations/*.json
 !public/stylesheet.css
 !n8n/*.json
 

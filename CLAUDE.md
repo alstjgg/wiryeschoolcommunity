@@ -262,7 +262,7 @@ drive_service = build('drive', 'v3', credentials=credentials)
 
 - **DB SoT + 백그라운드 Sheets 동기화**: **PostgreSQL이 유일한 SoT**. 챗봇은 DB에 쓰고, 백그라운드 스레드로 Sheets 동기화 (`sheets_sync.py`). DB 실패 시 에러를 호출자에 전파 (Sheets 폴백 없음).
   - `USE_DB_SOT` 플래그는 `main.py`, `ocr.py`, `graduation.py`에 아직 남아 있으나, `payment.py`는 DB-only로 전환 완료.
-- **처리상태 예외**: 신청기록/미확인입금의 `처리상태` 컬럼만 관리자가 Sheets에서 직접 편집 (드롭다운: 등록완료/환불완료/취소완료/보류). DB 모드에서도 이 컬럼은 Sheets에서 읽음.
+- **처리상태 예외**: 신청기록/미확인입금의 `처리상태` 컬럼만 관리자가 Sheets에서 직접 편집 (드롭다운: 등록완료/환불완료/취소완료/보류). DB 모드에서도 이 컬럼은 Sheets에서 읽음. 입금 대조 재실행 시 미확인입금의 처리상태를 Sheets→DB 역동기화 (`sync_deposit_processing_status`). 신청기록의 처리상태는 `upsert_applications`의 COALESCE로 보호.
 - **신청기록 통합**: 회차별 "신청서" 파일을 생성하지 않음. 회원관리 파일(`MEMBERS_SHEET_ID`)의 `신청기록` 탭에 전 회차 데이터 통합. `sheets_sync.py`가 백그라운드로 push.
 - **시트 서식**: 필터, 드롭다운, 보호 설정은 관리자가 Google Sheets UI에서 직접 관리. 코드는 값만 읽고 쓴다 (`values().get/update/clear/append`). 출석부 탭 생성(`addSheet`)만 코드에서 수행.
 - **PostgreSQL**: 비즈니스 데이터 (`db.py`, 7 테이블) + 채팅 기록 (`chat_data_layer.py`).
@@ -746,6 +746,14 @@ DATABASE_URL=                   # Railway가 자동 주입 (PostgreSQL 연결 �
 - 데이터 조회 tool (`query_data`) — 자연어 → LLM 의도 파싱 → 미리 정의된 DB 조회 함수 (NL-to-SQL 아님)
 - Q&A 품질 개선 — prompt caching (`cache_control: ephemeral`), 간결한 답변 스타일, max_tokens 1024
 - cl.Step → cl.Message 전환 — 모든 tool에서 진행 상태를 일반 메시지로 직접 표시
+
+**✅ 데이터 무결성 + UX 수정 (테스트 중 발견):**
+- 미확인입금 처리상태 보호 — 입금 대조 재실행 전 Sheets→DB 역동기화 (`sync_deposit_processing_status`)
+- 미확인입금 시트 입금자명 빈값 수정 — `_sync_deposits`에서 `matched_name_ids` 또는 `의뢰인` 표시
+- 회원기록 변경일시 YYYY-MM-DD 포맷 — `_sync_member_records`에서 날짜 잘라내기
+- "새 채팅" 다이얼로그 문구 수정 — "기록이 지워진다" → "사이드바에서 다시 열 수 있다" (ko.json)
+- 파일 대기 중 자연어 질문 대응 — 취소 아닌 텍스트는 Agent에게 전달 후 재안내
+- 신청자 목록 건너뛰기 — DB에 기존 데이터 있으면 "건너뛰기" 텍스트로 스킵 가능
 
 **📋 백로그:**
 - **비즈니스 컨텍스트 최적화**: selective context injection (tool별 관련 컨텍스트만 주입), 컨텍스트 ~100K 토큰 초과 시 RAG 도입

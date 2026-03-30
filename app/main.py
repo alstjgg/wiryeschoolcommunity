@@ -20,6 +20,9 @@ logger = logging.getLogger(__name__)
 # 워크플로우 중 취소 의도 감지 키워드
 CANCEL_KEYWORDS = ["취소", "중단", "그만", "멈춰", "stop", "cancel", "안 할게", "안할게", "나가기"]
 
+# 신청자 목록 건너뛰기 키워드
+SKIP_KEYWORDS = ["건너뛰기", "스킵", "skip", "이전 데이터", "패스"]
+
 
 # ===================================================== Lifecycle =====
 
@@ -100,7 +103,7 @@ async def on_message(message: cl.Message):
         await cl.Message("작업이 진행 중입니다. 잠시만 기다려주세요...").send()
         return
 
-    # 파일 대기 중 텍스트만 입력 → 취소 감지 / 재안내
+    # 파일 대기 중 텍스트만 입력 → 취소 감지 / 건너뛰기 / Agent에게 질문 전달 후 재안내
     if session_state in ("awaiting_applicants_file", "awaiting_payment_file", "awaiting_ocr_image"):
         if not message.elements:
             if any(k in message.content for k in CANCEL_KEYWORDS):
@@ -109,9 +112,17 @@ async def on_message(message: cl.Message):
                 await cl.Message("작업이 취소되었습니다.").send()
                 await send_default_actions()
                 return
-            # 텍스트만 왔으면 재안내
-            resume = _get_resume_prompt(session_state)
-            await cl.Message(resume).send()
+            # 신청자 목록 건너뛰기 (기존 DB 데이터 사용)
+            if session_state == "awaiting_applicants_file" and any(k in message.content for k in SKIP_KEYWORDS):
+                await _skip_applicants_step()
+                return
+            # Agent에게 질문 전달 (Q&A 등)
+            await _invoke_agent(message.content)
+            # Agent 응답 후에도 여전히 파일 대기 중이면 재안내
+            current_state = cl.user_session.get("state", "idle")
+            if current_state in ("awaiting_applicants_file", "awaiting_payment_file", "awaiting_ocr_image"):
+                resume = _get_resume_prompt(current_state)
+                await cl.Message(resume).send()
             return
 
     # 파일 태깅: message.elements → file_path 추출
@@ -251,6 +262,39 @@ async def on_default_report(action: cl.Action):
 async def on_default_question(action: cl.Action):
     cl.user_session.set("state", "idle")
     await cl.Message("궁금한 점을 자유롭게 질문해주세요.").send()
+
+
+# ===================================================== 건너뛰기 =====
+
+
+async def _skip_applicants_step():
+    """기존 DB 신청 데이터를 사용하여 신청자 목록 단계를 건너뛴다."""
+    term = cl.user_session.get("term")
+    if not term:
+        await cl.Message("회차 정보가 없습니다. 입금 대조를 처음부터 다시 시작해주세요.").send()
+        cl.user_session.set("state", "idle")
+        cl.user_session.set("payment_step", None)
+        return
+
+    try:
+        from app.services import db
+        existing = await db.load_applications(term["term_id"])
+        if not existing:
+            await cl.Message("이전 신청 데이터가 없습니다. 신청자 목록 파일을 업로드해주세요.").send()
+            return
+
+        cl.user_session.set("applications", existing)
+        cl.user_session.set("payment_step", "awaiting_payment")
+        cl.user_session.set("state", "awaiting_payment_file")
+
+        수강 = sum(1 for a in existing if a["유형"] == "수강")
+        await cl.Message(
+            f"이전 신청 데이터(**{수강}건**)를 사용합니다.\n\n"
+            "입금내역 파일(.xls 또는 .xlsx)을 업로드해주세요."
+        ).send()
+    except Exception as e:
+        logger.error("skip applicants failed: %s", e)
+        await cl.Message(f"이전 데이터 로드 중 오류: {e}\n신청자 목록 파일을 업로드해주세요.").send()
 
 
 # ===================================================== 유틸 =====

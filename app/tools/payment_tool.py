@@ -130,6 +130,27 @@ async def _do_payment_step(file_path: str, term: dict) -> str:
     """입금내역 파일 파싱 + 매칭 + cascade → 결과 반환."""
     term_id = term["term_id"]
 
+    # 기존 미확인입금의 처리상태를 Sheets에서 DB로 역동기화
+    if USE_DB_SOT and term_id:
+        try:
+            from app.services import db
+            from app.services.google_sheets import read_sheet
+            sheet_rows = read_sheet(MEMBERS_SHEET_ID, f"{UNMATCHED_DEPOSITS_TAB}!A2:H")
+            if sheet_rows:
+                sync_rows = []
+                for row in sheet_rows:
+                    if len(row) >= 8 and (row[7] or "").strip():
+                        sync_rows.append({
+                            "거래일시": row[0] if len(row) > 0 else "",
+                            "입금액": row[2] if len(row) > 2 else "",
+                            "의뢰인": row[3] if len(row) > 3 else "",
+                            "처리상태": row[7],
+                        })
+                if sync_rows:
+                    await db.sync_deposit_processing_status(term_id, sync_rows)
+        except Exception as e:
+            logger.warning("deposit processing_status reverse-sync failed (non-critical): %s", e)
+
     progress = cl.Message(content="💰 입금내역을 분석하고 있습니다...")
     await progress.send()
 
@@ -357,15 +378,31 @@ async def process_payment(
     payment_step = cl.user_session.get("payment_step", "init")
 
     try:
-        # Init: 파일 없으면 신청자 목록 요청
+        # Init: 파일 없으면 신청자 목록 요청 (기존 데이터 있으면 건너뛰기 선택지)
         if payment_step == "init" or payment_step is None:
             if not file_path:
                 cl.user_session.set("payment_step", "awaiting_applicants")
                 cl.user_session.set("state", "awaiting_applicants_file")
+
+                # DB에 기존 신청기록이 있으면 건너뛰기 안내
+                skip_note = ""
+                if USE_DB_SOT:
+                    try:
+                        from app.services import db
+                        existing = await db.load_applications(term["term_id"])
+                        if existing:
+                            수강_count = sum(1 for a in existing if a["유형"] == "수강")
+                            skip_note = (
+                                f"\n\n이전에 등록한 신청 데이터(**{수강_count}건**)가 있습니다.\n"
+                                "변동이 없다면 **'건너뛰기'**라고 입력하세요."
+                            )
+                    except Exception:
+                        pass
+
                 return (
                     f"**{term['term_name']}** 수강 신청자 목록 파일을 업로드해주세요.\n\n"
                     "배움숲 포탈 → 수강신청관리 → 수강신청조회 → 엑셀 다운로드\n"
-                    "파일명 형식: `LEARNING_APPLY*.xls`"
+                    f"파일명 형식: `LEARNING_APPLY*.xls`{skip_note}"
                 )
             # 파일이 있으면 바로 처리
             cl.user_session.set("payment_step", "awaiting_applicants")

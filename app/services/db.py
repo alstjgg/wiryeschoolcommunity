@@ -423,6 +423,47 @@ async def update_deposit_match(
         )
 
 
+async def sync_deposit_processing_status(term_id: str, rows: list[dict]) -> int:
+    """Sheets 미확인입금의 처리상태를 DB에 역동기화.
+
+    각 row는 {"거래일시": ..., "입금액": ..., "의뢰인": ..., "처리상태": ...} 형태.
+    거래일시+금액+의뢰인으로 매칭하여 processing_status 업데이트.
+    Returns: 업데이트된 행 수.
+    """
+    if not rows:
+        return 0
+    pool = await get_pool()
+    updated = 0
+    async with pool.acquire() as conn:
+        for r in rows:
+            ps = (r.get("처리상태") or "").strip()
+            if not ps:
+                continue
+            amount = 0
+            try:
+                amount = int(r.get("입금액", 0) or 0)
+            except (ValueError, TypeError):
+                pass
+            result = await conn.execute(
+                """
+                UPDATE deposits SET processing_status = $1
+                WHERE term_id = $2
+                  AND COALESCE(transaction_time, '') = $3
+                  AND amount = $4
+                  AND COALESCE(payer_name, '') = $5
+                  AND (processing_status IS NULL OR processing_status != $1)
+                """,
+                ps,
+                term_id,
+                r.get("거래일시", "") or "",
+                amount,
+                r.get("의뢰인", "") or "",
+            )
+            if result and result.split()[-1] != "0":
+                updated += 1
+    return updated
+
+
 # ============================================================= Attendance ====
 
 async def upsert_attendance(
