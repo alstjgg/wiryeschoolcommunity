@@ -152,6 +152,7 @@ running_graduation       # 종강 처리 중 (텍스트 입력 시 "잠시만 �
 - `public/theme.json` — 전체 색상 팔레트 (HSL), 폰트 설정, Google Fonts URL
 - `public/stylesheet.css` — 타이포그래피 + UI 오버라이드 (버튼 테두리, 유저 메시지, 로고, 다크모드 토글)
 - `.chainlit/config.toml` — `custom_css = "/public/stylesheet.css"`, `default_theme = "light"`, `cot = "tool_call"` (Step 표시)
+- `.chainlit/translations/ko.json` — 한국어 UI 텍스트 커스터마이징 (새 채팅 다이얼로그 등). 다른 언어 파일은 Chainlit 기본값이므로 `.gitignore`에서 제외.
 
 ### 타이포그래피
 
@@ -173,7 +174,8 @@ wiryeschoolcommunity/
 │   ├── theme.json               # Chainlit 테마 (색상 팔레트 + 폰트, shadcn HSL 형식)
 │   └── stylesheet.css           # 커스텀 CSS (타이포그래피, 접근성)
 ├── .chainlit/
-│   └── config.toml              # Chainlit UI 설정 (이름, 테마, CSS 경로 등)
+│   ├── config.toml              # Chainlit UI 설정 (이름, 테마, CSS 경로 등)
+│   └── translations/ko.json    # 한국어 UI 텍스트 오버라이드
 ├── .agents/
 │   └── skills/                  # LangChain Skills (Claude Code 코딩 가이드)
 ├── docs/
