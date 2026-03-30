@@ -43,6 +43,9 @@ AGENT_SYSTEM_PROMPT = """당신은 위례인생학교의 업무 도우미 AI입�
 - 수강생/회원/강좌 데이터 조회 → query_data
 - 업무 관련 질문, 정보 요청, "~이 뭐야?", "~가 뭔가요?" → answer_question
 
+## 현재 회차 정보
+{term_context}
+
 ## 비즈니스 컨텍스트
 {business_context}
 """
@@ -76,14 +79,32 @@ async def _get_checkpointer():
 
 async def create_wirye_agent():
     """세션별 Agent 인스턴스 생성 (async — checkpointer 초기화 포함)."""
+    from app.config import TERM_SEASONS
+    from app.context.term import get_current_term
+
     llm = ChatAnthropic(
         model=LLM_MODEL,
         api_key=ANTHROPIC_API_KEY,
         max_tokens=4096,
     )
 
+    # 현재/직전 회차 컨텍스트
+    current_term = get_current_term()
+    curr_abs = (current_term["year"] - 2020) * 4 + current_term["term"]
+    prev_abs = curr_abs - 1
+    prev_year = 2020 + (prev_abs - 1) // 4
+    prev_num = ((prev_abs - 1) % 4) + 1
+    prev_season = TERM_SEASONS.get(prev_num, "")
+
+    term_context = (
+        f"현재 회차: {current_term['term_id']} {current_term['season']}학기\n"
+        f"직전 회차: {prev_year}-{prev_num} {prev_season}학기\n"
+        f"'지난 학기' = {prev_year}-{prev_num}, '이번 학기' = {current_term['term_id']}"
+    )
+
     system_prompt = AGENT_SYSTEM_PROMPT.format(
         business_context=get_system_prompt(),
+        term_context=term_context,
     )
 
     checkpointer = await _get_checkpointer()

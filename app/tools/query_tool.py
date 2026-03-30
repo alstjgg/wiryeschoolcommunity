@@ -26,7 +26,8 @@ class QueryIntent(BaseModel):
     query_type: str = Field(
         description=(
             "조회 유형: members, applications, course_records, "
-            "member_info, deposits"
+            "member_info, deposits, course_summary, payment_summary, "
+            "grade_distribution"
         ),
     )
     term_id: Optional[str] = Field(
@@ -55,9 +56,14 @@ PARSE_SYSTEM_PROMPT = """사용자의 데이터 조회 요청을 분석하여 �
 - course_records: 수강 기록 (출석률 포함)
 - member_info: 특정 회원의 상세 정보
 - deposits: 입금 내역 조회 (미확인 건 포함)
+- course_summary: 강좌별 수강생 수 집계 ("강좌별 인원", "과목별 수강생 수")
+- payment_summary: 입금 현황 요약 ("입금률", "입금 현황", "미입금 현황")
+- grade_distribution: 회원 등급별 분포 ("등급별 인원", "회원 분포")
 
 회차 ID 형식: "연도-번호" (예: 2026-1 = 2026년 겨울학기)
 계절 매핑: 1=겨울(1~3월), 2=봄(4~6월), 3=여름(7~9월), 4=가을(10~12월)
+
+"이번학기" = 현재 회차, "지난학기" = 직전 회차로 매핑하세요.
 """
 
 
@@ -205,6 +211,72 @@ async def _query_deposits(term_id: str) -> str:
     return "\n".join(lines)
 
 
+async def _query_course_summary(term_id: str) -> str:
+    """강좌별 수강생 수 집계."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT course_name, COUNT(*) as cnt "
+            "FROM applications "
+            "WHERE term_id = $1 AND type = '수강' "
+            "GROUP BY course_name ORDER BY cnt DESC",
+            term_id,
+        )
+    if not rows:
+        return f"{term_id} 회차의 강좌 데이터가 없습니다."
+    lines = [f"**{term_id}** 강좌별 수강생 수:"]
+    total = 0
+    for r in rows:
+        lines.append(f"- {r['course_name']}: **{r['cnt']}명**")
+        total += r["cnt"]
+    lines.append(f"\n총 **{total}명**")
+    return "\n".join(lines)
+
+
+async def _query_payment_summary(term_id: str) -> str:
+    """입금 현황 요약 집계."""
+    from app.services.db import STATUS_TO_EMOJI
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT payment_status, COUNT(*) as cnt "
+            "FROM applications "
+            "WHERE term_id = $1 "
+            "GROUP BY payment_status ORDER BY cnt DESC",
+            term_id,
+        )
+    if not rows:
+        return f"{term_id} 회차의 신청 데이터가 없습니다."
+    lines = [f"**{term_id}** 입금 현황:"]
+    total = 0
+    for r in rows:
+        status = STATUS_TO_EMOJI.get(r["payment_status"], r["payment_status"] or "미설정")
+        lines.append(f"- {status}: **{r['cnt']}건**")
+        total += r["cnt"]
+    lines.append(f"\n총 **{total}건**")
+    return "\n".join(lines)
+
+
+async def _query_grade_distribution() -> str:
+    """회원 등급별 분포."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT grade, COUNT(*) as cnt "
+            "FROM members "
+            "GROUP BY grade ORDER BY cnt DESC"
+        )
+    if not rows:
+        return "회원 데이터가 없습니다."
+    lines = ["**회원 등급별 분포:**"]
+    total = 0
+    for r in rows:
+        lines.append(f"- {r['grade']}: **{r['cnt']}명**")
+        total += r["cnt"]
+    lines.append(f"\n총 **{total}명**")
+    return "\n".join(lines)
+
+
 # ---- 3. tool 함수 ----
 
 _QUERY_DISPATCH = {
@@ -217,6 +289,13 @@ _QUERY_DISPATCH = {
     ),
     "member_info": lambda intent: _query_member_info(name=intent.name or ""),
     "deposits": lambda intent: _query_deposits(term_id=intent.term_id or ""),
+    "course_summary": lambda intent: _query_course_summary(
+        term_id=intent.term_id or "",
+    ),
+    "payment_summary": lambda intent: _query_payment_summary(
+        term_id=intent.term_id or "",
+    ),
+    "grade_distribution": lambda intent: _query_grade_distribution(),
 }
 
 
@@ -232,6 +311,9 @@ async def query_data(query_description: str) -> str:
     - 특정 강좌의 수강생 목록
     - 특정 회원의 상세 정보 (수강 이력, 출석률)
     - 입금 내역 (미확인 건 포함)
+    - 강좌별 수강생 수 집계
+    - 입금 현황 요약 (상태별 건수)
+    - 회원 등급별 분포
 
     Args:
         query_description: 조회 내용을 자연어로 설명.
@@ -260,6 +342,10 @@ async def query_data(query_description: str) -> str:
             return "어떤 회원의 정보를 조회할지 이름을 알려주세요."
         if intent.query_type == "deposits" and not intent.term_id:
             return "어떤 회차의 입금 내역을 조회할지 알려주세요. (예: 2026-1)"
+        if intent.query_type == "course_summary" and not intent.term_id:
+            return "어떤 회차의 강좌별 현황을 조회할지 알려주세요. (예: 2026-1 겨울학기)"
+        if intent.query_type == "payment_summary" and not intent.term_id:
+            return "어떤 회차의 입금 현황을 조회할지 알려주세요. (예: 2026-1)"
 
         return await handler(intent)
 

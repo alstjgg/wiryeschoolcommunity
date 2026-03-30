@@ -755,6 +755,16 @@ DATABASE_URL=                   # Railway가 자동 주입 (PostgreSQL 연결 �
 - 파일 대기 중 자연어 질문 대응 — 취소 아닌 텍스트는 Agent에게 전달 후 재안내
 - 신청자 목록 건너뛰기 — DB에 기존 데이터 있으면 "건너뛰기" 텍스트로 스킵 가능
 
+**✅ Agent E2E 테스트 이슈 일괄 수정:**
+- AIMessage.content list 파싱 — tool use 후 text 블록 추출, tool_use 블록 필터링
+- 에러 메시지 사용자 친화적 변경 — 기술적 세부사항 제거, 한국어 안내
+- 회차 확인 안내 — 입금 대조 시작 시 다른 회차 처리 방법 안내 문구 추가
+- 상대적 시간 표현 — `parse_term_input()`에 지난학기/이번학기/작년 등 파싱 추가
+- Agent 시스템 프롬프트에 현재/직전 회차 컨텍스트 동적 주입
+- LLM rate limit 완화 — concurrency 1, sleep 1.5s (Tier 1 RPM 50 대응)
+- 처리완료 건 건너뛰기 — 재실행 시 ✅정상/💎면제 건은 매칭 대상에서 제외
+- 집계 쿼리 3종 추가 — course_summary, payment_summary, grade_distribution
+
 **📋 백로그:**
 - **비즈니스 컨텍스트 최적화**: selective context injection (tool별 관련 컨텍스트만 주입), 컨텍스트 ~100K 토큰 초과 시 RAG 도입
 - 보고서 생성: DB SQL 집계 → PDF (placeholder 버튼 배치 완료)

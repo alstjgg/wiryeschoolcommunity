@@ -627,7 +627,7 @@ class TransactionMatch(BaseModel):
     )
 
 
-_LLM_CONCURRENCY = 2  # 동시 LLM 호출 수 제한 (30k input tokens/min rate limit)
+_LLM_CONCURRENCY = 1  # Tier 1 RPM 50 제한 대응 (Agent 호출 + 매칭 합산)
 
 
 async def run_llm_matching(needs_llm: list[dict], students: list[dict]) -> list[dict]:
@@ -682,7 +682,7 @@ async def run_llm_matching(needs_llm: list[dict], students: list[dict]) -> list[
         )
 
         async with semaphore:
-            await asyncio.sleep(0.5)  # 30k input tokens/min rate limit 준수
+            await asyncio.sleep(1.5)  # Tier 1 RPM 50 안전 마진
             try:
                 result = await structured_llm.ainvoke([
                     SystemMessage(content=system_prompt),

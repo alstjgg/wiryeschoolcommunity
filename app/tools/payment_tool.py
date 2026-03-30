@@ -181,17 +181,29 @@ async def _do_payment_step(file_path: str, term: dict) -> str:
         except Exception as e:
             logger.warning("deposits INSERT failed (non-critical): %s", e)
 
-    # 회원 정보 로드 + 면제 처리
+    # 이미 처리 완료된 건 건너뛰기
+    COMPLETED_STATUSES = {"✅정상", "💎면제"}
+    pending_applications = [
+        a for a in applications
+        if a.get("입금현황", "") not in COMPLETED_STATUSES
+    ]
+    already_done = len(applications) - len(pending_applications)
+    if already_done:
+        logger.info("Skipping %d already-completed applications (of %d total)",
+                     already_done, len(applications))
+
+    # 회원 정보 로드 + 면제 처리 (pending 건만)
     progress.content = f"👥 입금 거래 **{len(transactions)}건** 확인. 회원 정보를 로드하고 있습니다..."
     await progress.update()
 
     members = await load_members_from_sheet()
     exception_ids = get_exception_ids(term_id) if term_id else set()
-    exempted = apply_exemptions(applications, members, exception_ids)
-    students = applications_to_students(applications)
+    exempted = apply_exemptions(pending_applications, members, exception_ids)
+    students = applications_to_students(pending_applications)
 
     # 규칙 기반 매칭
-    progress.content = f"🔍 회원 **{len(members)}명** 로드 완료. 입금 매칭 중..."
+    skip_msg = f" (기존 처리완료 {already_done}건 제외)" if already_done else ""
+    progress.content = f"🔍 회원 **{len(members)}명** 로드 완료. 입금 매칭 중...{skip_msg}"
     await progress.update()
 
     all_results, needs_llm = run_code_matching(transactions, students)
@@ -402,7 +414,8 @@ async def process_payment(
                 return (
                     f"**{term['term_name']}** 수강 신청자 목록 파일을 업로드해주세요.\n\n"
                     "배움숲 포탈 → 수강신청관리 → 수강신청조회 → 엑셀 다운로드\n"
-                    f"파일명 형식: `LEARNING_APPLY*.xls`{skip_note}"
+                    "파일명 형식: `LEARNING_APPLY*.xls`\n\n"
+                    f"💡 다른 회차를 처리하려면 **'2025-4 가을학기'**처럼 말씀해주세요.{skip_note}"
                 )
             # 파일이 있으면 바로 처리
             cl.user_session.set("payment_step", "awaiting_applicants")
@@ -414,7 +427,8 @@ async def process_payment(
                 return (
                     f"**{term['term_name']}** 수강 신청자 목록 파일을 업로드해주세요.\n\n"
                     "배움숲 포탈 → 수강신청관리 → 수강신청조회 → 엑셀 다운로드\n"
-                    "파일명 형식: `LEARNING_APPLY*.xls`"
+                    "파일명 형식: `LEARNING_APPLY*.xls`\n\n"
+                    "💡 다른 회차를 처리하려면 **'2025-4 가을학기'**처럼 말씀해주세요."
                 )
             error = await _do_applicants_step(file_path, term)
             if error:

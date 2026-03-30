@@ -57,14 +57,41 @@ def parse_term_input(text: str) -> dict | None:
 
     지원 패턴:
       2026-2, 2026-2 봄, 2026년 2학기, 2026년 봄, 봄, 봄학기,
-      26-2, 26봄, 2학기, 2회차
+      26-2, 26봄, 2학기, 2회차,
+      지난학기, 이번학기, 작년, 저번학기
 
     Returns: get_current_term()과 동일한 구조의 dict, 실패 시 None.
     """
     text = text.strip()
     current_year = date.today().year
 
-    # 패턴 1: YYYY-N (e.g. 2026-2, 2026-1)
+    # ── 패턴 0: 상대적 시간 표현 ──
+    current = get_current_term()
+    curr_abs = (current["year"] - 2020) * 4 + current["term"]
+
+    # "작년" 특수 처리
+    if "작년" in text:
+        # 작년 + 계절 지정이 있으면 해당 계절로
+        for season, num in _SEASON_MAP.items():
+            if season in text:
+                return _build_term_dict(current_year - 1, num)
+        # 계절 미지정: 작년의 같은 학기
+        return _build_term_dict(current_year - 1, current["term"])
+
+    relative_keywords = {
+        -1: ["지난", "저번", "이전", "전학기", "지난학기", "저번학기", "직전"],
+        0: ["이번", "현재", "이번학기", "현재학기", "금학기"],
+    }
+    for offset, keywords in relative_keywords.items():
+        if any(kw in text for kw in keywords):
+            target = curr_abs + offset
+            if target < 1:
+                return None
+            t_year = 2020 + (target - 1) // 4
+            t_num = ((target - 1) % 4) + 1
+            return _build_term_dict(t_year, t_num)
+
+    # ── 패턴 1: YYYY-N (e.g. 2026-2, 2026-1)
     m = re.search(r"(20\d{2})-([1-4])", text)
     if m:
         return _build_term_dict(int(m.group(1)), int(m.group(2)))
