@@ -81,10 +81,20 @@ def _sync_member_records(records: list[dict]) -> None:
     """회원기록 탭 append."""
     if not records:
         return
-    rows = [
-        [str(r.get(col, "") or "") for col in MEMBER_RECORD_HEADER]
-        for r in records
-    ]
+    rows = []
+    for r in records:
+        row = []
+        for col in MEMBER_RECORD_HEADER:
+            val = r.get(col, "") or ""
+            # 변경일시는 YYYY-MM-DD로 포맷
+            if col == "변경일시" and val:
+                val_str = str(val)
+                if len(val_str) > 10:
+                    val_str = val_str[:10]
+                row.append(val_str)
+            else:
+                row.append(str(val))
+        rows.append(row)
     append_sheet(MEMBERS_SHEET_ID, f"{MEMBER_RECORDS_TAB}!A1", rows)
 
 
@@ -114,7 +124,7 @@ def _sync_deposits(deposits: list[dict]) -> None:
             str(d.get("입금", "") or d.get("amount", "") or ""),
             str(d.get("의뢰인", "") or d.get("입금자명", "") or ""),
             str(d.get("적요", "") or ""),
-            str(d.get("매칭이름", "") or ""),
+            ", ".join(d.get("matched_name_ids", [])) or str(d.get("의뢰인", "") or ""),
             str(d.get("확인사유", "") or ""),
             str(d.get("처리상태", "") or ""),
         ])

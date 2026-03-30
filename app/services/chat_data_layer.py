@@ -24,57 +24,6 @@ from chainlit.types import (
 )
 from chainlit.user import PersistedUser, User
 
-_SCHEMA_SQL = """
-CREATE TABLE IF NOT EXISTS users (
-    id          TEXT PRIMARY KEY,
-    identifier  TEXT UNIQUE NOT NULL,
-    metadata    JSONB DEFAULT '{}',
-    created_at  TIMESTAMPTZ DEFAULT NOW()
-);
-
-CREATE TABLE IF NOT EXISTS threads (
-    id          TEXT PRIMARY KEY,
-    name        TEXT,
-    user_id     TEXT REFERENCES users(id),
-    metadata    JSONB DEFAULT '{}',
-    tags        TEXT[] DEFAULT '{}',
-    created_at  TIMESTAMPTZ DEFAULT NOW(),
-    updated_at  TIMESTAMPTZ DEFAULT NOW()
-);
-
-CREATE TABLE IF NOT EXISTS steps (
-    id          TEXT PRIMARY KEY,
-    thread_id   TEXT REFERENCES threads(id) ON DELETE CASCADE,
-    parent_id   TEXT,
-    name        TEXT,
-    type        TEXT,
-    input       TEXT,
-    output      TEXT,
-    metadata    JSONB DEFAULT '{}',
-    start_time  TIMESTAMPTZ,
-    end_time    TIMESTAMPTZ,
-    created_at  TIMESTAMPTZ DEFAULT NOW()
-);
-
-CREATE TABLE IF NOT EXISTS elements (
-    id          TEXT PRIMARY KEY,
-    thread_id   TEXT,
-    type        TEXT,
-    name        TEXT,
-    url         TEXT,
-    created_at  TIMESTAMPTZ DEFAULT NOW()
-);
-
-CREATE TABLE IF NOT EXISTS feedbacks (
-    id          TEXT PRIMARY KEY,
-    thread_id   TEXT,
-    step_id     TEXT,
-    value       INTEGER,
-    comment     TEXT,
-    created_at  TIMESTAMPTZ DEFAULT NOW()
-);
-"""
-
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -91,7 +40,14 @@ class PostgresDataLayer(BaseDataLayer):
         if self._pool is None:
             self._pool = await asyncpg.create_pool(self.dsn)
             async with self._pool.acquire() as conn:
-                await conn.execute(_SCHEMA_SQL)
+                exists = await conn.fetchval(
+                    "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'threads')"
+                )
+                if not exists:
+                    raise RuntimeError(
+                        "Chainlit DB 테이블이 존재하지 않습니다. "
+                        "psql $DATABASE_URL -f tests/data/create_tables.sql 을 먼저 실행하세요."
+                    )
         return self._pool
 
     # ------------------------------------------------------------------ User --

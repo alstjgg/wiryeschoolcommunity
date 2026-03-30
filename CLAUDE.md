@@ -9,7 +9,7 @@
 ## 기술 스택
 
 - **언어**: Python 3.12 (`.python-version`으로 고정)
-- **LLM 프레임워크**: LangChain (현재: LLM 호출 래퍼, 전환 계획: `create_agent` tool-calling 라우터)
+- **LLM 프레임워크**: LangChain 1.0 `create_agent` + LangGraph 1.0 (Agent 라우터 + 8개 @tool, AsyncPostgresSaver checkpointer)
 - **채팅 UI**: Chainlit (WebSocket 기반, Conversation Starter 버튼 지원)
 - **LLM**: Claude API (Anthropic) — 한국어 + Vision
 - **데이터 SoT**: `USE_DB_SOT` 플래그로 전환
@@ -22,40 +22,31 @@
 
 ## 아키텍처 방침
 
-**고정 파이프라인 + Agent는 라우터로만 (전환 계획 중)**
+**고정 파이프라인 + LangChain Agent 라우터**
 
 - 각 작업(입금 대조, 출석부 생성 등)은 실행 순서가 고정된 Python 함수 파이프라인으로 구현한다 — 이 파이프라인 코드는 변경하지 않는다
 - LLM은 비정형 텍스트 해석이 필요한 특정 단계에서만 호출한다 (예: 입금자명 파싱)
-- **현재**: `on_message` 상태 머신 + 33개 action callback으로 라우팅. LangChain은 LLM 호출 래퍼(ChatAnthropic)로만 사용.
-- **전환 계획**: LangChain `create_agent` + 7개 coarse-grained `@tool`로 라우팅 대체. Agent가 "어떤 작업을 할지"만 결정, 내부 로직은 기존 Python 파이프라인 유지. 상세: `docs/LANGCHAIN_MIGRATION_PROPOSAL.md`
-- Starter/Action 버튼은 전환 후에도 유지 — 55세+ 사용자를 위한 가이드 UX
+- LangChain `create_agent` + 7개 coarse-grained `@tool`로 라우팅. Agent가 "어떤 작업을 할지"만 결정, 내부 로직은 기존 Python 파이프라인 유지.
+- Starter/Action 버튼은 유지 — 55세+ 사용자를 위한 가이드 UX. 버튼 클릭 → 고정 메시지 발송 → Agent가 해석하여 tool 선택.
 - `.agents/skills/`에 LangChain Skills(langchain-ai/langchain-skills)이 설치되어 있음. Claude Code가 LangChain 관련 코드 작성 시 참조하는 코딩 가이드이며, 런타임 동작에는 영향 없음.
 
 **이유**: 대상 사용자가 55세 이상 비개발자 관리자 2~4명. Action 버튼 중심의 가이드 UX로 충분히 안내 가능하면서, Agent의 자연어 이해로 예측 불가능한 입력도 처리.
 
 ```python
-# 라우팅 패턴 — 세션 상태 → 버튼 메시지 → 자유 텍스트 LLM 의도 분류
-# 1) 워크플로우 진행 중: 파일 있으면 핸들러, 없으면 mid-flow 텍스트 처리
-if session_state == "awaiting_applicants_file":
+# 라우팅 패턴 — 세 가지 입력 채널이 Agent로 수렴
+# 1) Starter/Action 버튼 → 고정 메시지 → Agent 해석 → tool 선택
+# 2) 자유 텍스트 → Agent 해석 → tool 선택
+# 3) 파일 업로드 → [FILE:path] 태깅 → Agent 해석 → tool 선택
+#
+# 파일 대기 중 텍스트만 입력 → 취소 감지 / 재안내 (main.py에서 처리)
+
+@cl.on_message
+async def on_message(message: cl.Message):
+    content = message.content
     if message.elements:
-        await handle_applicants_file(message)
-    else:
-        await handle_mid_flow_text(message, session_state)  # 취소/질문/재안내
-    return
-# 2) 회차 텍스트 입력 대기 (모든 플로우 공용)
-if session_state == "awaiting_term_input":
-    await handle_term_input(message)  # 파싱 → term_input_next로 목적지 분기
-    return
-# 3) Starter 버튼 메시지로 분기
-if message.content == "입금 대조를 시작합니다.":
-    await start_payment_flow(message)
-# 4) 자유 텍스트 → LLM 의도 분류 → 확인 후 워크플로우 진입
-else:
-    intent = await classify_intent_llm(message.content)
-    if intent["intent"] == "question":
-        await qa_flow(message)
-    else:
-        await ask_intent_confirm(intent)  # Message + Action (non-blocking)
+        for elem in message.elements:
+            content += f"\n[FILE:{elem.path}]"
+    await _invoke_agent(content)
 ```
 
 ## 용어 정의
@@ -69,16 +60,17 @@ else:
 
 대상 사용자(55세+, 비개발자)를 위한 Chainlit 기능 활용 방침.
 
-### Step — 중간 진행 상황 공유
-복잡한 작업에서 각 단계를 관리자에게 시각적으로 보여줌. "지금 뭘 하고 있는지" 피드백이 신뢰 구축에 핵심. `cot = "tool_call"` 설정으로 `type="tool"` Step만 UI에 표시됨 — **반드시 `type="tool"` 지정**.
+### 진행 상태 메시지 — cl.Message send/update 패턴
+복잡한 작업에서 각 단계를 관리자에게 직접 메시지로 보여줌. "지금 뭘 하고 있는지" 피드백이 신뢰 구축에 핵심. `cl.Message`를 보낸 뒤 `.update()`로 내용을 갱신하여 단계별 진행 표시.
 ```python
-async with cl.Step(name="📊 데이터 읽기", type="tool") as step:
-    ...  # 관리자에게 "수강생 시트를 읽고 있어요..." 표시
-    step.output = "수강생 **85명** 로드 완료"
-
-async with cl.Step(name="🔍 입금 매칭 중", type="tool") as step:
-    ...  # "85건 중 78건 매칭 완료..." 중간 결과 표시
-    step.output = "✅ 78건 매칭 / 🔶 7건 미매칭"
+progress = cl.Message(content="📊 데이터를 읽고 있습니다...")
+await progress.send()
+# ... 작업 수행 ...
+progress.content = "📊 수강생 **85명** 로드 완료. 입금 매칭 중..."
+await progress.update()
+# ... 다음 작업 ...
+progress.content = "✅ 78건 매칭 / 🔶 7건 미매칭"
+await progress.update()
 ```
 
 ### Action — 사용자 선택지 제공 (non-blocking)
@@ -107,21 +99,20 @@ async def on_payment_confirm_term(action: cl.Action):
 # res = await cl.AskActionMessage(content="...", actions=[...]).send()
 ```
 
-### State Machine — 세션 상태 기반 흐름 제어
-모든 봇 응답 함수는 메시지를 보내고 **즉시 return**. 사용자의 다음 행동은 `action_callback` 또는 `on_message`로만 들어옴. `user_session`의 state가 유일한 흐름 제어 수단.
+### State Machine — 파일 대기 + busy 상태 관리
+Agent가 대화 라우팅을 담당하지만, 파일 업로드 대기와 작업 중 busy 상태는 `user_session`의 state로 관리한다.
 
 ```python
 # 상태 목록
-idle                     # 기본. Starter/default Action/자유 질문 가능
-awaiting_term_input      # 회차 텍스트 입력 대기 (모든 플로우 공용, term_input_next로 목적지 구분)
-awaiting_applicants_file # 수강 신청자 목록 파일 대기
+idle                     # 기본. 모든 입력이 Agent에 전달됨.
+awaiting_applicants_file # 수강 신청자 목록 파일 대기 (텍스트만 입력 시 취소 감지 / 재안내)
 awaiting_payment_file    # 입금내역 파일 대기
 awaiting_ocr_image       # 출석부 사진 대기
 creating_attendance      # 출석부 생성 중 (텍스트 입력 시 "잠시만 기다려주세요" 응답)
 running_graduation       # 종강 처리 중 (텍스트 입력 시 "잠시만 기다려주세요" 응답)
 ```
 
-파일 업로드 대기 상태에서 텍스트가 입력되면 `handle_mid_flow_text()`로 처리: 취소 키워드 감지 → Q&A 답변 후 상태 유지 → 파일 재요청. 워크플로우를 이탈하지 않는다.
+파일 대기 상태에서 텍스트만 입력되면 main.py에서 직접 처리: 취소 키워드 감지 → 취소 / 파일 재요청. 파일이 첨부되면 `[FILE:path]` 태깅하여 Agent에 전달.
 
 `@cl.on_stop` 훅으로 사용자가 멈춤 버튼을 누르면 state를 `idle`로 리셋.
 
@@ -191,17 +182,28 @@ wiryeschoolcommunity/
 │   ├── PLANNED_DRIVE_STRUCTURE.md  # Google Drive 확정 구조 + 폴더 ID 참조
 │   └── LANGCHAIN_MIGRATION_PROPOSAL.md  # LangChain Agent 전환 제안서 (Phase A: 라우터 전환)
 ├── app/
-│   ├── main.py                  # Chainlit 엔트리포인트 + 세션 상태 라우터 + LLM 의도 분류 + mid-flow 인터럽트 처리
+│   ├── main.py                  # Chainlit 엔트리포인트 — Agent invoke + 파일 태깅 + Starter/Action 버튼 (~285줄)
+│   ├── agent.py                 # [신규] LangChain create_agent — 시스템 프롬프트 + 7개 tool 바인딩
 │   ├── config.py                # 환경 변수, 상수, 영속 Google IDs, COURSE_KEYWORDS, USE_DB_SOT, INSTRUCTOR/STAFF_SHEET_ID
+│   ├── tools/                   # @tool 함수 모듈 — Agent가 호출하는 8개 tool
+│   │   ├── __init__.py          # ALL_TOOLS 리스트 export
+│   │   ├── qa_tool.py           # 업무 Q&A
+│   │   ├── payment_tool.py      # 입금 대조 (2-file multi-turn)
+│   │   ├── attendance_tool.py   # 출석부 생성 (처리상태 gate + PDF)
+│   │   ├── ocr_tool.py          # 출석 체크 OCR (이미지 → Claude Vision)
+│   │   ├── graduation_tool.py   # 종강 처리 (6-step pipeline)
+│   │   ├── query_tool.py        # 데이터 조회 (자연어 → 구조화 쿼리 → DB)
+│   │   ├── plan_tool.py         # 계획서 검토 (placeholder)
+│   │   └── report_tool.py       # 보고서 생성 (placeholder)
 │   ├── context/
 │   │   ├── business.py          # 정적 비즈니스 컨텍스트 dict + 시스템 프롬프트
 │   │   └── term.py              # 현재 회차 자동 판별 + 자유 텍스트 회차 파싱 (parse_term_input)
 │   ├── chains/
 │   │   ├── qa.py                # 질의 응답 체인
 │   │   ├── payment.py           # 입금 대조 파이프라인 (DB, 매칭, deposits 추적, 등급 cascade, 강사/사무처 면제)
-│   │   ├── attendance.py        # 출석부 생성 — 단계별 함수 분리 (group_by_course, create_attendance_spreadsheet, generate_attendance_pdf, upload_pdf_to_drive). main.py에서 cl.Step으로 직렬 호출.
+│   │   ├── attendance.py        # 출석부 생성 — 단계별 함수 분리
 │   │   ├── ocr.py               # 출석 체크 OCR (dual-write: DB+Sheets, Claude Vision)
-│   │   └── graduation.py        # 종강 처리 — 단계별 함수 분리 (load_student_name_id_map, build_course_records, apply_demotion). main.py에서 cl.Step으로 직렬 호출.
+│   │   └── graduation.py        # 종강 처리 — 단계별 함수 분리
 │   ├── services/
 │   │   ├── google_auth.py       # Google API 인증 (SA 파일 + JSON 환경변수 이중 지원)
 │   │   ├── google_drive.py      # Drive API 래퍼 + 동적 폴더 탐색 (find_term_folder 등)
@@ -260,7 +262,7 @@ drive_service = build('drive', 'v3', credentials=credentials)
 
 - **DB SoT + 백그라운드 Sheets 동기화**: **PostgreSQL이 유일한 SoT**. 챗봇은 DB에 쓰고, 백그라운드 스레드로 Sheets 동기화 (`sheets_sync.py`). DB 실패 시 에러를 호출자에 전파 (Sheets 폴백 없음).
   - `USE_DB_SOT` 플래그는 `main.py`, `ocr.py`, `graduation.py`에 아직 남아 있으나, `payment.py`는 DB-only로 전환 완료.
-- **처리상태 예외**: 신청기록/미확인입금의 `처리상태` 컬럼만 관리자가 Sheets에서 직접 편집 (드롭다운: 등록완료/환불완료/취소완료/보류). DB 모드에서도 이 컬럼은 Sheets에서 읽음.
+- **처리상태 예외**: 신청기록/미확인입금의 `처리상태` 컬럼만 관리자가 Sheets에서 직접 편집 (드롭다운: 등록완료/환불완료/취소완료/보류). DB 모드에서도 이 컬럼은 Sheets에서 읽음. 입금 대조 재실행 시 미확인입금의 처리상태를 Sheets→DB 역동기화 (`sync_deposit_processing_status`). 신청기록의 처리상태는 `upsert_applications`의 COALESCE로 보호.
 - **신청기록 통합**: 회차별 "신청서" 파일을 생성하지 않음. 회원관리 파일(`MEMBERS_SHEET_ID`)의 `신청기록` 탭에 전 회차 데이터 통합. `sheets_sync.py`가 백그라운드로 push.
 - **시트 서식**: 필터, 드롭다운, 보호 설정은 관리자가 Google Sheets UI에서 직접 관리. 코드는 값만 읽고 쓴다 (`values().get/update/clear/append`). 출석부 탭 생성(`addSheet`)만 코드에서 수행.
 - **PostgreSQL**: 비즈니스 데이터 (`db.py`, 7 테이블) + 채팅 기록 (`chat_data_layer.py`).
@@ -275,13 +277,13 @@ drive_service = build('drive', 'v3', credentials=credentials)
 |--------|---------|------|
 | `members` | `name_id` (TEXT PK) | 회원 현재 상태 |
 | `member_records` | `id` (SERIAL) | 등급 변경 이력 |
-| `course_records` | `id` (SERIAL) | 수강 이력 |
-| `applications` | `(term_id, name_id, type, course_name)` UK | 통합 신청서 (`processing_status`, `processed_at`) |
+| `course_records` | `id` (SERIAL), UK `(name_id, term_id, course_name)` | 수강 이력. 재실행 시 출석률만 업데이트 (`ON CONFLICT DO UPDATE`). |
+| `applications` | `(term_id, name_id, type, course_name)` UK | 통합 신청서 (`processing_status`, `processed_at`). upsert 시 `processing_status`는 COALESCE 보호 (빈값이면 기존값 유지). |
 | `deposits` | `id` (SERIAL), UK `(term_id, transaction_time, amount, payer_name, memo)` | 입금내역 원본 (`match_status`, `matched_name_ids`). 중복 INSERT 방지 (`ON CONFLICT DO NOTHING`). |
 | `attendance` | `(term_id, course_name, student_name)` UK | 출석 데이터 |
 | `feedbacks` | `id` (TEXT PK) | Chainlit thumbs up/down |
 
-스키마 DDL은 `db.py`의 `_BUSINESS_SCHEMA_SQL`에 정의. `get_pool()` 첫 호출 시 자동 생성.
+스키마 DDL은 `tests/data/create_tables.sql`에 정의. 배포 전 `psql $DATABASE_URL -f tests/data/create_tables.sql`로 수동 생성. 앱 시작 시 테이블 미존재 시 에러 발생.
 
 ### Sheets 동기화
 
@@ -691,7 +693,7 @@ DATABASE_URL=                   # Railway가 자동 주입 (PostgreSQL 연결 �
 **2-1. PostgreSQL 비즈니스 스키마** ✅ 완료
 - `app/services/db.py`: 7 테이블 (members, member_records, course_records, applications, deposits, attendance, feedbacks)
 - DB가 SoT, Sheets는 `sheets_sync.py`로 동기화
-- 스키마 DDL은 `db.py`의 `_BUSINESS_SCHEMA_SQL`에 정의, `get_pool()` 첫 호출 시 자동 생성
+- 스키마 DDL은 `tests/data/create_tables.sql`에 정의, 배포 전 psql로 수동 생성 (앱 시작 시 미존재 에러)
 
 **2-2. DB SoT + Sheets 동기화** ✅ 완료
 - `payment.py`: 5개 write 함수 DB+Sheets sync 패턴 (DB 쓰기 → `sync_to_sheets()`)
@@ -729,9 +731,42 @@ DATABASE_URL=                   # Railway가 자동 주입 (PostgreSQL 연결 �
 - AskActionMessage → non-blocking 전환 — 전체 12개 blocking AskActionMessage를 `cl.Message(actions=...) + @cl.action_callback` 패턴으로 전환. 26개 새 action callback 추가 (총 33개). `@cl.on_stop` 훅 추가. 회차 입력 상태 통합 (`term_input_next`). 신청서 위치 확인 단계 제거 (Drive 자동 탐색). 처리상태 gate의 `while True` 루프를 recheck callback으로 전환.
 - 출석부 생성 + 종강 처리 리팩토링 — 모놀리식 함수를 단계별 함수로 분리. `main.py`에서 cl.Step으로 직렬 호출하여 중간 진행 상태 표시. `creating_attendance`/`running_graduation` state로 작업 중 race condition 방지. PDF 생성 루프에 `progress_msg.update()` 적용.
 
+**✅ Phase A 완료 — LangChain Agent 전환:**
+- LangChain 1.0 + LangGraph 1.0 + langchain-anthropic 1.0 업그레이드
+- `main.py` 1719줄 → 285줄 (상태 머신 + 33개 callback → Agent invoke + 7개 action callback)
+- `app/agent.py` 신규 — `create_agent()` + MemorySaver + 비즈니스 컨텍스트 시스템 프롬프트
+- `app/tools/` 신규 — 7개 @tool (qa, payment, attendance, ocr, graduation, plan, report)
+- 파일 업로드: `[FILE:path]` 태깅 → Agent가 tool에 전달
+- Starter/Action 버튼 동일 유지 (버튼 클릭 → Agent invoke)
+- `classify_intent_llm` 제거 — Agent의 tool selection이 의도 분류를 대체
+
+**✅ Phase B 완료 — Agent 기능 확장:**
+- PostgresSaver checkpointer (MemorySaver → AsyncPostgresSaver, 대화 state 영속화)
+- on_chat_resume 개선 (메시지 replay 루프 제거 → checkpointer 기반 복원)
+- 데이터 조회 tool (`query_data`) — 자연어 → LLM 의도 파싱 → 미리 정의된 DB 조회 함수 (NL-to-SQL 아님)
+- Q&A 품질 개선 — prompt caching (`cache_control: ephemeral`), 간결한 답변 스타일, max_tokens 1024
+- cl.Step → cl.Message 전환 — 모든 tool에서 진행 상태를 일반 메시지로 직접 표시
+
+**✅ 데이터 무결성 + UX 수정 (테스트 중 발견):**
+- 미확인입금 처리상태 보호 — 입금 대조 재실행 전 Sheets→DB 역동기화 (`sync_deposit_processing_status`)
+- 미확인입금 시트 입금자명 빈값 수정 — `_sync_deposits`에서 `matched_name_ids` 또는 `의뢰인` 표시
+- 회원기록 변경일시 YYYY-MM-DD 포맷 — `_sync_member_records`에서 날짜 잘라내기
+- "새 채팅" 다이얼로그 문구 수정 — "기록이 지워진다" → "사이드바에서 다시 열 수 있다" (ko.json)
+- 파일 대기 중 자연어 질문 대응 — 취소 아닌 텍스트는 Agent에게 전달 후 재안내
+- 신청자 목록 건너뛰기 — DB에 기존 데이터 있으면 "건너뛰기" 텍스트로 스킵 가능
+
+**✅ Agent E2E 테스트 이슈 일괄 수정:**
+- AIMessage.content list 파싱 — tool use 후 text 블록 추출, tool_use 블록 필터링
+- 에러 메시지 사용자 친화적 변경 — 기술적 세부사항 제거, 한국어 안내
+- 회차 확인 안내 — 입금 대조 시작 시 다른 회차 처리 방법 안내 문구 추가
+- 상대적 시간 표현 — `parse_term_input()`에 지난학기/이번학기/작년 등 파싱 추가
+- Agent 시스템 프롬프트에 현재/직전 회차 컨텍스트 동적 주입
+- LLM rate limit 완화 — concurrency 1, sleep 1.5s (Tier 1 RPM 50 대응)
+- 처리완료 건 건너뛰기 — 재실행 시 ✅정상/💎면제 건은 매칭 대상에서 제외
+- 집계 쿼리 3종 추가 — course_summary, payment_summary, grade_distribution
+
 **📋 백로그:**
-- **LangChain Agent 전환 (Phase A)**: `on_message` 라우팅(1500줄+33 callback)을 LangChain `create_agent` tool selection으로 대체. 7개 작업을 7개 coarse-grained `@tool`로 매핑. 비즈니스 파이프라인 코드는 변경 없음. 상세: `docs/LANGCHAIN_MIGRATION_PROPOSAL.md`
-- **비즈니스 컨텍스트 최적화**: (1) Prompt caching 즉시 적용 (비용 90%↓, 지연 50%↓), (2) Agent 전환 시 selective context injection (tool별 관련 컨텍스트만 주입), (3) 컨텍스트 ~100K 토큰 초과 시 RAG 도입
+- **비즈니스 컨텍스트 최적화**: selective context injection (tool별 관련 컨텍스트만 주입), 컨텍스트 ~100K 토큰 초과 시 RAG 도입
 - 보고서 생성: DB SQL 집계 → PDF (placeholder 버튼 배치 완료)
 - 계획서 검토: PDF 파싱 → 오탈자/말투 수정 → 배움숲 멘트 생성 (placeholder 배치 완료)
 - 첫 화면 로고+타이틀 PNG 이미지 제작 (`public/logo_light.png` → CSS 워크어라운드 제거)
