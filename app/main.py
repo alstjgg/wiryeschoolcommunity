@@ -166,7 +166,17 @@ async def _invoke_agent(content: str, file_paths: list[str] | None = None):
 
         # 마지막 AI 메시지 추출
         last_message = result["messages"][-1]
-        response_text = last_message.content if hasattr(last_message, "content") else str(last_message)
+        raw_content = last_message.content if hasattr(last_message, "content") else str(last_message)
+
+        # AIMessage.content가 list인 경우 (tool use 후 응답) → text 블록만 추출
+        if isinstance(raw_content, list):
+            response_text = "\n".join(
+                block.get("text", "") if isinstance(block, dict) else str(block)
+                for block in raw_content
+                if not isinstance(block, dict) or block.get("type") != "tool_use"
+            )
+        else:
+            response_text = raw_content
 
         # __SILENT__ 응답은 tool이 직접 메시지를 보낸 경우
         if response_text.strip() == "__SILENT__":
@@ -180,7 +190,7 @@ async def _invoke_agent(content: str, file_paths: list[str] | None = None):
 
     except Exception as e:
         logger.error("Agent invoke failed: %s", e, exc_info=True)
-        msg.content = f"오류가 발생했습니다: {e}\n\n환경 변수(ANTHROPIC_API_KEY)가 올바르게 설정되어 있는지 확인해주세요."
+        msg.content = "처리 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.\n문제가 계속되면 관리자에게 문의해주세요."
         await msg.update()
 
     # idle 상태이면 기본 액션 버튼 표시
