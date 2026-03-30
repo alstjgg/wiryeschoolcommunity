@@ -18,112 +18,6 @@ import asyncpg
 
 logger = logging.getLogger(__name__)
 
-# ================================================================ Schema ====
-
-_BUSINESS_SCHEMA_SQL = """
-CREATE TABLE IF NOT EXISTS members (
-    name_id         TEXT PRIMARY KEY,
-    name            TEXT NOT NULL,
-    phone           TEXT,
-    address         TEXT,
-    grade           TEXT DEFAULT '회원',
-    is_exception    BOOLEAN DEFAULT FALSE,
-    course_count    INTEGER DEFAULT 0,
-    avg_attendance  REAL DEFAULT 0.0,
-    last_term       TEXT,
-    updated_at      TIMESTAMPTZ DEFAULT NOW()
-);
-
-CREATE TABLE IF NOT EXISTS member_records (
-    id          SERIAL PRIMARY KEY,
-    name_id     TEXT NOT NULL,
-    name        TEXT NOT NULL,
-    changed_at  TIMESTAMPTZ DEFAULT NOW(),
-    grade_from  TEXT,
-    grade_to    TEXT,
-    reason      TEXT,
-    term_id     TEXT,
-    created_at  TIMESTAMPTZ DEFAULT NOW()
-);
-
-CREATE TABLE IF NOT EXISTS course_records (
-    id          SERIAL PRIMARY KEY,
-    name_id     TEXT NOT NULL,
-    term_id     TEXT NOT NULL,
-    course_name TEXT NOT NULL,
-    attendance  REAL DEFAULT 0.0,
-    created_at  TIMESTAMPTZ DEFAULT NOW()
-);
-
-CREATE TABLE IF NOT EXISTS applications (
-    id                  SERIAL PRIMARY KEY,
-    term_id             TEXT NOT NULL,
-    name_id             TEXT NOT NULL,
-    name                TEXT NOT NULL,
-    type                TEXT NOT NULL,
-    course_name         TEXT,
-    expected_amount     INTEGER,
-    paid_amount         INTEGER,
-    payment_status      TEXT DEFAULT 'not_paid',
-    review_reason       TEXT,
-    processing_status   TEXT,
-    payment_time        TEXT,
-    payer_name          TEXT,
-    memo                TEXT,
-    phone               TEXT,
-    address             TEXT,
-    processed_at        TIMESTAMPTZ,
-    created_at          TIMESTAMPTZ DEFAULT NOW(),
-    updated_at          TIMESTAMPTZ DEFAULT NOW()
-);
-
--- Migration (v1→v2): 기존 환경에 paid_amount/memo 컬럼 추가
-ALTER TABLE applications ADD COLUMN IF NOT EXISTS paid_amount INTEGER;
-ALTER TABLE applications ADD COLUMN IF NOT EXISTS memo TEXT;
-
-CREATE UNIQUE INDEX IF NOT EXISTS uq_applications
-ON applications (term_id, name_id, type, COALESCE(course_name, ''));
-
-CREATE TABLE IF NOT EXISTS deposits (
-    id                  SERIAL PRIMARY KEY,
-    term_id             TEXT NOT NULL,
-    transaction_time    TEXT,
-    amount              INTEGER,
-    payer_name          TEXT,
-    memo                TEXT,
-    match_status        TEXT DEFAULT 'unmatched',
-    matched_name_ids    TEXT[],
-    processing_status   TEXT,
-    review_reason       TEXT,
-    created_at          TIMESTAMPTZ DEFAULT NOW()
-);
-
-CREATE UNIQUE INDEX IF NOT EXISTS uq_deposits
-ON deposits (term_id, COALESCE(transaction_time, ''), amount, COALESCE(payer_name, ''), COALESCE(memo, ''));
-
-CREATE TABLE IF NOT EXISTS attendance (
-    id              SERIAL PRIMARY KEY,
-    term_id         TEXT NOT NULL,
-    course_name     TEXT NOT NULL,
-    student_name    TEXT NOT NULL,
-    session_data    JSONB DEFAULT '{}',
-    attendance_rate REAL,
-    created_at      TIMESTAMPTZ DEFAULT NOW()
-);
-
-CREATE UNIQUE INDEX IF NOT EXISTS uq_attendance
-ON attendance (term_id, course_name, student_name);
-
-CREATE TABLE IF NOT EXISTS feedbacks (
-    id          TEXT PRIMARY KEY,
-    thread_id   TEXT,
-    step_id     TEXT,
-    value       INTEGER,
-    comment     TEXT,
-    created_at  TIMESTAMPTZ DEFAULT NOW()
-);
-"""
-
 # ======================================================== Status Mapping ====
 
 STATUS_TO_EMOJI = {
@@ -171,7 +65,7 @@ _pool: Optional[asyncpg.Pool] = None
 
 
 async def get_pool() -> asyncpg.Pool:
-    """비즈니스 테이블용 asyncpg 풀 (싱글턴). 첫 호출 시 스키마 자동 생성."""
+    """비즈니스 테이블용 asyncpg 풀 (싱글턴). 테이블 미존재 시 에러 발생."""
     global _pool
     if _pool is None:
         dsn = os.environ.get("DATABASE_URL", "")
@@ -179,8 +73,15 @@ async def get_pool() -> asyncpg.Pool:
             raise RuntimeError("DATABASE_URL 환경변수가 설정되지 않았습니다.")
         _pool = await asyncpg.create_pool(dsn)
         async with _pool.acquire() as conn:
-            await conn.execute(_BUSINESS_SCHEMA_SQL)
-        logger.info("Business DB pool created, schema ensured.")
+            exists = await conn.fetchval(
+                "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'members')"
+            )
+            if not exists:
+                raise RuntimeError(
+                    "DB 테이블이 존재하지 않습니다. "
+                    "psql $DATABASE_URL -f tests/data/create_tables.sql 을 먼저 실행하세요."
+                )
+        logger.info("Business DB pool created, tables verified.")
     return _pool
 
 

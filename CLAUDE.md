@@ -281,7 +281,7 @@ drive_service = build('drive', 'v3', credentials=credentials)
 | `attendance` | `(term_id, course_name, student_name)` UK | 출석 데이터 |
 | `feedbacks` | `id` (TEXT PK) | Chainlit thumbs up/down |
 
-스키마 DDL은 `db.py`의 `_BUSINESS_SCHEMA_SQL`에 정의. `get_pool()` 첫 호출 시 자동 생성.
+스키마 DDL은 `tests/data/create_tables.sql`에 정의. 배포 전 `psql $DATABASE_URL -f tests/data/create_tables.sql`로 수동 생성. 앱 시작 시 테이블 미존재 시 에러 발생.
 
 ### Sheets 동기화
 
@@ -691,7 +691,7 @@ DATABASE_URL=                   # Railway가 자동 주입 (PostgreSQL 연결 �
 **2-1. PostgreSQL 비즈니스 스키마** ✅ 완료
 - `app/services/db.py`: 7 테이블 (members, member_records, course_records, applications, deposits, attendance, feedbacks)
 - DB가 SoT, Sheets는 `sheets_sync.py`로 동기화
-- 스키마 DDL은 `db.py`의 `_BUSINESS_SCHEMA_SQL`에 정의, `get_pool()` 첫 호출 시 자동 생성
+- 스키마 DDL은 `tests/data/create_tables.sql`에 정의, 배포 전 psql로 수동 생성 (앱 시작 시 미존재 에러)
 
 **2-2. DB SoT + Sheets 동기화** ✅ 완료
 - `payment.py`: 5개 write 함수 DB+Sheets sync 패턴 (DB 쓰기 → `sync_to_sheets()`)
