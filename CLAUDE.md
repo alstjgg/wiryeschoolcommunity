@@ -73,6 +73,24 @@ progress.content = "✅ 78건 매칭 / 🔶 7건 미매칭"
 await progress.update()
 ```
 
+### Tool 결과 전달 — `__SILENT__` 패턴
+복잡한 작업(입금 대조, 출석부 생성, 종강 처리, OCR)은 tool 내부에서 `cl.Message`로 결과를 직접 전송하고 `"__SILENT__"`을 반환한다. Agent가 tool 결과를 재해석하면 markdown 링크(시트 URL 등)가 누락되므로, 직접 전송 후 Agent 응답을 억제한다.
+
+```python
+# Tool에서 직접 전송 + __SILENT__ 반환
+progress.content = f"✅ 완료!\n\n[신청기록 시트 열기]({url})"
+await progress.update()
+return "__SILENT__"
+
+# main.py에서 __SILENT__ 및 빈 응답 감지 → Agent 메시지 억제
+if not response_text.strip() or response_text.strip() == "__SILENT__":
+    msg.content = ""
+    await msg.update()
+    if cl.user_session.get("state", "idle") == "idle":
+        await send_default_actions()
+    return
+```
+
 ### Action — 사용자 선택지 제공 (non-blocking)
 모든 작업 완료/취소/에러 후 `send_default_actions(completed)` 호출로 7개 기본 버튼 제공. 방금 완료한 작업은 "다시하기" 레이블로 표시. 자유 텍스트 입력 없이 클릭만으로 다음 업무 진행.
 
@@ -766,6 +784,11 @@ DATABASE_URL=                   # Railway가 자동 주입 (PostgreSQL 연결 �
 - LLM rate limit 완화 — concurrency 1, sleep 1.5s (Tier 1 RPM 50 대응)
 - 처리완료 건 건너뛰기 — 재실행 시 ✅정상/💎면제 건은 매칭 대상에서 제외
 - 집계 쿼리 3종 추가 — course_summary, payment_summary, grade_distribution
+
+**✅ Tool 결과 직접 전달 (시트 링크 누락 수정):**
+- 4개 tool(payment, attendance, graduation, ocr) 결과를 `cl.Message.update()`로 직접 전송 + `__SILENT__` 반환 — Agent가 시트 URL을 재해석하며 누락하는 문제 해결
+- `_invoke_agent()`에서 빈 응답도 `__SILENT__`과 동일하게 처리 — Agent가 빈 텍스트로 응답하는 경우 대비
+- `__SILENT__` 반환 시에도 idle 상태면 기본 Action 버튼 표시
 
 **📋 백로그:**
 - **비즈니스 컨텍스트 최적화**: selective context injection (tool별 관련 컨텍스트만 주입), 컨텍스트 ~100K 토큰 초과 시 RAG 도입

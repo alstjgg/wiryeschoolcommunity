@@ -144,7 +144,7 @@ async def process_graduation(term_id: str = "") -> str:
 
         progress.content = result_msg
         await progress.update()
-        return result_msg
+        return "__SILENT__"
 
     except Exception as e:
         return f"종강 처리 중 오류: {e}"

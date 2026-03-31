@@ -174,7 +174,7 @@ async def check_attendance_ocr(
         await progress.update()
 
         cl.user_session.set("state", "idle")
-        return final
+        return "__SILENT__"
 
     except Exception as e:
         cl.user_session.set("state", "idle")

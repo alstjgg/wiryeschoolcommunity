@@ -179,10 +179,14 @@ async def _invoke_agent(content: str, file_paths: list[str] | None = None):
             response_text = raw_content
 
         # __SILENT__ 응답은 tool이 직접 메시지를 보낸 경우
-        if response_text.strip() == "__SILENT__":
+        # Agent가 빈 응답을 보내는 경우도 동일하게 처리
+        if not response_text.strip() or response_text.strip() == "__SILENT__":
             # 빈 메시지 제거
             msg.content = ""
             await msg.update()
+            # idle 상태이면 기본 액션 버튼 표시
+            if cl.user_session.get("state", "idle") == "idle":
+                await send_default_actions()
             return
 
         msg.content = response_text

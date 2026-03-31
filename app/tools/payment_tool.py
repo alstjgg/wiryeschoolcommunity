@@ -352,13 +352,17 @@ async def _write_payment_results(
     cl.user_session.set("matched_results", None)
     cl.user_session.set("applications", None)
 
-    return (
+    final = (
         f"입금 대조가 완료되었습니다.\n\n"
         f"{summary_line}{check_note}\n\n"
         f"신청기록 시트에서 입금현황을 확인하시고, "
         f"배움숲 포탈에서 수강 등록을 처리한 뒤\n"
         f"처리상태를 입력해주세요.{sheet_links}"
     )
+
+    progress.content = final
+    await progress.update()
+    return "__SILENT__"
 
 
 @tool
