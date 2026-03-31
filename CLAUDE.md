@@ -785,6 +785,13 @@ DATABASE_URL=                   # Railway가 자동 주입 (PostgreSQL 연결 �
 - 처리완료 건 건너뛰기 — 재실행 시 ✅정상/💎면제 건은 매칭 대상에서 제외
 - 집계 쿼리 3종 추가 — course_summary, payment_summary, grade_distribution
 
+**✅ 입금 대조 재실행 시 기존 매칭 결과 보존:**
+- 보존 기준 (`_is_preserved()`): **처리상태 in (등록완료/환불완료/취소완료/보류)** OR **입금현황 in (✅정상/💎면제)** → 결제 필드 보존 + 매칭 제외. 그 외 → ❌미입금으로 리셋하여 재매칭 대상.
+- `FINALIZED_PROCESSING`, `PRESERVED_PAYMENT` — 보존/스킵 기준 상수 (`payment.py`)
+- `merge_with_existing_applications()` — 신청서 재생성 시 기존 DB 데이터와 병합. 보존 대상 결제 필드 유지, 처리상태는 항상 보존.
+- `_do_payment_step` 스킵 로직 — `_is_preserved()` 기반. 관리자가 확정하지 않은 건만 재매칭.
+- `upsert_applications()` DB 안전망 — 기존 `processing_status`가 확정/보류이거나 `payment_status`가 confirmed/exempted이면 결제 필드 보존 (CASE WHEN 가드)
+
 **✅ Tool 결과 직접 전달 (시트 링크 누락 수정):**
 - 4개 tool(payment, attendance, graduation, ocr) 결과를 `cl.Message.update()`로 직접 전송 + `__SILENT__` 반환 — Agent가 시트 URL을 재해석하며 누락하는 문제 해결
 - `_invoke_agent()`에서 빈 응답도 `__SILENT__`과 동일하게 처리 — Agent가 빈 텍스트로 응답하는 경우 대비

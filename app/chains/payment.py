@@ -357,6 +357,70 @@ def apply_grade_cascade(
 
 # ==================================== 공개 API (DB SoT + Sheets sync) ====
 
+# 재실행 시 보존 + 매칭 제외 기준
+FINALIZED_PROCESSING = {"등록완료", "환불완료", "취소완료", "보류"}
+PRESERVED_PAYMENT = {"✅정상", "💎면제"}
+
+
+def _is_preserved(app: dict) -> bool:
+    """이 신청 건이 재실행 시 보존 대상인지 판단."""
+    ps = (app.get("처리상태") or "").strip()
+    payment = app.get("입금현황", "❌미입금")
+    return ps in FINALIZED_PROCESSING or payment in PRESERVED_PAYMENT
+
+
+async def merge_with_existing_applications(
+    term_id: str,
+    applications: list[dict],
+) -> list[dict]:
+    """새로 생성한 신청서 리스트에 기존 DB 데이터를 병합.
+
+    보존 기준 (_is_preserved):
+    - 처리상태가 확정/보류(등록완료/환불완료/취소완료/보류) → 결제 필드 보존
+    - 입금현황이 ✅정상 또는 💎면제 → 결제 필드 보존
+    - 그 외 → 결제 필드 리셋(❌미입금)하여 재매칭 대상으로 전환
+    - 처리상태는 위 조건과 무관하게 항상 보존 (관리자 직접 편집 값)
+    """
+    from app.services import db
+
+    existing = await db.load_applications(term_id)
+    if not existing:
+        return applications
+
+    # 기존 데이터를 key로 인덱싱
+    existing_map: dict[tuple, dict] = {}
+    for e in existing:
+        key = (e["이름ID"], e["유형"], e.get("과목명", ""))
+        existing_map[key] = e
+
+    PAYMENT_FIELDS = [
+        "입금액", "입금시간", "의뢰인", "적요",
+        "입금현황", "확인사유",
+    ]
+
+    for app in applications:
+        key = (app["이름ID"], app["유형"], app.get("과목명", ""))
+        prev = existing_map.get(key)
+        if not prev:
+            continue
+
+        prev_ps = (prev.get("처리상태") or "").strip()
+
+        # 처리상태는 항상 보존
+        if prev_ps:
+            app["처리상태"] = prev_ps
+
+        # 보존 대상 → 결제 필드 전체 보존
+        if _is_preserved(prev):
+            for field in PAYMENT_FIELDS:
+                if prev.get(field):
+                    app[field] = prev[field]
+
+        # 그 외 → ❌미입금으로 리셋 (재매칭 대상)
+
+    return applications
+
+
 async def write_applications_sheet(
     term_folder_id: str,
     applications: list[dict],

@@ -279,13 +279,37 @@ async def upsert_applications(term_id: str, applications: list[dict]) -> None:
                     DO UPDATE SET
                         name = EXCLUDED.name,
                         expected_amount = EXCLUDED.expected_amount,
-                        paid_amount = EXCLUDED.paid_amount,
-                        payment_status = EXCLUDED.payment_status,
-                        review_reason = EXCLUDED.review_reason,
+                        paid_amount = CASE
+                            WHEN applications.processing_status IN ('등록완료','환불완료','취소완료','보류')
+                              OR applications.payment_status IN ('exempted','confirmed')
+                            THEN applications.paid_amount
+                            ELSE EXCLUDED.paid_amount END,
+                        payment_status = CASE
+                            WHEN applications.processing_status IN ('등록완료','환불완료','취소완료','보류')
+                              OR applications.payment_status IN ('exempted','confirmed')
+                            THEN applications.payment_status
+                            ELSE EXCLUDED.payment_status END,
+                        review_reason = CASE
+                            WHEN applications.processing_status IN ('등록완료','환불완료','취소완료','보류')
+                              OR applications.payment_status IN ('exempted','confirmed')
+                            THEN applications.review_reason
+                            ELSE EXCLUDED.review_reason END,
                         processing_status = COALESCE(NULLIF(EXCLUDED.processing_status, ''), applications.processing_status),
-                        payment_time = EXCLUDED.payment_time,
-                        payer_name = EXCLUDED.payer_name,
-                        memo = EXCLUDED.memo,
+                        payment_time = CASE
+                            WHEN applications.processing_status IN ('등록완료','환불완료','취소완료','보류')
+                              OR applications.payment_status IN ('exempted','confirmed')
+                            THEN applications.payment_time
+                            ELSE EXCLUDED.payment_time END,
+                        payer_name = CASE
+                            WHEN applications.processing_status IN ('등록완료','환불완료','취소완료','보류')
+                              OR applications.payment_status IN ('exempted','confirmed')
+                            THEN applications.payer_name
+                            ELSE EXCLUDED.payer_name END,
+                        memo = CASE
+                            WHEN applications.processing_status IN ('등록완료','환불완료','취소완료','보류')
+                              OR applications.payment_status IN ('exempted','confirmed')
+                            THEN applications.memo
+                            ELSE EXCLUDED.memo END,
                         phone = EXCLUDED.phone,
                         address = EXCLUDED.address,
                         processed_at = COALESCE(EXCLUDED.processed_at, applications.processed_at),
