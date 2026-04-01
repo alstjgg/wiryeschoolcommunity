@@ -103,27 +103,38 @@ async def on_message(message: cl.Message):
         await cl.Message("작업이 진행 중입니다. 잠시만 기다려주세요...").send()
         return
 
-    # 파일 대기 중 텍스트만 입력 → 취소 감지 / 건너뛰기 / Agent에게 질문 전달 후 재안내
+    # 파일 대기 중
     if session_state in ("awaiting_applicants_file", "awaiting_payment_file", "awaiting_ocr_image"):
-        if not message.elements:
-            if any(k in message.content for k in CANCEL_KEYWORDS):
-                cl.user_session.set("state", "idle")
-                cl.user_session.set("payment_step", None)
-                await cl.Message("작업이 취소되었습니다.").send()
-                await send_default_actions()
+        # 파일 업로드 → tool 직접 호출 (Agent 경유 없이 — 확실한 파일 전달)
+        if message.elements:
+            file_path = None
+            for elem in message.elements:
+                if hasattr(elem, "path") and elem.path:
+                    file_path = elem.path
+                    break
+            if file_path:
+                await _handle_file_upload(session_state, file_path, message.content)
                 return
-            # 신청자 목록 건너뛰기 (기존 DB 데이터 사용)
-            if session_state == "awaiting_applicants_file" and any(k in message.content for k in SKIP_KEYWORDS):
-                await _skip_applicants_step()
-                return
-            # Agent에게 질문 전달 (Q&A 등)
-            await _invoke_agent(message.content)
-            # Agent 응답 후에도 여전히 파일 대기 중이면 재안내
-            current_state = cl.user_session.get("state", "idle")
-            if current_state in ("awaiting_applicants_file", "awaiting_payment_file", "awaiting_ocr_image"):
-                resume = _get_resume_prompt(current_state)
-                await cl.Message(resume).send()
+
+        # 텍스트만 입력 → 취소 감지 / 건너뛰기 / Agent에게 질문 전달 후 재안내
+        if any(k in message.content for k in CANCEL_KEYWORDS):
+            cl.user_session.set("state", "idle")
+            cl.user_session.set("payment_step", None)
+            await cl.Message("작업이 취소되었습니다.").send()
+            await send_default_actions()
             return
+        # 신청자 목록 건너뛰기 (기존 DB 데이터 사용)
+        if session_state == "awaiting_applicants_file" and any(k in message.content for k in SKIP_KEYWORDS):
+            await _skip_applicants_step()
+            return
+        # Agent에게 질문 전달 (Q&A 등)
+        await _invoke_agent(message.content)
+        # Agent 응답 후에도 여전히 파일 대기 중이면 재안내
+        current_state = cl.user_session.get("state", "idle")
+        if current_state in ("awaiting_applicants_file", "awaiting_payment_file", "awaiting_ocr_image"):
+            resume = _get_resume_prompt(current_state)
+            await cl.Message(resume).send()
+        return
 
     # 파일 태깅: message.elements → file_path 추출
     content = message.content
@@ -276,6 +287,50 @@ async def on_default_report(action: cl.Action):
 async def on_default_question(action: cl.Action):
     cl.user_session.set("state", "idle")
     await cl.Message("궁금한 점을 자유롭게 질문해주세요.").send()
+
+
+# ===================================================== 파일 직접 처리 =====
+
+
+async def _handle_file_upload(state: str, file_path: str, user_text: str = ""):
+    """파일 대기 상태에서 업로드된 파일을 해당 tool에 직접 전달.
+
+    Agent를 경유하면 LLM이 [FILE:path]를 tool 인자로 전달하지 못하는 경우가 있으므로,
+    상태에 따라 올바른 tool을 직접 호출한다.
+    """
+    from app.tools.payment_tool import process_payment
+    from app.tools.ocr_tool import check_attendance_ocr
+
+    term = cl.user_session.get("term") or {}
+    term_id = term.get("term_id", "")
+
+    try:
+        if state == "awaiting_applicants_file":
+            result = await process_payment.ainvoke(
+                {"file_path": file_path, "term_id": term_id}
+            )
+        elif state == "awaiting_payment_file":
+            result = await process_payment.ainvoke(
+                {"file_path": file_path, "term_id": term_id}
+            )
+        elif state == "awaiting_ocr_image":
+            result = await check_attendance_ocr.ainvoke(
+                {"file_path": file_path, "course_name": user_text, "term_id": term_id}
+            )
+        else:
+            return
+
+        # __SILENT__ = tool이 이미 직접 메시지를 보냄
+        if result and str(result).strip() not in ("__SILENT__", ""):
+            await cl.Message(content=str(result)).send()
+
+    except Exception as e:
+        logger.error("Direct tool call failed: %s", e, exc_info=True)
+        await cl.Message("처리 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.").send()
+
+    # idle 상태이면 기본 액션 버튼 표시
+    if cl.user_session.get("state", "idle") == "idle":
+        await send_default_actions()
 
 
 # ===================================================== 건너뛰기 =====
