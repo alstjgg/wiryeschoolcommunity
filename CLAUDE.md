@@ -256,6 +256,12 @@ GOOGLE_SA_KEY_JSON=             # Service Account JSON 문자열 (PaaS 배포용
 GOOGLE_DELEGATED_USER=wirye@wiryeschoolcomunity.com  # Delegation 대상 (오타 아님, 실제 도메인)
 DATABASE_URL=                   # Railway 자동 주입 (PostgreSQL)
 USE_DB_SOT=false                # true=PostgreSQL SoT, false=Sheets SoT (기본)
+
+# Google Drive/Sheets 환경별 ID (미설정 시 production 기본값 사용)
+# dev Railway에서만 설정. prod는 설정 불필요.
+# MEMBERS_SHEET_ID=             # 회원관리 시트
+# OPERATIONS_FOLDER_ID=         # 학사운영 폴더
+# MEMBERS_FOLDER_ID=            # 회원 폴더
 ```
 
 ## Google API 인증 패턴
@@ -600,20 +606,28 @@ TERM_SEASONS = {1: "겨울", 2: "봄", 3: "여름", 4: "가을"}
 
 ### 영속 리소스 (config.py에 상수로 정의)
 
-| Resource | 상수명 | Type | ID | 탭명 |
-|----------|--------|------|----|------|
-| 회원관리 (5탭) | `MEMBERS_SHEET_ID` | Spreadsheet | `193r34mtLHd0-oX7MKJOWq1Ane9iBfbBZB5yYf78R3Bo` | `회원목록`, `회원기록`, `수강기록`, `신청기록`, `미확인입금` |
-| Root folder | `ROOT_FOLDER_ID` | Shared Drive root | `0AANInBeWsB7dUk9PVA` | — |
-| 회원 폴더 | `MEMBERS_FOLDER_ID` | Drive folder | `12xm3vG4w5nOPTwoWgmyGCpz939KvJ93e` | — |
-| 학사운영 folder | `OPERATIONS_FOLDER_ID` | Drive folder | `1WuqNFt-g5qhnY1nMk0a8dsowZHKQVRMm` | — |
-| 신규가입 신청서 폴더 | `MEMBER_SIGNUP_FOLDER_ID` | Drive folder | `10ZL8rD9j7OyyZOihfyJ6GRTzmBrTBgWe` | — |
-| 정회원가입 신청서 폴더 | `FULLMEMBER_SIGNUP_FOLDER_ID` | Drive folder | `17tsWfYwIRgHHcT1DQEj8Sqa4ys6pe0Vy` | — |
-| 강사관리 | `INSTRUCTOR_SHEET_ID` | Spreadsheet | `1GPwpyHU4vzOtDW3eFlvDKh13maR-yq-qaUzJ73HaR2U` | `Sheet1` (강의회차/이름ID/이름/전화번호/주소/과목) |
-| 사무처관리 | `STAFF_SHEET_ID` | Spreadsheet | `1hvuXv0NZmEhTW6QDFJ4SYArP51rrPJoWS9BRramtTMY` | `Sheet1` (이름ID/이름/전화번호/주소/역할/활동시작/활동종료) |
+**환경변수로 분리된 ID** (dev/prod 분리용, `os.environ.get()` + prod 기본값):
+
+| Resource | 상수명 | Prod ID | Dev ID |
+|----------|--------|---------|--------|
+| 회원관리 (5탭) | `MEMBERS_SHEET_ID` | `193r34mtLHd0-oX7MKJOWq1Ane9iBfbBZB5yYf78R3Bo` | `1AF374QOCN8LHKP3Ehq9guA5xDt1zEDCIrBoQKYJyjdk` |
+| 학사운영 folder | `OPERATIONS_FOLDER_ID` | `1WuqNFt-g5qhnY1nMk0a8dsowZHKQVRMm` | `16pOMuH3964OT0d1h5dUdWINSnAMb5CQv` |
+| 회원 폴더 | `MEMBERS_FOLDER_ID` | `12xm3vG4w5nOPTwoWgmyGCpz939KvJ93e` | `1grbIQBkufaD5zo-5RodC08uZsPHMvijx` |
+
+**고정 ID** (read-only, prod 공유):
+
+| Resource | 상수명 | Type | ID |
+|----------|--------|------|----|
+| 신규가입 신청서 폴더 | `MEMBER_SIGNUP_FOLDER_ID` | Drive folder | `10ZL8rD9j7OyyZOihfyJ6GRTzmBrTBgWe` |
+| 정회원가입 신청서 폴더 | `FULLMEMBER_SIGNUP_FOLDER_ID` | Drive folder | `17tsWfYwIRgHHcT1DQEj8Sqa4ys6pe0Vy` |
+| 강사관리 | `INSTRUCTOR_SHEET_ID` | Spreadsheet | `1GPwpyHU4vzOtDW3eFlvDKh13maR-yq-qaUzJ73HaR2U` |
+| 사무처관리 | `STAFF_SHEET_ID` | Spreadsheet | `1hvuXv0NZmEhTW6QDFJ4SYArP51rrPJoWS9BRramtTMY` |
 
 회원관리 시트는 `03 회원과 강사/회원(회원명단/가입서/정회원)/` 폴더에 위치한다 (Shared Drive 루트가 아님).
 신청서 폴더는 공유 드라이브에 위치.
 강사관리/사무처관리 시트는 면제 대상 판별에만 사용 (SoT = Sheet, DB 복제 없음).
+
+**Dev 환경 초기화**: `python tests/reset_dev_env.py` — DB TRUNCATE + seed + Sheets 초기화 (스크립트에 DEV 인증 정보 내장, `.gitignore`에서 제외).
 
 ### 회원 폴더 내부 구조 (03 회원과 강사/회원/)
 
@@ -664,10 +678,16 @@ Railway 프로젝트
 ### Railway 환경 변수 (web 서비스)
 
 ```
+# prod + dev 공통
 ANTHROPIC_API_KEY=              # Claude API 키
 GOOGLE_SA_KEY_JSON=             # Service Account JSON 문자열 (PaaS 배포용)
 GOOGLE_DELEGATED_USER=wirye@wiryeschoolcomunity.com  # Delegation 대상 (오타 아님, 실제 도메인)
 DATABASE_URL=                   # Railway가 자동 주입 (PostgreSQL 연결 문자열)
+
+# dev Railway에서만 추가 설정 (prod는 config.py 기본값 사용)
+MEMBERS_SHEET_ID=1AF374QOCN8LHKP3Ehq9guA5xDt1zEDCIrBoQKYJyjdk
+OPERATIONS_FOLDER_ID=16pOMuH3964OT0d1h5dUdWINSnAMb5CQv
+MEMBERS_FOLDER_ID=1grbIQBkufaD5zo-5RodC08uZsPHMvijx
 ```
 
 **주의**: Railway Variables에서 반드시 `GOOGLE_SA_KEY_JSON`을 사용할 것 (`GOOGLE_SA_KEY_PATH`에 JSON을 넣으면 "File name too long" 에러 발생)
