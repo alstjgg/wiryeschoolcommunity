@@ -86,12 +86,13 @@ def _sync_member_records(records: list[dict]) -> None:
         row = []
         for col in MEMBER_RECORD_HEADER:
             val = r.get(col, "") or ""
-            # 변경일시는 YYYY-MM-DD로 포맷
+            # 변경일시는 YYYY-MM-DD 텍스트로 강제 (apostrophe prefix)
+            # USER_ENTERED 모드에서 날짜 문자열이 serial로 변환되는 것을 방지
             if col == "변경일시" and val:
                 val_str = str(val)
                 if len(val_str) > 10:
                     val_str = val_str[:10]
-                row.append(val_str)
+                row.append(f"'{val_str}")
             else:
                 row.append(str(val))
         rows.append(row)

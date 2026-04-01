@@ -812,6 +812,13 @@ MEMBERS_FOLDER_ID=1grbIQBkufaD5zo-5RodC08uZsPHMvijx
 - `_do_payment_step` 스킵 로직 — `_is_preserved()` 기반. 관리자가 확정하지 않은 건만 재매칭.
 - `upsert_applications()` DB 안전망 — 기존 `processing_status`가 확정/보류이거나 `payment_status`가 confirmed/exempted이면 결제 필드 보존 (CASE WHEN 가드)
 
+**✅ 입금 대조 반복 실행 E2E 버그 수정 (5건):**
+- 신청기록 처리상태 Sheets→DB 역동기화 추가 — `sync_application_processing_status()`, 입금대조 시작 시 신청기록 탭의 처리상태를 DB에 먼저 반영. 기존에는 미확인입금 탭만 역동기화.
+- 매칭 시 전체 이름 목록 사용 — `run_code_matching(all_students=)` 파라미터 추가. 보존된 수강생 이름도 인식하여 "이름을 찾지 못함" 오탐 방지. 슬롯 배정은 pending만.
+- 이미 매칭된 deposit 필터링 — 동일 입금내역 재업로드 시 DB에서 `match_status='matched'`인 거래 키를 수집, 매칭 대상에서 제외. 미확인입금 누적 방지.
+- deposit_id 추적 복합키 전환 — 순서 의존(`transactions[i]↔new_deposits[i]`) 대신 (거래일시, 금액, 의뢰인, 적요) 복합키로 매핑. DB ORDER BY와 엑셀 순서 불일치 문제 해결.
+- 회원기록 변경일시 텍스트 강제 — apostrophe prefix(`'2026-04-01`)로 Sheets의 날짜→serial 자동변환 방지.
+
 **✅ Tool 결과 직접 전달 (시트 링크 누락 수정):**
 - 4개 tool(payment, attendance, graduation, ocr) 결과를 `cl.Message.update()`로 직접 전송 + `__SILENT__` 반환 — Agent가 시트 URL을 재해석하며 누락하는 문제 해결
 - `_invoke_agent()`에서 빈 응답도 `__SILENT__`과 동일하게 처리 — Agent가 빈 텍스트로 응답하는 경우 대비

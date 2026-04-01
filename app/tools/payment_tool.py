@@ -134,7 +134,35 @@ async def _do_payment_step(file_path: str, term: dict) -> str:
     """입금내역 파일 파싱 + 매칭 + cascade → 결과 반환."""
     term_id = term["term_id"]
 
-    # 기존 미확인입금의 처리상태를 Sheets에서 DB로 역동기화
+    # 신청기록 + 미확인입금의 처리상태를 Sheets에서 DB로 역동기화
+    if USE_DB_SOT and term_id:
+        try:
+            from app.services import db
+            from app.services.google_sheets import read_sheet
+            app_rows = read_sheet(MEMBERS_SHEET_ID, f"{APPLICATIONS_TAB}!A2:M")
+            if app_rows:
+                sync_rows = []
+                for row in app_rows:
+                    if len(row) < 5:
+                        continue
+                    # 회차 필터 (A열 = 회차)
+                    if row[0] != term_id:
+                        continue
+                    ps = row[12] if len(row) > 12 else ""
+                    if (ps or "").strip():
+                        sync_rows.append({
+                            "이름ID": row[1],
+                            "유형": row[3],
+                            "과목명": row[4] if len(row) > 4 else "",
+                            "처리상태": ps,
+                        })
+                if sync_rows:
+                    synced = await db.sync_application_processing_status(term_id, sync_rows)
+                    if synced:
+                        logger.info("Reverse-synced %d application processing_status from Sheets", synced)
+        except Exception as e:
+            logger.warning("application processing_status reverse-sync failed (non-critical): %s", e)
+
     if USE_DB_SOT and term_id:
         try:
             from app.services import db
@@ -170,20 +198,63 @@ async def _do_payment_step(file_path: str, term: dict) -> str:
     if not applications:
         return "신청서 데이터가 없습니다. 입금 대조를 처음부터 다시 시작해주세요."
 
-    # 입금내역 DB 저장 + deposit ID 추적
+    # 입금내역 DB 저장 + deposit ID 추적 + 이미 매칭된 거래 필터링
+    matched_tx_keys: set[tuple] = set()
     if USE_DB_SOT and term_id:
         try:
             from app.services import db
-            existing = await db.load_deposits(term_id)
-            max_existing_id = max((d["id"] for d in existing), default=0)
+            # 1) 기존 deposit 로드 (이미 매칭된 거래 키 수집)
+            existing_deposits = await db.load_deposits(term_id)
+            for d in existing_deposits:
+                if d.get("match_status") == "matched":
+                    matched_tx_keys.add((
+                        d.get("거래일시", ""),
+                        d.get("입금", 0),
+                        d.get("의뢰인", ""),
+                        d.get("적요", ""),
+                    ))
+
+            # 2) 새 거래 INSERT (ON CONFLICT DO NOTHING)
             await db.insert_deposits(term_id, transactions)
-            all_deposits = await db.load_deposits(term_id)
-            new_deposits = [d for d in all_deposits if d["id"] > max_existing_id]
-            for i, tx in enumerate(transactions):
-                if i < len(new_deposits):
-                    tx["_deposit_id"] = new_deposits[i]["id"]
+
+            # 3) deposit ID를 복합키로 매핑 (순서 의존 제거)
+            all_db_deposits = await db.load_deposits(term_id)
+            deposit_key_map: dict[tuple, int] = {}
+            for d in all_db_deposits:
+                key = (
+                    d.get("거래일시", ""),
+                    d.get("입금", 0),
+                    d.get("의뢰인", ""),
+                    d.get("적요", ""),
+                )
+                deposit_key_map[key] = d["id"]
+
+            for tx in transactions:
+                key = (
+                    tx.get("거래일시", ""),
+                    tx.get("입금", 0),
+                    tx.get("의뢰인", ""),
+                    tx.get("적요", ""),
+                )
+                dep_id = deposit_key_map.get(key)
+                if dep_id:
+                    tx["_deposit_id"] = dep_id
         except Exception as e:
             logger.warning("deposits INSERT failed (non-critical): %s", e)
+
+    # 이미 매칭된 거래는 매칭 대상에서 제외
+    if matched_tx_keys:
+        original_count = len(transactions)
+        transactions = [
+            tx for tx in transactions
+            if (tx.get("거래일시", ""), tx.get("입금", 0),
+                tx.get("의뢰인", ""), tx.get("적요", ""))
+            not in matched_tx_keys
+        ]
+        skipped_deposits = original_count - len(transactions)
+        if skipped_deposits:
+            logger.info("Skipped %d already-matched deposits (of %d total)",
+                        skipped_deposits, original_count)
 
     # 확정/보존 대상은 매칭에서 제외
     from app.chains.payment import _is_preserved
@@ -203,13 +274,14 @@ async def _do_payment_step(file_path: str, term: dict) -> str:
     exception_ids = get_exception_ids(term_id) if term_id else set()
     exempted = apply_exemptions(pending_applications, members, exception_ids)
     students = applications_to_students(pending_applications)
+    all_students = applications_to_students(applications)  # 이름 추출용 (보존 건 포함)
 
     # 규칙 기반 매칭
     skip_msg = f" (기존 처리완료 {already_done}건 제외)" if already_done else ""
     progress.content = f"🔍 회원 **{len(members)}명** 로드 완료. 입금 매칭 중...{skip_msg}"
     await progress.update()
 
-    all_results, needs_llm = run_code_matching(transactions, students)
+    all_results, needs_llm = run_code_matching(transactions, students, all_students=all_students)
     code_matched = sum(1 for r in all_results if r["상태"] == "✅정상")
 
     # LLM 매칭
