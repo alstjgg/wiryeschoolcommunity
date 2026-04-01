@@ -120,8 +120,9 @@ async def on_message(message: cl.Message):
         if any(k in message.content for k in CANCEL_KEYWORDS):
             cl.user_session.set("state", "idle")
             cl.user_session.set("payment_step", None)
+            cl.user_session.set("term", None)
             await cl.Message("작업이 취소되었습니다.").send()
-            await send_default_actions()
+            await send_starter_actions()
             return
         # 신청자 목록 건너뛰기 (기존 DB 데이터 사용)
         if session_state == "awaiting_applicants_file" and any(k in message.content for k in SKIP_KEYWORDS):
@@ -134,6 +135,7 @@ async def on_message(message: cl.Message):
         if current_state in ("awaiting_applicants_file", "awaiting_payment_file", "awaiting_ocr_image"):
             resume = _get_resume_prompt(current_state)
             await cl.Message(resume).send()
+            await send_midwork_actions()
         return
 
     # 파일 태깅: message.elements → file_path 추출
@@ -195,9 +197,9 @@ async def _invoke_agent(content: str, file_paths: list[str] | None = None):
             # 빈 메시지 제거
             msg.content = ""
             await msg.update()
-            # idle 상태이면 기본 액션 버튼 표시
+            # idle 상태이면 완료 버튼 표시
             if cl.user_session.get("state", "idle") == "idle":
-                await send_default_actions()
+                await send_completion_actions()
             return
 
         msg.content = response_text
@@ -208,36 +210,49 @@ async def _invoke_agent(content: str, file_paths: list[str] | None = None):
         msg.content = "처리 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.\n문제가 계속되면 관리자에게 문의해주세요."
         await msg.update()
 
-    # idle 상태이면 기본 액션 버튼 표시
+    # idle 상태이면 완료 버튼 표시
     state = cl.user_session.get("state", "idle")
     if state == "idle":
-        await send_default_actions()
+        await send_completion_actions()
 
 
-# ===================================================== 공통 액션 버튼 =====
+# ===================================================== 액션 버튼 =====
+
+_STARTER_DEFINITIONS = [
+    ("plan", "📝 계획서 검토"),
+    ("payment", "💰 입금 대조"),
+    ("attendance", "📋 출석부 생성"),
+    ("ocr", "✅ 출석 체크"),
+    ("graduation", "🎓 종강 처리"),
+    ("report", "📊 보고서 생성"),
+    ("question", "❓ 질문하기"),
+]
 
 
-async def send_default_actions(completed: str | None = None):
-    """모든 작업 완료/종료 후 공통으로 호출하는 기본 액션 버튼."""
-    definitions = [
-        ("plan", "📝 계획서 검토"),
-        ("payment", "💰 입금 대조"),
-        ("attendance", "📋 출석부 생성"),
-        ("ocr", "✅ 출석 체크"),
-        ("graduation", "🎓 종강 처리"),
-        ("report", "📊 보고서 생성"),
-        ("question", "❓ 질문하기"),
+async def send_starter_actions():
+    """초기 화면 — 7개 작업 버튼."""
+    actions = [
+        cl.Action(name=f"default_{key}", label=label, payload={"value": key})
+        for key, label in _STARTER_DEFINITIONS
     ]
-    actions = []
-    for key, label in definitions:
-        display = label + " 다시하기" if key == completed else label
-        actions.append(cl.Action(
-            name=f"default_{key}",
-            label=display,
-            payload={"value": key},
-        ))
+    await cl.Message(content="작업을 선택해주세요.", actions=actions).send()
 
-    await cl.Message(content="무엇을 도와드릴까요?", actions=actions).send()
+
+async def send_completion_actions():
+    """작업 완료 후 — '처음으로 돌아가기' 버튼."""
+    actions = [
+        cl.Action(name="go_home", label="🏠 처음으로 돌아가기", payload={"value": "home"}),
+    ]
+    await cl.Message(content="", actions=actions).send()
+
+
+async def send_midwork_actions():
+    """작업 진행 중 — '처음으로 돌아가기' + '질문하기'."""
+    actions = [
+        cl.Action(name="go_home", label="🏠 처음으로 돌아가기", payload={"value": "home"}),
+        cl.Action(name="default_question", label="❓ 질문하기", payload={"value": "question"}),
+    ]
+    await cl.Message(content="", actions=actions).send()
 
 
 # Action callbacks — 버튼 클릭 시 해당 Starter 메시지를 Agent에 전달
@@ -285,8 +300,16 @@ async def on_default_report(action: cl.Action):
 
 @cl.action_callback("default_question")
 async def on_default_question(action: cl.Action):
-    cl.user_session.set("state", "idle")
     await cl.Message("궁금한 점을 자유롭게 질문해주세요.").send()
+
+
+@cl.action_callback("go_home")
+async def on_go_home(action: cl.Action):
+    """처음으로 돌아가기 — 상태 초기화 + 7개 버튼 표시."""
+    cl.user_session.set("state", "idle")
+    cl.user_session.set("payment_step", None)
+    cl.user_session.set("term", None)
+    await send_starter_actions()
 
 
 # ===================================================== 파일 직접 처리 =====
@@ -328,9 +351,9 @@ async def _handle_file_upload(state: str, file_path: str, user_text: str = ""):
         logger.error("Direct tool call failed: %s", e, exc_info=True)
         await cl.Message("처리 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.").send()
 
-    # idle 상태이면 기본 액션 버튼 표시
+    # idle 상태이면 완료 버튼 표시
     if cl.user_session.get("state", "idle") == "idle":
-        await send_default_actions()
+        await send_completion_actions()
 
 
 # ===================================================== 건너뛰기 =====

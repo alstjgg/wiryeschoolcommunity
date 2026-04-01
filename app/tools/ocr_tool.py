@@ -87,6 +87,13 @@ async def check_attendance_ocr(
     """
     term = cl.user_session.get("term")
     if not term:
+        if not term_id:
+            current = get_current_term()
+            return (
+                f"현재 회차는 **{current['term_name']}**입니다.\n\n"
+                f"이 회차의 출석 체크를 진행할까요?\n"
+                f"다른 회차를 원하시면 **'2025-4 가을학기'**처럼 말씀해주세요."
+            )
         term = get_current_term()
     if term_id:
         rebuilt = build_term_from_id(term_id)
