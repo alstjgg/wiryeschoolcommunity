@@ -217,7 +217,7 @@ async def create_attendance(term_id: str = "") -> str:
 
         progress.content = final
         await progress.update()
-        return final
+        return "__SILENT__"
 
     except Exception as e:
         return f"출석부 생성 중 오류: {e}"

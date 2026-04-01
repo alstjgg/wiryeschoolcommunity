@@ -8,6 +8,7 @@ from langchain_core.tools import tool
 
 from app.chains.payment import (
     build_applications,
+    merge_with_existing_applications,
     write_applications_sheet,
     apply_exemptions,
     applications_to_students,
@@ -91,6 +92,9 @@ async def _do_applicants_step(file_path: str, term: dict) -> str | None:
     applications = build_applications(
         applicants, member_records, fullmember_records, term_id=term_id,
     )
+
+    # 기존 DB 데이터와 병합 — 이전 매칭 결과 보존
+    applications = await merge_with_existing_applications(term_id, applications)
 
     term_folder_id = cl.user_session.get("term_folder_id")
     if not term_folder_id:
@@ -181,11 +185,10 @@ async def _do_payment_step(file_path: str, term: dict) -> str:
         except Exception as e:
             logger.warning("deposits INSERT failed (non-critical): %s", e)
 
-    # 이미 처리 완료된 건 건너뛰기
-    COMPLETED_STATUSES = {"✅정상", "💎면제"}
+    # 확정/보존 대상은 매칭에서 제외
+    from app.chains.payment import _is_preserved
     pending_applications = [
-        a for a in applications
-        if a.get("입금현황", "") not in COMPLETED_STATUSES
+        a for a in applications if not _is_preserved(a)
     ]
     already_done = len(applications) - len(pending_applications)
     if already_done:
@@ -352,13 +355,17 @@ async def _write_payment_results(
     cl.user_session.set("matched_results", None)
     cl.user_session.set("applications", None)
 
-    return (
+    final = (
         f"입금 대조가 완료되었습니다.\n\n"
         f"{summary_line}{check_note}\n\n"
         f"신청기록 시트에서 입금현황을 확인하시고, "
         f"배움숲 포탈에서 수강 등록을 처리한 뒤\n"
         f"처리상태를 입력해주세요.{sheet_links}"
     )
+
+    progress.content = final
+    await progress.update()
+    return "__SILENT__"
 
 
 @tool
