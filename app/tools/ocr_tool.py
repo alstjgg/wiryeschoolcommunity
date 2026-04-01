@@ -10,7 +10,7 @@ from app.chains.ocr import (
     process_attendance_image,
     write_attendance_to_sheet,
 )
-from app.context.term import get_current_term
+from app.context.term import get_current_term, build_term_from_id
 from app.services.google_drive import find_term_folder, find_or_create_folder, find_spreadsheet_by_name
 from app.services.google_sheets import read_sheet
 from app.utils.matching import fuzzy_course_match
@@ -89,7 +89,9 @@ async def check_attendance_ocr(
     if not term:
         term = get_current_term()
     if term_id:
-        term["term_id"] = term_id
+        rebuilt = build_term_from_id(term_id)
+        if rebuilt:
+            term = rebuilt
     cl.user_session.set("term", term)
 
     ocr_term_id = term["term_id"]

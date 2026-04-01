@@ -25,7 +25,7 @@ from app.chains.payment import (
 from app.config import (
     USE_DB_SOT, MEMBERS_SHEET_ID, APPLICATIONS_TAB, UNMATCHED_DEPOSITS_TAB,
 )
-from app.context.term import get_current_term
+from app.context.term import get_current_term, build_term_from_id
 from app.services.excel import parse_bank_statement, parse_applicant_list
 from app.services.google_drive import find_term_folder
 from app.services.google_sheets import get_tab_gids
@@ -391,38 +391,47 @@ async def process_payment(
     if not term:
         term = get_current_term()
     if term_id:
-        term["term_id"] = term_id
+        rebuilt = build_term_from_id(term_id)
+        if rebuilt:
+            term = rebuilt
     cl.user_session.set("term", term)
 
     payment_step = cl.user_session.get("payment_step", "init")
 
     try:
-        # Init: 파일 없으면 신청자 목록 요청 (기존 데이터 있으면 건너뛰기 선택지)
+        # Init: 회차 확인 → 파일 요청
         if payment_step == "init" or payment_step is None:
             if not file_path:
-                cl.user_session.set("payment_step", "awaiting_applicants")
-                cl.user_session.set("state", "awaiting_applicants_file")
+                # term_id가 명시적으로 전달된 경우 회차 확인 완료로 간주
+                if term_id:
+                    cl.user_session.set("payment_step", "awaiting_applicants")
+                    cl.user_session.set("state", "awaiting_applicants_file")
 
-                # DB에 기존 신청기록이 있으면 건너뛰기 안내
-                skip_note = ""
-                if USE_DB_SOT:
-                    try:
-                        from app.services import db
-                        existing = await db.load_applications(term["term_id"])
-                        if existing:
-                            수강_count = sum(1 for a in existing if a["유형"] == "수강")
-                            skip_note = (
-                                f"\n\n이전에 등록한 신청 데이터(**{수강_count}건**)가 있습니다.\n"
-                                "변동이 없다면 **'건너뛰기'**라고 입력하세요."
-                            )
-                    except Exception:
-                        pass
+                    skip_note = ""
+                    if USE_DB_SOT:
+                        try:
+                            from app.services import db
+                            existing = await db.load_applications(term["term_id"])
+                            if existing:
+                                수강_count = sum(1 for a in existing if a["유형"] == "수강")
+                                skip_note = (
+                                    f"\n\n이전에 등록한 신청 데이터(**{수강_count}건**)가 있습니다.\n"
+                                    "변동이 없다면 **'건너뛰기'**라고 입력하세요."
+                                )
+                        except Exception:
+                            pass
 
+                    return (
+                        f"**{term['term_name']}** 수강 신청자 목록 파일을 업로드해주세요.\n\n"
+                        "배움숲 포탈에서 다운로드한 `LEARNING_APPLY*.xls` 파일을 업로드하시면 됩니다."
+                        f"{skip_note}"
+                    )
+
+                # term_id 미전달 — 회차 확인 요청
                 return (
-                    f"**{term['term_name']}** 수강 신청자 목록 파일을 업로드해주세요.\n\n"
-                    "배움숲 포탈 → 수강신청관리 → 수강신청조회 → 엑셀 다운로드\n"
-                    "파일명 형식: `LEARNING_APPLY*.xls`\n\n"
-                    f"💡 다른 회차를 처리하려면 **'2025-4 가을학기'**처럼 말씀해주세요.{skip_note}"
+                    f"현재 회차는 **{term['term_name']}**입니다.\n\n"
+                    f"이 회차의 입금 대조를 진행할까요?\n"
+                    f"다른 회차를 처리하려면 **'2025-4 가을학기'**처럼 말씀해주세요."
                 )
             # 파일이 있으면 바로 처리
             cl.user_session.set("payment_step", "awaiting_applicants")

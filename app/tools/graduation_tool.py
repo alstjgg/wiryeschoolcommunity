@@ -21,7 +21,7 @@ from app.chains.payment import (
     get_active_staff_ids,
 )
 from app.config import MEMBERS_SHEET_ID
-from app.context.term import get_current_term
+from app.context.term import get_current_term, build_term_from_id
 from app.services.google_drive import find_term_folder, find_or_create_folder, find_spreadsheet_by_name
 
 logger = logging.getLogger(__name__)
@@ -68,7 +68,9 @@ async def process_graduation(term_id: str = "") -> str:
     if not term:
         term = get_current_term()
     if term_id:
-        term["term_id"] = term_id
+        rebuilt = build_term_from_id(term_id)
+        if rebuilt:
+            term = rebuilt
     cl.user_session.set("term", term)
 
     term_id = term["term_id"]

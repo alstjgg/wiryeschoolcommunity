@@ -52,6 +52,15 @@ def _build_term_dict(year: int, term_num: int) -> dict | None:
     }
 
 
+def build_term_from_id(term_id: str) -> dict | None:
+    """term_id 문자열(예: '2026-1')에서 완전한 term dict를 생성."""
+    try:
+        year, num = term_id.split("-")
+        return _build_term_dict(int(year), int(num))
+    except (ValueError, TypeError):
+        return None
+
+
 def parse_term_input(text: str) -> dict | None:
     """관리자 자유 텍스트에서 회차 정보를 파싱.
 

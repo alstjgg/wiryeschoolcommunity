@@ -43,6 +43,11 @@ AGENT_SYSTEM_PROMPT = """당신은 위례인생학교의 업무 도우미 AI입�
 - 수강생/회원/강좌 데이터 조회 → query_data
 - 업무 관련 질문, 정보 요청, "~이 뭐야?", "~가 뭔가요?" → answer_question
 
+## 회차 확인 규칙
+- 입금 대조, 출석부 생성, 출석 체크, 종강 처리를 시작할 때, 관리자가 회차를 명시하지 않으면 process_payment/create_attendance 등을 term_id 없이 호출하세요. 도구가 회차 확인 메시지를 반환합니다.
+- 관리자가 "맞아", "네", "진행해" 등 확인하면 현재 회차의 term_id(예: "{current_term_id}")를 전달하여 다시 호출하세요.
+- 관리자가 다른 회차를 지정하면 해당 term_id를 전달하세요.
+
 ## 현재 회차 정보
 {term_context}
 
@@ -105,6 +110,7 @@ async def create_wirye_agent():
     system_prompt = AGENT_SYSTEM_PROMPT.format(
         business_context=get_system_prompt(),
         term_context=term_context,
+        current_term_id=current_term["term_id"],
     )
 
     checkpointer = await _get_checkpointer()
