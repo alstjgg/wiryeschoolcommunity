@@ -35,7 +35,7 @@ _MEMBERS_HEADER = [
 ]
 
 _DEPOSITS_HEADER = [
-    "입금일시", "회차", "입금액", "의뢰인", "적요", "입금자명", "확인사유", "처리상태",
+    "입금일시", "회차", "입금액", "의뢰인", "적요", "입금자명", "처리상태", "확인한이름", "확인한강좌",
 ]
 
 # ── Sync functions (synchronous, run in background thread) ────────────────
@@ -111,28 +111,57 @@ def _sync_course_records(records: list[dict]) -> None:
 
 
 def _sync_deposits(deposits: list[dict]) -> None:
-    """미확인입금 탭 전체 덮어쓰기 (clear A2:H + write A2).
+    """미확인입금 탭 전체 덮어쓰기 (clear A2:I + write A2).
 
-    _DEPOSITS_HEADER 순서 (8컬럼): 입금일시, 회차, 입금액, 의뢰인, 적요, 입금자명, 확인사유, 처리상태
-    load_deposits() dict 키: 거래일시, 입금, 의뢰인, 적요, 확인사유, 처리상태
-    term_id는 호출부에서 각 dict에 주입.
+    9컬럼: 입금일시, 회차, 입금액, 의뢰인, 적요, 입금자명, 처리상태, 확인한이름, 확인한강좌
+    관리자가 편집하는 G/H/I열은 clear 전에 읽어서 보존.
     """
-    rows = []
-    for d in deposits:
-        rows.append([
-            str(d.get("거래일시", "") or ""),
-            str(d.get("term_id", "") or d.get("회차", "") or ""),
-            str(d.get("입금", "") or d.get("amount", "") or ""),
-            str(d.get("의뢰인", "") or d.get("입금자명", "") or ""),
-            str(d.get("적요", "") or ""),
-            ", ".join(d.get("matched_name_ids", [])) or str(d.get("의뢰인", "") or ""),
-            str(d.get("확인사유", "") or ""),
-            str(d.get("처리상태", "") or ""),
-        ])
-    if not rows:
+    if not deposits:
         logger.warning("_sync_deposits: no rows to write, skipping clear+write")
         return
-    clear_range(MEMBERS_SHEET_ID, f"{UNMATCHED_DEPOSITS_TAB}!A2:H")
+
+    # 관리자가 편집한 G/H/I열(처리상태, 확인한이름, 확인한강좌) 보존
+    # deposit 키 = (입금일시, 입금액, 의뢰인)
+    from app.services.google_sheets import read_sheet
+    admin_data: dict[tuple, tuple] = {}
+    try:
+        existing = read_sheet(MEMBERS_SHEET_ID, f"{UNMATCHED_DEPOSITS_TAB}!A2:I")
+        for row in (existing or []):
+            if len(row) >= 3:
+                key = (row[0], row[2], row[3] if len(row) > 3 else "")
+                ps = row[6] if len(row) > 6 else ""
+                cn = row[7] if len(row) > 7 else ""
+                cc = row[8] if len(row) > 8 else ""
+                if (ps or "").strip() or (cn or "").strip() or (cc or "").strip():
+                    admin_data[key] = (ps.strip(), cn.strip(), cc.strip())
+    except Exception:
+        pass
+
+    rows = []
+    for d in deposits:
+        tx_time = str(d.get("거래일시", "") or "")
+        amount = str(d.get("입금", "") or d.get("amount", "") or "")
+        payer = str(d.get("의뢰인", "") or d.get("입금자명", "") or "")
+
+        # 관리자 편집값 복원
+        key = (tx_time, amount, payer)
+        saved = admin_data.get(key, ("", "", ""))
+        ps = saved[0] or str(d.get("처리상태", "") or "")
+        cn = saved[1]  # 확인한이름
+        cc = saved[2]  # 확인한강좌
+
+        rows.append([
+            tx_time,
+            str(d.get("term_id", "") or d.get("회차", "") or ""),
+            amount,
+            payer,
+            str(d.get("적요", "") or ""),
+            ", ".join(d.get("matched_name_ids", [])) or str(d.get("의뢰인", "") or ""),
+            ps,
+            cn,
+            cc,
+        ])
+    clear_range(MEMBERS_SHEET_ID, f"{UNMATCHED_DEPOSITS_TAB}!A2:I")
     write_sheet(MEMBERS_SHEET_ID, f"{UNMATCHED_DEPOSITS_TAB}!A2", rows)
 
 
