@@ -263,10 +263,12 @@ def match_transaction(
         result["_match_type"] = type_map[amount_info["type"]]
         result["_amount_type"] = amount_info["type"]
 
-        # 이름ID 확정 (동명이인 아님) + 금액 일치 → 자동 확정
-        if len(matched_students) == 1:
+        # 동명이인 체크: 같은 이름이지만 다른 이름ID가 있는지 확인
+        unique_ids = {s["이름ID"] for s in matched_students}
+        if len(unique_ids) == 1:
             result["상태"] = "✅정상"
         else:
+            # 진짜 동명이인 — 어느 사람인지 특정 불가
             result["상태"] = "🔶확인필요"
             result["메모"] += " (동명이인 — 수동 확인 필요)"
         return result
