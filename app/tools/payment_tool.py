@@ -472,10 +472,18 @@ async def _do_cascade_only_step(term: dict) -> str:
         applications, members, term_id, exception_ids,
     )
 
-    # 8) 결과 저장
+    # 8) 기존 미확인입금 카운트
+    unmatched_deposits = 0
+    try:
+        existing_deposits = await db.load_deposits(term_id, unmatched_only=True)
+        unmatched_deposits = len(existing_deposits)
+    except Exception:
+        pass
+
+    # 9) 결과 저장
     return await _write_payment_results(
         applications, members, [], exempted,
-        grade_changes, 0, term, progress,
+        grade_changes, unmatched_deposits, term, progress,
     )
 
 
