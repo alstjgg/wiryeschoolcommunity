@@ -58,6 +58,7 @@ async def on_stop():
     """User clicked the stop button — reset to idle."""
     cl.user_session.set("state", "idle")
     cl.user_session.set("payment_step", None)
+    cl.user_session.set("applicants_skipped", None)
 
 
 @cl.oauth_callback
@@ -121,12 +122,17 @@ async def on_message(message: cl.Message):
             cl.user_session.set("state", "idle")
             cl.user_session.set("payment_step", None)
             cl.user_session.set("term", None)
+            cl.user_session.set("applicants_skipped", None)
             await cl.Message("작업이 취소되었습니다.").send()
             await send_starter_actions()
             return
         # 신청자 목록 건너뛰기 (기존 DB 데이터 사용)
         if session_state == "awaiting_applicants_file" and any(k in message.content for k in SKIP_KEYWORDS):
             await _skip_applicants_step()
+            return
+        # 입금내역 건너뛰기 (기존 DB 데이터 사용)
+        if session_state == "awaiting_payment_file" and any(k in message.content for k in SKIP_KEYWORDS):
+            await _skip_deposits_step()
             return
         # Agent에게 질문 전달 (Q&A 등)
         await _invoke_agent(message.content)
@@ -309,7 +315,72 @@ async def on_go_home(action: cl.Action):
     cl.user_session.set("state", "idle")
     cl.user_session.set("payment_step", None)
     cl.user_session.set("term", None)
+    cl.user_session.set("applicants_skipped", None)
     await send_starter_actions()
+
+
+# 회차 확인 버튼 콜백 — 4개 tool(payment, attendance, ocr, graduation) 공용
+_TERM_CONFIRM_MESSAGES = {
+    "payment": "입금 대조를 시작합니다.",
+    "attendance": "출석부를 생성합니다.",
+    "ocr": "출석 체크를 시작합니다.",
+    "graduation": "종강 처리를 시작합니다.",
+}
+
+
+@cl.action_callback("term_confirm")
+async def on_term_confirm(action: cl.Action):
+    """'✅ 맞습니다' — 확인된 회차로 작업 진행."""
+    tool_type = cl.user_session.get("term_confirm_tool", "")
+    term = cl.user_session.get("term")
+    if not term or not tool_type:
+        await _invoke_agent("네, 진행해주세요.")
+        return
+    # term_id를 명시적으로 전달하여 회차 확인 단계를 건너뜀
+    msg = _TERM_CONFIRM_MESSAGES.get(tool_type, "진행합니다.")
+    await _invoke_agent(f"{term['term_id']} {msg}")
+
+
+@cl.action_callback("term_other")
+async def on_term_other(action: cl.Action):
+    """'📅 다른 회차' — 회차 입력 안내."""
+    cl.user_session.set("term", None)
+    cl.user_session.set("payment_step", None)
+    await cl.Message(
+        content="처리할 회차를 입력해주세요.\n\n예: **2025-4 가을학기**, **지난학기**, **2026-1**"
+    ).send()
+
+
+@cl.action_callback("skip_applicants")
+async def on_skip_applicants(action: cl.Action):
+    """'⏭ 건너뛰기' — 기존 DB 신청 데이터 사용."""
+    await _skip_applicants_step()
+
+
+@cl.action_callback("skip_deposits")
+async def on_skip_deposits(action: cl.Action):
+    """'⏭ 건너뛰기' — 기존 DB 입금 데이터 사용, cascade 실행."""
+    await _skip_deposits_step()
+
+
+async def _skip_deposits_step():
+    """입금내역 단계를 건너뛰고 등급 전환 cascade를 실행한다."""
+    term = cl.user_session.get("term")
+    if not term:
+        await cl.Message("회차 정보가 없습니다. 입금 대조를 처음부터 다시 시작해주세요.").send()
+        cl.user_session.set("state", "idle")
+        cl.user_session.set("payment_step", None)
+        return
+
+    try:
+        from app.tools.payment_tool import _do_cascade_only_step
+        await _do_cascade_only_step(term)
+    except Exception as e:
+        logger.error("skip deposits / cascade failed: %s", e)
+        cl.user_session.set("state", "idle")
+        cl.user_session.set("payment_step", None)
+        await cl.Message(f"등급 전환 처리 중 오류가 발생했습니다: {e}").send()
+        await send_completion_actions()
 
 
 # ===================================================== 파일 직접 처리 =====
@@ -378,12 +449,37 @@ async def _skip_applicants_step():
         cl.user_session.set("applications", existing)
         cl.user_session.set("payment_step", "awaiting_payment")
         cl.user_session.set("state", "awaiting_payment_file")
+        cl.user_session.set("applicants_skipped", True)
 
         수강 = sum(1 for a in existing if a["유형"] == "수강")
-        await cl.Message(
+        deposit_msg = (
             f"이전 신청 데이터(**{수강}건**)를 사용합니다.\n\n"
             "입금내역 파일(.xls 또는 .xlsx)을 업로드해주세요."
-        ).send()
+        )
+
+        # 기존 입금 데이터가 있으면 건너뛰기 버튼 제공
+        try:
+            existing_deposits = await db.load_deposits(term["term_id"])
+            if existing_deposits:
+                dep_count = len(existing_deposits)
+                await cl.Message(
+                    content=(
+                        f"{deposit_msg}\n\n"
+                        f"이전에 등록한 입금 데이터(**{dep_count}건**)가 있습니다."
+                    ),
+                    actions=[
+                        cl.Action(
+                            name="skip_deposits",
+                            label=f"⏭ 건너뛰기 (이전 데이터 {dep_count}건 사용)",
+                            payload={"value": "skip"},
+                        ),
+                    ],
+                ).send()
+                return
+        except Exception:
+            pass
+
+        await cl.Message(deposit_msg).send()
     except Exception as e:
         logger.error("skip applicants failed: %s", e)
         await cl.Message(f"이전 데이터 로드 중 오류: {e}\n신청자 목록 파일을 업로드해주세요.").send()

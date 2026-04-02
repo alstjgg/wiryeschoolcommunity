@@ -516,16 +516,16 @@ Google Sheets 파일 1개. 단일 "출석부" 탭 + 과목별 인쇄용 PDF.
 관리자 관점의 전체 플로우:
 
 1. **관리자**: 챗봇에서 "💰 입금 대조" Starter 버튼 클릭 (또는 자유 텍스트 → LLM 의도 분류 → 확인)
-2. **Agent**: 현재 날짜 기반으로 회차 추측 → "2026-1 겨울학기 입금 대조를 시작할까요?" → ✅ 맞습니다 / 📅 다른 회차에요 / ❌ 취소
-3. **관리자**: "다른 회차에요" 선택 시 → 자유 텍스트로 회차 입력 (`parse_term_input`으로 파싱) → 재확인
+2. **Agent**: 현재 날짜 기반으로 회차 추측 → "2026-2 봄학기 입금 대조를 진행할까요?" + Action 버튼 (✅ 맞습니다 / 📅 다른 회차)
+3. **관리자**: "다른 회차" 클릭 시 → 자유 텍스트로 회차 입력 (`parse_term_input`으로 파싱) → 재확인
 4. **Agent**: (자동) Drive에서 신규가입 신청서 로드 → 파싱 (cl.Step 진행 표시)
 5. **Agent**: (자동) Drive에서 정회원가입 신청서 로드 → 파싱 (cl.Step 진행 표시)
-6. **Agent**: "신청자 목록 엑셀을 업로드해주세요" (배움숲에서 다운로드한 `LEARNING_APPLY*.xls`)
-7. **관리자**: 신청자 목록 엑셀을 챗봇에 직접 업로드 (파일 대기 중 텍스트 입력 시: 취소 감지 / Q&A 답변 후 재안내 / 파일 재요청)
+6. **Agent**: "신청자 목록 엑셀을 업로드해주세요" + DB에 기존 데이터 있으면 `⏭ 건너뛰기` Action 버튼
+7. **관리자**: 신청자 목록 엑셀을 챗봇에 직접 업로드 또는 건너뛰기 (파일 대기 중 텍스트 입력 시: 취소 감지 / Q&A 답변 후 재안내 / 파일 재요청)
 8. **Agent**: 신청자 목록 파싱 + 4+5의 신청서와 합쳐 통합 신청서 생성 → Google Sheets에 저장 (필터 + 처리상태 드롭다운 자동 설정)
-9. **Agent**: "입금 내역을 업로드해주세요"
-10. **관리자**: 입금 내역 엑셀을 챗봇에 직접 업로드
-11. **Agent**: 회원 정보 로드 + 강사/사무처 면제 판별 → 입금내역 전건 → DB deposits INSERT → 자동 매칭 (코드 80~90% → LLM 10~20%) → 등급 전환 cascade 실행 → **즉시** 신청서 시트에 자동 반영
+9. **Agent**: "입금 내역을 업로드해주세요" + DB에 기존 입금 데이터 있으면 `⏭ 건너뛰기` Action 버튼
+10. **관리자**: 입금 내역 엑셀을 챗봇에 직접 업로드 또는 건너뛰기
+11. **Agent**: 회원 정보 로드 + 강사/사무처 면제 판별 → 입금내역 전건 → DB deposits INSERT → 자동 매칭 (코드 80~90% → LLM 10~20%) → 등급 전환 cascade 실행 → **즉시** 신청서 시트에 자동 반영. **양쪽 모두 건너뛰기 시**: Sheets 처리상태 역동기화 → 처리상태=등록완료 건의 입금현황 자동 확정 → cascade만 실행
 12. **Agent**: 숫자 요약 (✅ 78건 🔶 5건 ...) + 미확인입금 안내 + 시트 링크 + "처리상태를 입력해주세요" + 기본 Action 버튼 7개 (`send_default_actions`)
 13. **관리자**: 신청기록/미확인입금 시트에서 입금현황 확인 → 배움숲 포탈에서 수강 등록 → 처리상태 '등록완료' 입력
 14. **관리자**: '출석부 생성' 클릭
@@ -793,12 +793,12 @@ MEMBERS_FOLDER_ID=1grbIQBkufaD5zo-5RodC08uZsPHMvijx
 - 회원기록 변경일시 YYYY-MM-DD 포맷 — `_sync_member_records`에서 날짜 잘라내기
 - "새 채팅" 다이얼로그 문구 수정 — "기록이 지워진다" → "사이드바에서 다시 열 수 있다" (ko.json)
 - 파일 대기 중 자연어 질문 대응 — 취소 아닌 텍스트는 Agent에게 전달 후 재안내
-- 신청자 목록 건너뛰기 — DB에 기존 데이터 있으면 "건너뛰기" 텍스트로 스킵 가능
+- 신청자 목록 건너뛰기 — DB에 기존 데이터 있으면 `⏭ 건너뛰기` Action 버튼으로 스킵 가능
 
 **✅ Agent E2E 테스트 이슈 일괄 수정:**
 - AIMessage.content list 파싱 — tool use 후 text 블록 추출, tool_use 블록 필터링
 - 에러 메시지 사용자 친화적 변경 — 기술적 세부사항 제거, 한국어 안내
-- 회차 확인 안내 — 입금 대조 시작 시 다른 회차 처리 방법 안내 문구 추가
+- 회차 확인 Action 버튼 — 4개 tool(payment, attendance, ocr, graduation)의 회차 확인 단계에 ✅ 맞습니다 / 📅 다른 회차 버튼 추가
 - 상대적 시간 표현 — `parse_term_input()`에 지난학기/이번학기/작년 등 파싱 추가
 - Agent 시스템 프롬프트에 현재/직전 회차 컨텍스트 동적 주입
 - LLM rate limit 완화 — concurrency 1, sleep 1.5s (Tier 1 RPM 50 대응)
@@ -823,6 +823,12 @@ MEMBERS_FOLDER_ID=1grbIQBkufaD5zo-5RodC08uZsPHMvijx
 - 4개 tool(payment, attendance, graduation, ocr) 결과를 `cl.Message.update()`로 직접 전송 + `__SILENT__` 반환 — Agent가 시트 URL을 재해석하며 누락하는 문제 해결
 - `_invoke_agent()`에서 빈 응답도 `__SILENT__`과 동일하게 처리 — Agent가 빈 텍스트로 응답하는 경우 대비
 - `__SILENT__` 반환 시에도 idle 상태면 기본 Action 버튼 표시
+
+**✅ UX 버튼화 + Cascade-only 플로우:**
+- 회차 확인 Action 버튼 — 4개 tool(payment, attendance, ocr, graduation)에 ✅ 맞습니다 / 📅 다른 회차 버튼 추가. `term_confirm_tool` 세션 변수로 tool 구분, 공용 callback (`term_confirm`, `term_other`)
+- 신청자 목록 건너뛰기 버튼화 — 텍스트 안내("건너뛰기라고 입력하세요") → `⏭ 건너뛰기 (이전 데이터 N건 사용)` Action 버튼으로 전환. 텍스트 입력도 여전히 동작 (fallback)
+- 입금내역 건너뛰기 — DB에 기존 입금 데이터 있으면 `⏭ 건너뛰기` Action 버튼 제공. 3곳에서 표시: `_skip_applicants_step`, `_do_applicants_step` 완료 후, `awaiting_payment` 진입 시
+- Cascade-only 플로우 (`_do_cascade_only_step`) — 신청자+입금내역 양쪽 모두 건너뛰기 시 실행. Sheets 처리상태 역동기화 (신청기록 + 미확인입금) → 처리상태=등록완료 건의 입금현황을 ✅정상으로 추론 → `apply_grade_cascade()` 실행 → DB/Sheets 반영. 관리자가 수동으로 처리상태 입력 후 등급 전환만 재실행하는 용도.
 
 **📋 백로그:**
 - **비즈니스 컨텍스트 최적화**: selective context injection (tool별 관련 컨텍스트만 주입), 컨텍스트 ~100K 토큰 초과 시 RAG 도입

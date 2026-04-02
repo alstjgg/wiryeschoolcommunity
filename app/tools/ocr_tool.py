@@ -89,11 +89,20 @@ async def check_attendance_ocr(
     if not term:
         if not term_id:
             current = get_current_term()
-            return (
-                f"현재 회차는 **{current['term_name']}**입니다.\n\n"
-                f"이 회차의 출석 체크를 진행할까요?\n"
-                f"다른 회차를 원하시면 **'2025-4 가을학기'**처럼 말씀해주세요."
-            )
+            cl.user_session.set("term_confirm_tool", "ocr")
+            cl.user_session.set("term", current)
+            await cl.Message(
+                content=(
+                    f"현재 회차는 **{current['term_name']}**입니다.\n\n"
+                    f"이 회차의 출석 체크를 진행할까요?\n"
+                    f"다른 회차를 원하시면 **'2025-4 가을학기'**처럼 말씀해주세요."
+                ),
+                actions=[
+                    cl.Action(name="term_confirm", label="✅ 맞습니다", payload={"value": "confirm"}),
+                    cl.Action(name="term_other", label="📅 다른 회차", payload={"value": "other"}),
+                ],
+            ).send()
+            return "__SILENT__"
         term = get_current_term()
     if term_id:
         rebuilt = build_term_from_id(term_id)
