@@ -288,14 +288,14 @@ drive_service = build('drive', 'v3', credentials=credentials)
 
 - **DB SoT + 백그라운드 Sheets 동기화**: **PostgreSQL이 유일한 SoT**. 챗봇은 DB에 쓰고, 백그라운드 스레드로 Sheets 동기화 (`sheets_sync.py`). DB 실패 시 에러를 호출자에 전파 (Sheets 폴백 없음).
   - `USE_DB_SOT` 플래그는 `main.py`, `ocr.py`, `graduation.py`에 아직 남아 있으나, `payment.py`는 DB-only로 전환 완료.
-- **처리상태 예외**: 신청기록/미확인입금의 `처리상태` 컬럼만 관리자가 Sheets에서 직접 편집 (드롭다운: 등록완료/환불완료/취소완료/보류). DB 모드에서도 이 컬럼은 Sheets에서 읽음. 입금 대조 재실행 시 미확인입금의 처리상태를 Sheets→DB 역동기화 (`sync_deposit_processing_status`). 신청기록의 처리상태는 `upsert_applications`의 COALESCE로 보호.
+- **처리상태 예외**: 신청기록의 `처리상태` 컬럼은 관리자가 Sheets에서 직접 편집 (드롭다운: 등록완료/환불완료/취소완료/보류). 미확인입금은 `처리상태` + `확인한이름` + `확인한강좌` 3컬럼을 관리자가 편집. 입금 대조 재실행 시 양쪽 모두 Sheets→in-memory로 보존 (clear+write 전에 읽음). 신청기록 처리상태는 `_do_applicants_step()`에서 Sheets 읽기, DB `upsert_applications`의 COALESCE로 이중 보호.
 - **신청기록 통합**: 회차별 "신청서" 파일을 생성하지 않음. 회원관리 파일(`MEMBERS_SHEET_ID`)의 `신청기록` 탭에 전 회차 데이터 통합. `sheets_sync.py`가 백그라운드로 push.
 - **시트 서식**: 필터, 드롭다운, 보호 설정은 관리자가 Google Sheets UI에서 직접 관리. 코드는 값만 읽고 쓴다 (`values().get/update/clear/append`). 출석부 탭 생성(`addSheet`)만 코드에서 수행.
 - **PostgreSQL**: 비즈니스 데이터 (`db.py`, 7 테이블) + 채팅 기록 (`chat_data_layer.py`).
 - **Google Drive는 파일 저장소**. Raw 엑셀, PDF, 출석부 등 파일 단위 자료 관리.
 - **이모지↔코드 변환**: DB에는 상태 코드(confirmed, not_paid 등) 저장. 앱 코드는 이모지(✅정상, ❌미입금 등) 사용. 변환은 `db.py` 경계에서 수행.
 - **타입 변환**: TIMESTAMPTZ 컬럼(`processed_at` 등)은 `db.py`의 `_to_datetime()`으로 str/datetime 모두 안전하게 처리. asyncpg는 str을 받지 않으므로 이 경계 변환이 필수.
-- **Deposit 매칭 추적**: 입금내역은 `deposits` 테이블에 전건 저장. 매칭 후 `match_status`(matched/unmatched) + `matched_name_ids` 업데이트. 미확인입금 시트에는 unmatched 건만 표시.
+- **Deposit 매칭 추적**: 입금내역은 `deposits` 테이블에 전건 저장. 매칭 후 `match_status`(matched/unmatched) + `matched_name_ids` 업데이트. 미확인입금 시트에는 unmatched 건만 표시. 재실행 시 기존 미매칭 deposit도 현재 신청 목록 대비 자동 재매칭. 관리자가 미확인입금 시트에서 `처리상태`(수강비/가입비/정회원비) + `확인한이름` + `확인한강좌`를 입력하면 다음 cascade 실행 시 수동 매칭 적용.
 
 ### DB 스키마 (7 테이블)
 
@@ -335,7 +335,7 @@ DB SoT 모드에서 DB 쓰기 후 Sheets를 백그라운드로 동기화. `sheet
 | **회원기록** | History (영속) | `member_records` | 회원관리 → 회원기록 | 등급 변경 이력 |
 | **수강기록** | History (영속) | `course_records` | 회원관리 → 수강기록 | 전체 수강 이력 |
 | **신청기록** | Working (전 회차 누적) | `applications` | 회원관리 → 신청기록 | 통합 신청서 — 수강+신규가입+정회원, 회차 필터로 열람 |
-| **미확인입금** | Working (전 회차 누적) | `deposits` (unmatched) | 회원관리 → 미확인입금 | 자동 매칭 안 된 입금 건만 표시 |
+| **미확인입금** | Working (전 회차 누적) | `deposits` (unmatched) | 회원관리 → 미확인입금 | 자동 매칭 안 된 입금 건 (9컬럼: A~F자동, G처리상태/H확인한이름/I확인한강좌 관리자편집) |
 | **출석부** | Working (회차별) | `attendance` | 회차폴더 → 출석부 | 단일 "출석부" 탭 (이름ID/이름/과목명/1~12회차/출석률) |
 
 회원관리 시트(`MEMBERS_SHEET_ID`)는 5탭 구조: `회원목록`, `회원기록`, `수강기록`, `신청기록`, `미확인입금`.
@@ -551,9 +551,10 @@ Google Sheets 파일 1개. 단일 "출석부" 탭 + 과목별 인쇄용 PDF.
 
 **룰베이스 매칭** (`matching.py`):
 1. 소액 필터링: 금액 < 1만원(예금이자 등) 스킵, "취소됨"/"대기" 키워드 감지
-2. 이름 추출: **적요 우선** → 의뢰인 fallback. 카카오페이/토스면 적요에서만 추출
-3. 금액 판별: `classify_by_amount()` — 금액 + 과목 수 + 키워드로 유형 분류
-4. 가입비/정회원 분류: `_match_type` 태그 → `apply_matching_results`에서 해당 유형 슬롯에 배정
+2. 이름 추출: **적요 우선** → 의뢰인 fallback. 카카오페이/토스면 적요에서만 추출. `all_student_names`로 수강+신규가입+정회원 전체 이름 검색.
+3. 수강 목록 조회: `students`(수강 only)에서 이름 매칭. 없으면 3-1로.
+3-1. 수강 목록에 없는 경우: `classify_by_amount()`로 가입비/정회원비 패턴 확인 → `all_applicants`에서 이름ID 해결. 정회원-only 신청자도 매칭 가능.
+4. 가입비/정회원 자동 확정: 이름ID가 유일(동명이인 아님)이면 ✅정상. 동명이인(다른 이름ID, 같은 이름)이면 🔶확인필요. `_match_type` 태그 → `apply_matching_results`에서 해당 유형 슬롯에 배정. 합산(13만) → 신규가입+정회원 양쪽 슬롯 동시 배정.
 5. 강좌 힌트 추출: 적요에서 이름 제거 → 나머지를 `fuzzy_course_match()`로 과목 매칭
 6. 힌트 매칭 + 1과목 이상 금액 → ✅정상 (다과목 개별 입금도 각각 확정)
 7. 전과목 합산: 금액 = N×2만원, N = 과목수 → 전 슬롯 한번에 ✅정상
@@ -823,6 +824,21 @@ MEMBERS_FOLDER_ID=1grbIQBkufaD5zo-5RodC08uZsPHMvijx
 - 4개 tool(payment, attendance, graduation, ocr) 결과를 `cl.Message.update()`로 직접 전송 + `__SILENT__` 반환 — Agent가 시트 URL을 재해석하며 누락하는 문제 해결
 - `_invoke_agent()`에서 빈 응답도 `__SILENT__`과 동일하게 처리 — Agent가 빈 텍스트로 응답하는 경우 대비
 - `__SILENT__` 반환 시에도 idle 상태면 기본 Action 버튼 표시
+
+**✅ 입금 매칭 E2E 수정 (dev 브랜치):**
+- 처리상태 덮어쓰기 수정 — `_do_applicants_step()`에서 Sheets 처리상태를 clear+write 전에 읽어 in-memory 보존
+- 신규가입/정회원 이름 인식 — `all_application_names()` + `all_applicants` 파라미터로 수강 외 이름도 `extract_name()` 대상에 포함. 수강 목록에 없어도 가입비/정회원비 금액 패턴으로 매칭.
+- 동명이인 오탐 수정 — `len(matched_students)` 대신 `len(unique 이름IDs)` 체크. 다과목 수강자의 가입비/정회원비가 false 동명이인으로 처리되던 문제.
+- 신규가입/정회원 자동 확정 — 이름ID 유일 + 금액 일치 시 ✅정상 (기존: 무조건 🔶확인필요). cascade 자동 발동 (비회원→회원→정회원→수강 💎면제).
+- 합산 입금(13만) 양쪽 슬롯 동시 배정 — `_amount_type=membership_plus_fullmember` 태그로 신규가입+정회원 슬롯 동시 fill.
+- 미매칭 deposit 자동 재매칭 — 매 실행 시 DB의 `match_status='unmatched'` deposit을 현재 신청 목록 대비 재매칭. `_do_payment_step()` + `_do_cascade_only_step()` 양쪽에서 실행.
+- 미확인입금 시트 구조 변경 — 확인사유 제거, 9컬럼 (A~F자동 + G처리상태/H확인한이름/I확인한강좌 관리자편집). 처리상태 dropdown: 수강비/가입비/정회원비/환불완료/무시/보류.
+- 관리자 수동 매칭 — 미확인입금에 처리상태(수강비/가입비/정회원비) + 확인한이름 + 확인한강좌 입력 → cascade 실행 시 해당 ❌미입금 application에 자동 매칭. `_do_cascade_only_step()`에서 처리.
+- 미확인입금 sync 시 관리자 편집 컬럼(G/H/I) 보존 — clear 전에 읽어서 merge 후 write.
+- dev/prod 환경 분리 — `MEMBERS_SHEET_ID`/`OPERATIONS_FOLDER_ID`/`MEMBERS_FOLDER_ID`를 `os.environ.get()` + prod 기본값. `tests/reset_dev_env.py` 초기화 스크립트.
+- 회차 확인 Action 버튼 + `build_term_from_id()` — 전체 term dict 재구성으로 stale term_name 방지.
+- 파일 업로드 직접 tool 호출 — Agent 경유 없이 `_handle_file_upload()`에서 상태별 tool 직접 invoke.
+- 3단계 버튼 세트 — `send_starter_actions()`(7개), `send_completion_actions()`(처음으로), `send_midwork_actions()`(처음으로+질문).
 
 **✅ UX 버튼화 + Cascade-only 플로우:**
 - 회차 확인 Action 버튼 — 4개 tool(payment, attendance, ocr, graduation)에 ✅ 맞습니다 / 📅 다른 회차 버튼 추가. `term_confirm_tool` 세션 변수로 tool 구분, 공용 callback (`term_confirm`, `term_other`)
