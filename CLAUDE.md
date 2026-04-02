@@ -844,7 +844,7 @@ MEMBERS_FOLDER_ID=1grbIQBkufaD5zo-5RodC08uZsPHMvijx
 - 회차 확인 Action 버튼 — 4개 tool(payment, attendance, ocr, graduation)에 ✅ 맞습니다 / 📅 다른 회차 버튼 추가. `term_confirm_tool` 세션 변수로 tool 구분, 공용 callback (`term_confirm`, `term_other`)
 - 신청자 목록 건너뛰기 버튼화 — 텍스트 안내("건너뛰기라고 입력하세요") → `⏭ 건너뛰기 (이전 데이터 N건 사용)` Action 버튼으로 전환. 텍스트 입력도 여전히 동작 (fallback)
 - 입금내역 건너뛰기 — DB에 기존 입금 데이터 있으면 `⏭ 건너뛰기` Action 버튼 제공. 3곳에서 표시: `_skip_applicants_step`, `_do_applicants_step` 완료 후, `awaiting_payment` 진입 시
-- Cascade-only 플로우 (`_do_cascade_only_step`) — 신청자+입금내역 양쪽 모두 건너뛰기 시 실행. Sheets 처리상태 역동기화 (신청기록 + 미확인입금) → 처리상태=등록완료 건의 입금현황을 ✅정상으로 추론 → `apply_grade_cascade()` 실행 → DB/Sheets 반영. 관리자가 수동으로 처리상태 입력 후 등급 전환만 재실행하는 용도.
+- Cascade-only 플로우 (`_do_cascade_only_step`) — 신청자+입금내역 양쪽 모두 건너뛰기 시 실행. Sheets 처리상태 역동기화 (신청기록 + 미확인입금) → 처리상태=등록완료 건의 입금현황을 ✅정상으로 추론 → `apply_grade_cascade()` 실행 → DB/Sheets 반영. 관리자가 수동으로 처리상태 입력 후 등급 전환만 재실행하는 용도. 기존 미확인입금 카운트를 DB에서 로드하여 결과 요약 + 시트 링크에 반영.
 
 **📋 백로그:**
 - **비즈니스 컨텍스트 최적화**: selective context injection (tool별 관련 컨텍스트만 주입), 컨텍스트 ~100K 토큰 초과 시 RAG 도입
