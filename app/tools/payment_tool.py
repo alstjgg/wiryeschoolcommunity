@@ -278,7 +278,11 @@ async def _do_payment_step(file_path: str, term: dict) -> str:
     progress.content = f"🔍 회원 **{len(members)}명** 로드 완료. 입금 매칭 중...{skip_msg}"
     await progress.update()
 
-    all_results, needs_llm = run_code_matching(transactions, students, all_student_names=all_names)
+    all_results, needs_llm = run_code_matching(
+        transactions, students,
+        all_student_names=all_names,
+        all_applicants=applications,
+    )
     code_matched = sum(1 for r in all_results if r["상태"] == "✅정상")
 
     # LLM 매칭
@@ -496,12 +500,20 @@ async def process_payment(
                         f"{skip_note}"
                     )
 
-                # term_id 미전달 — 회차 확인 요청
-                return (
-                    f"현재 회차는 **{term['term_name']}**입니다.\n\n"
-                    f"이 회차의 입금 대조를 진행할까요?\n"
-                    f"다른 회차를 처리하려면 **'2025-4 가을학기'**처럼 말씀해주세요."
-                )
+                # term_id 미전달 — 회차 확인 요청 (버튼 제공)
+                cl.user_session.set("term_confirm_tool", "payment")
+                await cl.Message(
+                    content=(
+                        f"현재 회차는 **{term['term_name']}**입니다.\n\n"
+                        f"이 회차의 입금 대조를 진행할까요?\n"
+                        f"다른 회차를 처리하려면 **'2025-4 가을학기'**처럼 말씀해주세요."
+                    ),
+                    actions=[
+                        cl.Action(name="term_confirm", label="✅ 맞습니다", payload={"value": "confirm"}),
+                        cl.Action(name="term_other", label="📅 다른 회차", payload={"value": "other"}),
+                    ],
+                ).send()
+                return "__SILENT__"
             # 파일이 있으면 바로 처리
             cl.user_session.set("payment_step", "awaiting_applicants")
 
