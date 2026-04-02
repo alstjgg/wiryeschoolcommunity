@@ -488,6 +488,42 @@ async def sync_deposit_processing_status(term_id: str, rows: list[dict]) -> int:
     return updated
 
 
+async def sync_application_processing_status(term_id: str, rows: list[dict]) -> int:
+    """Sheets 신청기록의 처리상태를 DB에 역동기화.
+
+    각 row는 {"이름ID": ..., "유형": ..., "과목명": ..., "처리상태": ...} 형태.
+    (term_id, name_id, type, course_name) 복합키로 매칭하여 processing_status 업데이트.
+    Returns: 업데이트된 행 수.
+    """
+    if not rows:
+        return 0
+    pool = await get_pool()
+    updated = 0
+    async with pool.acquire() as conn:
+        for r in rows:
+            ps = (r.get("처리상태") or "").strip()
+            if not ps:
+                continue
+            result = await conn.execute(
+                """
+                UPDATE applications SET processing_status = $1
+                WHERE term_id = $2
+                  AND name_id = $3
+                  AND type = $4
+                  AND COALESCE(course_name, '') = $5
+                  AND (processing_status IS NULL OR processing_status = '' OR processing_status != $1)
+                """,
+                ps,
+                term_id,
+                r.get("이름ID", ""),
+                r.get("유형", ""),
+                r.get("과목명", "") or "",
+            )
+            if result and result.split()[-1] != "0":
+                updated += 1
+    return updated
+
+
 # ============================================================= Attendance ====
 
 async def upsert_attendance(

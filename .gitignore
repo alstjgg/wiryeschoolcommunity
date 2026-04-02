@@ -31,4 +31,7 @@ Thumbs.db
 # # Fonts (downloaded at build time)
 # assets/fonts/
 
+# Dev environment reset script (contains hardcoded credentials)
+tests/reset_dev_env.py
+
 # Chainlit

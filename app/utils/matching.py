@@ -246,10 +246,9 @@ def match_transaction(
     num_courses = len(matched_students)
     amount_info = classify_by_amount(amount, num_courses, 적요)
 
-    # 가입비/정회원 유형 → 이름 매칭만 하고 cascade에서 처리
+    # 가입비/정회원 유형 → cascade에서 등급 전환 처리
     if amount_info["type"] in ("membership_fee", "fullmember", "membership_plus_fullmember"):
         result["매칭ID"] = matched_students[0]["이름ID"]
-        result["상태"] = "🔶확인필요"
         type_labels = {
             "membership_fee": f"가입비 입금 ({amount:,}원)",
             "fullmember": f"정회원비 입금 ({amount:,}원)",
@@ -262,6 +261,14 @@ def match_transaction(
         }
         result["메모"] = type_labels.get(amount_info["type"], amount_info["type"])
         result["_match_type"] = type_map[amount_info["type"]]
+        result["_amount_type"] = amount_info["type"]
+
+        # 이름ID 확정 (동명이인 아님) + 금액 일치 → 자동 확정
+        if len(matched_students) == 1:
+            result["상태"] = "✅정상"
+        else:
+            result["상태"] = "🔶확인필요"
+            result["메모"] += " (동명이인 — 수동 확인 필요)"
         return result
 
     # 5. 수강료 매칭
@@ -316,10 +323,19 @@ def match_transaction(
 def run_code_matching(
     transactions: list[dict],
     students: list[dict],
+    all_students: list[dict] | None = None,
 ) -> tuple[list[dict], list[dict]]:
-    """규칙 기반 매칭 실행. (매칭결과 전체, LLM에 넘길 건) 반환."""
+    """규칙 기반 매칭 실행. (매칭결과 전체, LLM에 넘길 건) 반환.
+
+    all_students가 주어지면, 이름 추출(extract_name)에는 all_students를 사용하고
+    슬롯 배정(match_transaction)에는 students(pending)만 사용한다.
+    이렇게 해야 이미 매칭된 수강생의 이름도 인식하여 "이름을 찾지 못함" 오류를 방지한다.
+    """
+    # 이름 추출용: 전체 수강생 (보존된 건 포함)
+    name_source = all_students if all_students else students
+    student_names = sorted({s["이름"] for s in name_source}, key=len, reverse=True)
+    # 슬롯 배정용: pending 수강생만
     course_names = list({s["강좌명"] for s in students})
-    student_names = sorted({s["이름"] for s in students}, key=len, reverse=True)
     results = []
     needs_llm = []
 

@@ -10,7 +10,7 @@ from app.chains.ocr import (
     process_attendance_image,
     write_attendance_to_sheet,
 )
-from app.context.term import get_current_term
+from app.context.term import get_current_term, build_term_from_id
 from app.services.google_drive import find_term_folder, find_or_create_folder, find_spreadsheet_by_name
 from app.services.google_sheets import read_sheet
 from app.utils.matching import fuzzy_course_match
@@ -87,9 +87,18 @@ async def check_attendance_ocr(
     """
     term = cl.user_session.get("term")
     if not term:
+        if not term_id:
+            current = get_current_term()
+            return (
+                f"현재 회차는 **{current['term_name']}**입니다.\n\n"
+                f"이 회차의 출석 체크를 진행할까요?\n"
+                f"다른 회차를 원하시면 **'2025-4 가을학기'**처럼 말씀해주세요."
+            )
         term = get_current_term()
     if term_id:
-        term["term_id"] = term_id
+        rebuilt = build_term_from_id(term_id)
+        if rebuilt:
+            term = rebuilt
     cl.user_session.set("term", term)
 
     ocr_term_id = term["term_id"]
