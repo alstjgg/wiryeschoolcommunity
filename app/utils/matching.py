@@ -263,10 +263,12 @@ def match_transaction(
         result["_match_type"] = type_map[amount_info["type"]]
         result["_amount_type"] = amount_info["type"]
 
-        # 이름ID 확정 (동명이인 아님) + 금액 일치 → 자동 확정
-        if len(matched_students) == 1:
+        # 동명이인 체크: 같은 이름이지만 다른 이름ID가 있는지 확인
+        unique_ids = {s["이름ID"] for s in matched_students}
+        if len(unique_ids) == 1:
             result["상태"] = "✅정상"
         else:
+            # 진짜 동명이인 — 어느 사람인지 특정 불가
             result["상태"] = "🔶확인필요"
             result["메모"] += " (동명이인 — 수동 확인 필요)"
         return result
@@ -323,17 +325,18 @@ def match_transaction(
 def run_code_matching(
     transactions: list[dict],
     students: list[dict],
-    all_students: list[dict] | None = None,
+    all_student_names: list[str] | None = None,
 ) -> tuple[list[dict], list[dict]]:
     """규칙 기반 매칭 실행. (매칭결과 전체, LLM에 넘길 건) 반환.
 
-    all_students가 주어지면, 이름 추출(extract_name)에는 all_students를 사용하고
-    슬롯 배정(match_transaction)에는 students(pending)만 사용한다.
-    이렇게 해야 이미 매칭된 수강생의 이름도 인식하여 "이름을 찾지 못함" 오류를 방지한다.
+    all_student_names가 주어지면, 이름 추출(extract_name)에 사용한다.
+    수강+신규가입+정회원 전체 이름을 포함해야 가입비/정회원비 deposit도 매칭됨.
+    슬롯 배정(match_transaction)에는 students(pending 수강)만 사용한다.
     """
-    # 이름 추출용: 전체 수강생 (보존된 건 포함)
-    name_source = all_students if all_students else students
-    student_names = sorted({s["이름"] for s in name_source}, key=len, reverse=True)
+    # 이름 추출용: 전체 신청자 (수강+신규가입+정회원, 보존 건 포함)
+    student_names = all_student_names if all_student_names else sorted(
+        {s["이름"] for s in students}, key=len, reverse=True,
+    )
     # 슬롯 배정용: pending 수강생만
     course_names = list({s["강좌명"] for s in students})
     results = []

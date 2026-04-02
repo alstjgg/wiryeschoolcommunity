@@ -12,6 +12,7 @@ from app.chains.payment import (
     write_applications_sheet,
     apply_exemptions,
     applications_to_students,
+    all_application_names,
     apply_matching_results,
     apply_grade_cascade,
     get_exception_ids,
@@ -96,6 +97,28 @@ async def _do_applicants_step(file_path: str, term: dict) -> str | None:
     # 기존 DB 데이터와 병합 — 이전 매칭 결과 보존
     applications = await merge_with_existing_applications(term_id, applications)
 
+    # Sheets 처리상태를 in-memory에 보존 — clear+write 전에 읽어야 함
+    # (관리자가 Sheets에서 직접 입력한 처리상태는 DB에 없으므로 Sheets에서 직접 읽음)
+    if USE_DB_SOT:
+        try:
+            from app.services.google_sheets import read_sheet
+            sheet_rows = read_sheet(MEMBERS_SHEET_ID, f"{APPLICATIONS_TAB}!A2:M")
+            if sheet_rows:
+                sheets_ps_map: dict[tuple, str] = {}
+                for row in sheet_rows:
+                    if len(row) < 5 or row[0] != term_id:
+                        continue
+                    ps = row[12] if len(row) > 12 else ""
+                    if (ps or "").strip():
+                        key = (row[1], row[3], row[4] if len(row) > 4 else "")
+                        sheets_ps_map[key] = ps.strip()
+                for app in applications:
+                    key = (app["이름ID"], app["유형"], app.get("과목명", ""))
+                    if key in sheets_ps_map and not app.get("처리상태"):
+                        app["처리상태"] = sheets_ps_map[key]
+        except Exception as e:
+            logger.warning("Sheets 처리상태 read failed (non-critical): %s", e)
+
     term_folder_id = cl.user_session.get("term_folder_id")
     if not term_folder_id:
         term_folder = find_term_folder(term_id)
@@ -134,35 +157,8 @@ async def _do_payment_step(file_path: str, term: dict) -> str:
     """입금내역 파일 파싱 + 매칭 + cascade → 결과 반환."""
     term_id = term["term_id"]
 
-    # 신청기록 + 미확인입금의 처리상태를 Sheets에서 DB로 역동기화
-    if USE_DB_SOT and term_id:
-        try:
-            from app.services import db
-            from app.services.google_sheets import read_sheet
-            app_rows = read_sheet(MEMBERS_SHEET_ID, f"{APPLICATIONS_TAB}!A2:M")
-            if app_rows:
-                sync_rows = []
-                for row in app_rows:
-                    if len(row) < 5:
-                        continue
-                    # 회차 필터 (A열 = 회차)
-                    if row[0] != term_id:
-                        continue
-                    ps = row[12] if len(row) > 12 else ""
-                    if (ps or "").strip():
-                        sync_rows.append({
-                            "이름ID": row[1],
-                            "유형": row[3],
-                            "과목명": row[4] if len(row) > 4 else "",
-                            "처리상태": ps,
-                        })
-                if sync_rows:
-                    synced = await db.sync_application_processing_status(term_id, sync_rows)
-                    if synced:
-                        logger.info("Reverse-synced %d application processing_status from Sheets", synced)
-        except Exception as e:
-            logger.warning("application processing_status reverse-sync failed (non-critical): %s", e)
-
+    # 미확인입금의 처리상태를 Sheets에서 DB로 역동기화
+    # (신청기록 처리상태는 _do_applicants_step()에서 Sheets→in-memory로 보존 완료)
     if USE_DB_SOT and term_id:
         try:
             from app.services import db
@@ -274,14 +270,15 @@ async def _do_payment_step(file_path: str, term: dict) -> str:
     exception_ids = get_exception_ids(term_id) if term_id else set()
     exempted = apply_exemptions(pending_applications, members, exception_ids)
     students = applications_to_students(pending_applications)
-    all_students = applications_to_students(applications)  # 이름 추출용 (보존 건 포함)
+    # 이름 추출용: 수강+신규가입+정회원 전체 (보존 건 포함)
+    all_names = all_application_names(applications)
 
     # 규칙 기반 매칭
     skip_msg = f" (기존 처리완료 {already_done}건 제외)" if already_done else ""
     progress.content = f"🔍 회원 **{len(members)}명** 로드 완료. 입금 매칭 중...{skip_msg}"
     await progress.update()
 
-    all_results, needs_llm = run_code_matching(transactions, students, all_students=all_students)
+    all_results, needs_llm = run_code_matching(transactions, students, all_student_names=all_names)
     code_matched = sum(1 for r in all_results if r["상태"] == "✅정상")
 
     # LLM 매칭
