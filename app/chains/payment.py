@@ -597,6 +597,11 @@ def apply_matching_results(
                 _fill_app(idx, r)
                 r["_matched"] = True
                 r["_matched_name_ids"] = [matched_id]
+                # 합산 입금(가입비+정회원비) → 정회원 슬롯도 동시 매칭
+                if r.get("_amount_type") == "membership_plus_fullmember":
+                    fm_idx = fullmember_index.get(matched_id)
+                    if fm_idx is not None and applications[fm_idx]["입금현황"] == "❌미입금":
+                        _fill_app(fm_idx, r)
                 return True
             return False
 

@@ -246,10 +246,9 @@ def match_transaction(
     num_courses = len(matched_students)
     amount_info = classify_by_amount(amount, num_courses, 적요)
 
-    # 가입비/정회원 유형 → 이름 매칭만 하고 cascade에서 처리
+    # 가입비/정회원 유형 → cascade에서 등급 전환 처리
     if amount_info["type"] in ("membership_fee", "fullmember", "membership_plus_fullmember"):
         result["매칭ID"] = matched_students[0]["이름ID"]
-        result["상태"] = "🔶확인필요"
         type_labels = {
             "membership_fee": f"가입비 입금 ({amount:,}원)",
             "fullmember": f"정회원비 입금 ({amount:,}원)",
@@ -262,6 +261,14 @@ def match_transaction(
         }
         result["메모"] = type_labels.get(amount_info["type"], amount_info["type"])
         result["_match_type"] = type_map[amount_info["type"]]
+        result["_amount_type"] = amount_info["type"]
+
+        # 이름ID 확정 (동명이인 아님) + 금액 일치 → 자동 확정
+        if len(matched_students) == 1:
+            result["상태"] = "✅정상"
+        else:
+            result["상태"] = "🔶확인필요"
+            result["메모"] += " (동명이인 — 수동 확인 필요)"
         return result
 
     # 5. 수강료 매칭
