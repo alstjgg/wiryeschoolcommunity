@@ -141,15 +141,43 @@ async def _do_applicants_step(file_path: str, term: dict) -> str | None:
 
     cl.user_session.set("applications", applications)
     cl.user_session.set("payment_step", "awaiting_payment")
+    cl.user_session.set("applicants_skipped", False)
+
+    deposit_prompt = "입금내역 파일(.xls 또는 .xlsx)을 업로드해주세요."
+
+    # 기존 입금 데이터가 있으면 건너뛰기 버튼 제공
+    deposit_skip_actions = []
+    if USE_DB_SOT:
+        try:
+            from app.services import db as _db2
+            existing_deposits = await _db2.load_deposits(term["term_id"])
+            if existing_deposits:
+                dep_count = len(existing_deposits)
+                deposit_prompt += (
+                    f"\n\n이전에 등록한 입금 데이터(**{dep_count}건**)가 있습니다."
+                )
+                deposit_skip_actions.append(
+                    cl.Action(
+                        name="skip_deposits",
+                        label=f"⏭ 건너뛰기 (이전 데이터 {dep_count}건 사용)",
+                        payload={"value": "skip"},
+                    ),
+                )
+        except Exception:
+            pass
 
     progress.content = (
         f"**{term['term_name']}** 통합 신청서 생성 완료:\n\n"
         f"- 수강 신청: **{수강_count}건**\n"
         f"- 신규가입: **{신규_count}건**\n"
         f"- 정회원: **{정회원_count}건**\n\n"
-        "입금내역 파일(.xls 또는 .xlsx)을 업로드해주세요."
+        f"{deposit_prompt}"
     )
     await progress.update()
+
+    if deposit_skip_actions:
+        await cl.Message(content="", actions=deposit_skip_actions).send()
+
     return None
 
 
@@ -278,7 +306,11 @@ async def _do_payment_step(file_path: str, term: dict) -> str:
     progress.content = f"🔍 회원 **{len(members)}명** 로드 완료. 입금 매칭 중...{skip_msg}"
     await progress.update()
 
-    all_results, needs_llm = run_code_matching(transactions, students, all_student_names=all_names)
+    all_results, needs_llm = run_code_matching(
+        transactions, students,
+        all_student_names=all_names,
+        all_applicants=applications,
+    )
     code_matched = sum(1 for r in all_results if r["상태"] == "✅정상")
 
     # LLM 매칭
@@ -332,6 +364,118 @@ async def _do_payment_step(file_path: str, term: dict) -> str:
     return await _write_payment_results(
         applications, members, all_results, exempted,
         grade_changes, unmatched_deposits, term, progress,
+    )
+
+
+async def _do_cascade_only_step(term: dict) -> str:
+    """신청자/입금내역 업로드 없이 등급 전환 cascade만 실행.
+
+    관리자가 Sheets에서 처리상태를 수동 편집한 후,
+    그 결과를 반영하여 등급 전환을 수행한다.
+    처리상태='등록완료'인 건은 입금현황='✅정상'으로 간주.
+    """
+    term_id = term["term_id"]
+
+    progress = cl.Message(content="🔄 처리상태를 동기화하고 있습니다...")
+    await progress.send()
+
+    from app.services import db
+    from app.services.google_sheets import read_sheet
+
+    # 1) 신청기록 처리상태 Sheets → DB 역동기화
+    try:
+        sheet_rows = read_sheet(MEMBERS_SHEET_ID, f"{APPLICATIONS_TAB}!A2:M")
+        if sheet_rows:
+            sync_rows = []
+            for row in sheet_rows:
+                if len(row) < 5:
+                    continue
+                # 회차 필터
+                if row[0] != term_id:
+                    continue
+                ps = row[12] if len(row) > 12 else ""
+                if (ps or "").strip():
+                    sync_rows.append({
+                        "이름ID": row[1],
+                        "유형": row[3],
+                        "과목명": row[4] if len(row) > 4 else "",
+                        "처리상태": ps.strip(),
+                    })
+            if sync_rows:
+                updated = await db.sync_application_processing_status(term_id, sync_rows)
+                logger.info("Synced %d application processing_status from Sheets", updated)
+    except Exception as e:
+        logger.warning("application processing_status reverse-sync failed: %s", e)
+
+    # 2) 미확인입금 처리상태 Sheets → DB 역동기화
+    try:
+        dep_rows = read_sheet(MEMBERS_SHEET_ID, f"{UNMATCHED_DEPOSITS_TAB}!A2:H")
+        if dep_rows:
+            dep_sync = []
+            for row in dep_rows:
+                if len(row) >= 8 and (row[7] or "").strip():
+                    dep_sync.append({
+                        "거래일시": row[0] if len(row) > 0 else "",
+                        "입금액": row[2] if len(row) > 2 else "",
+                        "의뢰인": row[3] if len(row) > 3 else "",
+                        "처리상태": row[7],
+                    })
+            if dep_sync:
+                await db.sync_deposit_processing_status(term_id, dep_sync)
+    except Exception as e:
+        logger.warning("deposit processing_status reverse-sync failed: %s", e)
+
+    # 3) DB에서 최신 applications 로드 (역동기화 반영됨)
+    progress.content = "📊 신청 데이터를 로드하고 있습니다..."
+    await progress.update()
+
+    applications = await db.load_applications(term_id)
+    if not applications:
+        progress.content = "신청 데이터가 없습니다. 입금 대조를 먼저 진행해주세요."
+        await progress.update()
+        cl.user_session.set("state", "idle")
+        cl.user_session.set("payment_step", None)
+        return "__SILENT__"
+
+    # 4) 처리상태='등록완료' → 입금현황='✅정상' 추론
+    #    관리자가 등록완료를 설정한 것은 입금을 확인했다는 의미
+    inferred = 0
+    for app in applications:
+        ps = (app.get("처리상태") or "").strip()
+        payment = app.get("입금현황", "❌미입금")
+        if ps == "등록완료" and payment not in ("✅정상", "💎면제"):
+            app["입금현황"] = "✅정상"
+            app["확인사유"] = "관리자 등록완료 확인"
+            inferred += 1
+    if inferred:
+        logger.info("Inferred %d applications as confirmed from processing_status", inferred)
+
+    # 5) 회원 로드 + 면제 처리
+    progress.content = "👥 회원 정보를 로드하고 있습니다..."
+    await progress.update()
+
+    members = await load_members_from_sheet()
+    exception_ids = get_exception_ids(term_id) if term_id else set()
+    exempted = apply_exemptions(applications, members, exception_ids)
+
+    # 6) processed_at 설정
+    now = datetime.now(timezone.utc)
+    for app in applications:
+        if app.get("입금현황") not in ("❌미입금", ""):
+            app.setdefault("processed_at", now)
+
+    # 7) 등급 전환 cascade
+    progress.content = "🔄 등급 전환을 처리하고 있습니다..."
+    await progress.update()
+
+    grade_changes = apply_grade_cascade(
+        applications, members, term_id, exception_ids,
+    )
+
+    # 8) 결과 저장
+    return await _write_payment_results(
+        applications, members, [], exempted,
+        grade_changes, 0, term, progress,
     )
 
 
@@ -423,6 +567,7 @@ async def _write_payment_results(
     cl.user_session.set("payment_step", None)
     cl.user_session.set("matched_results", None)
     cl.user_session.set("applications", None)
+    cl.user_session.set("applicants_skipped", None)
 
     final = (
         f"입금 대조가 완료되었습니다.\n\n"
@@ -476,32 +621,49 @@ async def process_payment(
                     cl.user_session.set("payment_step", "awaiting_applicants")
                     cl.user_session.set("state", "awaiting_applicants_file")
 
-                    skip_note = ""
                     if USE_DB_SOT:
                         try:
                             from app.services import db
                             existing = await db.load_applications(term["term_id"])
                             if existing:
                                 수강_count = sum(1 for a in existing if a["유형"] == "수강")
-                                skip_note = (
-                                    f"\n\n이전에 등록한 신청 데이터(**{수강_count}건**)가 있습니다.\n"
-                                    "변동이 없다면 **'건너뛰기'**라고 입력하세요."
-                                )
+                                await cl.Message(
+                                    content=(
+                                        f"**{term['term_name']}** 수강 신청자 목록 파일을 업로드해주세요.\n\n"
+                                        "배움숲 포탈에서 다운로드한 `LEARNING_APPLY*.xls` 파일을 업로드하시면 됩니다.\n\n"
+                                        f"이전에 등록한 신청 데이터(**{수강_count}건**)가 있습니다."
+                                    ),
+                                    actions=[
+                                        cl.Action(
+                                            name="skip_applicants",
+                                            label=f"⏭ 건너뛰기 (이전 데이터 {수강_count}건 사용)",
+                                            payload={"value": "skip"},
+                                        ),
+                                    ],
+                                ).send()
+                                return "__SILENT__"
                         except Exception:
                             pass
 
                     return (
                         f"**{term['term_name']}** 수강 신청자 목록 파일을 업로드해주세요.\n\n"
                         "배움숲 포탈에서 다운로드한 `LEARNING_APPLY*.xls` 파일을 업로드하시면 됩니다."
-                        f"{skip_note}"
                     )
 
-                # term_id 미전달 — 회차 확인 요청
-                return (
-                    f"현재 회차는 **{term['term_name']}**입니다.\n\n"
-                    f"이 회차의 입금 대조를 진행할까요?\n"
-                    f"다른 회차를 처리하려면 **'2025-4 가을학기'**처럼 말씀해주세요."
-                )
+                # term_id 미전달 — 회차 확인 요청 (버튼 제공)
+                cl.user_session.set("term_confirm_tool", "payment")
+                await cl.Message(
+                    content=(
+                        f"현재 회차는 **{term['term_name']}**입니다.\n\n"
+                        f"이 회차의 입금 대조를 진행할까요?\n"
+                        f"다른 회차를 처리하려면 **'2025-4 가을학기'**처럼 말씀해주세요."
+                    ),
+                    actions=[
+                        cl.Action(name="term_confirm", label="✅ 맞습니다", payload={"value": "confirm"}),
+                        cl.Action(name="term_other", label="📅 다른 회차", payload={"value": "other"}),
+                    ],
+                ).send()
+                return "__SILENT__"
             # 파일이 있으면 바로 처리
             cl.user_session.set("payment_step", "awaiting_applicants")
 
@@ -527,6 +689,29 @@ async def process_payment(
         if payment_step == "awaiting_payment":
             if not file_path:
                 cl.user_session.set("state", "awaiting_payment_file")
+                # 기존 입금 데이터가 있으면 건너뛰기 버튼 제공
+                if USE_DB_SOT:
+                    try:
+                        from app.services import db
+                        existing_deposits = await db.load_deposits(term["term_id"])
+                        if existing_deposits:
+                            dep_count = len(existing_deposits)
+                            await cl.Message(
+                                content=(
+                                    "입금내역 파일(.xls 또는 .xlsx)을 업로드해주세요.\n\n"
+                                    f"이전에 등록한 입금 데이터(**{dep_count}건**)가 있습니다."
+                                ),
+                                actions=[
+                                    cl.Action(
+                                        name="skip_deposits",
+                                        label=f"⏭ 건너뛰기 (이전 데이터 {dep_count}건 사용)",
+                                        payload={"value": "skip"},
+                                    ),
+                                ],
+                            ).send()
+                            return "__SILENT__"
+                    except Exception:
+                        pass
                 return "입금내역 파일(.xls 또는 .xlsx)을 업로드해주세요."
             return await _do_payment_step(file_path, term)
 

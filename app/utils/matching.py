@@ -190,8 +190,13 @@ def match_transaction(
     students: list[dict],
     student_names: list[str],
     course_names: list[str],
+    all_applicants: list[dict] | None = None,
 ) -> dict:
-    """단일 거래를 학생과 매칭. 결과 dict 반환."""
+    """단일 거래를 학생과 매칭. 결과 dict 반환.
+
+    students: 수강 유형만 (슬롯 배정용)
+    all_applicants: 전체 신청서 (신규가입/정회원 포함, 이름ID 해결용)
+    """
     적요 = tx.get("적요", "")
     의뢰인 = tx.get("의뢰인", "")
     amount = tx.get("입금", 0)
@@ -235,9 +240,38 @@ def match_transaction(
         if clean_payer and clean_payer != name and name in 적요:
             result["메모"] = f"대리입금 추정 (의뢰인: {clean_payer})"
 
-    # 3. 해당 이름의 학생 찾기
+    # 3. 해당 이름의 학생 찾기 (수강 유형)
     matched_students = [s for s in students if s["이름"] == name]
+
+    # 3-1. 수강 목록에 없으면 → 가입비/정회원비 체크 (all_applicants에서 이름ID 해결)
     if not matched_students:
+        amount_info = classify_by_amount(amount, 0, 적요)
+        if amount_info["type"] in ("membership_fee", "fullmember", "membership_plus_fullmember") and all_applicants:
+            # 전체 신청서에서 이름ID 찾기
+            name_applicants = [a for a in all_applicants if a.get("이름") == name]
+            unique_ids = {a["이름ID"] for a in name_applicants}
+            if unique_ids:
+                result["매칭ID"] = name_applicants[0]["이름ID"]
+                type_labels = {
+                    "membership_fee": f"가입비 입금 ({amount:,}원)",
+                    "fullmember": f"정회원비 입금 ({amount:,}원)",
+                    "membership_plus_fullmember": f"가입비+정회원비 합산 ({amount:,}원)",
+                }
+                type_map = {
+                    "membership_fee": "신규가입",
+                    "fullmember": "정회원",
+                    "membership_plus_fullmember": "신규가입",
+                }
+                result["메모"] = type_labels.get(amount_info["type"], amount_info["type"])
+                result["_match_type"] = type_map[amount_info["type"]]
+                result["_amount_type"] = amount_info["type"]
+                if len(unique_ids) == 1:
+                    result["상태"] = "✅정상"
+                else:
+                    result["상태"] = "🔶확인필요"
+                    result["메모"] += " (동명이인 — 수동 확인 필요)"
+                return result
+
         result["상태"] = "🔶확인필요"
         result["메모"] = (result["메모"] + " 수강생 미등록").strip()
         return result
@@ -326,12 +360,13 @@ def run_code_matching(
     transactions: list[dict],
     students: list[dict],
     all_student_names: list[str] | None = None,
+    all_applicants: list[dict] | None = None,
 ) -> tuple[list[dict], list[dict]]:
     """규칙 기반 매칭 실행. (매칭결과 전체, LLM에 넘길 건) 반환.
 
-    all_student_names가 주어지면, 이름 추출(extract_name)에 사용한다.
-    수강+신규가입+정회원 전체 이름을 포함해야 가입비/정회원비 deposit도 매칭됨.
-    슬롯 배정(match_transaction)에는 students(pending 수강)만 사용한다.
+    all_student_names: 이름 추출용 (수강+신규가입+정회원 전체)
+    all_applicants: 이름ID 해결용 (수강 목록에 없는 신규가입/정회원 매칭)
+    students: 슬롯 배정용 (pending 수강만)
     """
     # 이름 추출용: 전체 신청자 (수강+신규가입+정회원, 보존 건 포함)
     student_names = all_student_names if all_student_names else sorted(
@@ -343,7 +378,7 @@ def run_code_matching(
     needs_llm = []
 
     for tx in transactions:
-        result = match_transaction(tx, students, student_names, course_names)
+        result = match_transaction(tx, students, student_names, course_names, all_applicants=all_applicants)
         results.append(result)
         if "_llm_context" in result:
             needs_llm.append(result)
