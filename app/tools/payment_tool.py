@@ -12,6 +12,7 @@ from app.chains.payment import (
     write_applications_sheet,
     apply_exemptions,
     applications_to_students,
+    all_application_names,
     apply_matching_results,
     apply_grade_cascade,
     get_exception_ids,
@@ -269,14 +270,15 @@ async def _do_payment_step(file_path: str, term: dict) -> str:
     exception_ids = get_exception_ids(term_id) if term_id else set()
     exempted = apply_exemptions(pending_applications, members, exception_ids)
     students = applications_to_students(pending_applications)
-    all_students = applications_to_students(applications)  # 이름 추출용 (보존 건 포함)
+    # 이름 추출용: 수강+신규가입+정회원 전체 (보존 건 포함)
+    all_names = all_application_names(applications)
 
     # 규칙 기반 매칭
     skip_msg = f" (기존 처리완료 {already_done}건 제외)" if already_done else ""
     progress.content = f"🔍 회원 **{len(members)}명** 로드 완료. 입금 매칭 중...{skip_msg}"
     await progress.update()
 
-    all_results, needs_llm = run_code_matching(transactions, students, all_students=all_students)
+    all_results, needs_llm = run_code_matching(transactions, students, all_student_names=all_names)
     code_matched = sum(1 for r in all_results if r["상태"] == "✅정상")
 
     # LLM 매칭

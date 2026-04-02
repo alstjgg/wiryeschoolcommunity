@@ -323,17 +323,18 @@ def match_transaction(
 def run_code_matching(
     transactions: list[dict],
     students: list[dict],
-    all_students: list[dict] | None = None,
+    all_student_names: list[str] | None = None,
 ) -> tuple[list[dict], list[dict]]:
     """규칙 기반 매칭 실행. (매칭결과 전체, LLM에 넘길 건) 반환.
 
-    all_students가 주어지면, 이름 추출(extract_name)에는 all_students를 사용하고
-    슬롯 배정(match_transaction)에는 students(pending)만 사용한다.
-    이렇게 해야 이미 매칭된 수강생의 이름도 인식하여 "이름을 찾지 못함" 오류를 방지한다.
+    all_student_names가 주어지면, 이름 추출(extract_name)에 사용한다.
+    수강+신규가입+정회원 전체 이름을 포함해야 가입비/정회원비 deposit도 매칭됨.
+    슬롯 배정(match_transaction)에는 students(pending 수강)만 사용한다.
     """
-    # 이름 추출용: 전체 수강생 (보존된 건 포함)
-    name_source = all_students if all_students else students
-    student_names = sorted({s["이름"] for s in name_source}, key=len, reverse=True)
+    # 이름 추출용: 전체 신청자 (수강+신규가입+정회원, 보존 건 포함)
+    student_names = all_student_names if all_student_names else sorted(
+        {s["이름"] for s in students}, key=len, reverse=True,
+    )
     # 슬롯 배정용: pending 수강생만
     course_names = list({s["강좌명"] for s in students})
     results = []

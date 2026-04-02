@@ -540,6 +540,18 @@ def applications_to_students(applications: list[dict]) -> list[dict]:
     ]
 
 
+def all_application_names(applications: list[dict]) -> list[str]:
+    """전체 신청서에서 이름 목록 추출 (수강+신규가입+정회원 모두 포함).
+
+    이름 추출(extract_name)에 사용. 긴 이름부터 정렬.
+    신규가입/정회원 이름이 포함되어야 가입비/정회원비 deposit이 매칭됨.
+    """
+    return sorted(
+        {a["이름"] for a in applications if a.get("이름")},
+        key=len, reverse=True,
+    )
+
+
 def apply_matching_results(
     applications: list[dict],
     matched_results: list[dict],
