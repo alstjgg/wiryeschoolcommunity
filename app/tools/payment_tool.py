@@ -191,16 +191,17 @@ async def _do_payment_step(file_path: str, term: dict) -> str:
         try:
             from app.services import db
             from app.services.google_sheets import read_sheet
-            sheet_rows = read_sheet(MEMBERS_SHEET_ID, f"{UNMATCHED_DEPOSITS_TAB}!A2:H")
+            sheet_rows = read_sheet(MEMBERS_SHEET_ID, f"{UNMATCHED_DEPOSITS_TAB}!A2:I")
             if sheet_rows:
                 sync_rows = []
                 for row in sheet_rows:
-                    if len(row) >= 8 and (row[7] or "").strip():
+                    ps = row[6] if len(row) > 6 else ""
+                    if (ps or "").strip():
                         sync_rows.append({
                             "거래일시": row[0] if len(row) > 0 else "",
                             "입금액": row[2] if len(row) > 2 else "",
                             "의뢰인": row[3] if len(row) > 3 else "",
-                            "처리상태": row[7],
+                            "처리상태": ps,
                         })
                 if sync_rows:
                     await db.sync_deposit_processing_status(term_id, sync_rows)
@@ -346,6 +347,47 @@ async def _do_payment_step(file_path: str, term: dict) -> str:
         except Exception as e:
             logger.warning("deposit match update failed (non-critical): %s", e)
 
+    # 기존 미매칭 deposit 재매칭 (새 신청자 추가 시 이전 미매칭 건도 매칭 시도)
+    if USE_DB_SOT and term_id:
+        try:
+            from app.services import db as _db2
+            existing_unmatched = await _db2.load_deposits(term_id, unmatched_only=True)
+            # 방금 업로드한 거래는 제외 (이미 위에서 매칭 처리됨)
+            new_dep_ids = {tx.get("_deposit_id") for tx in transactions if "_deposit_id" in tx}
+            old_unmatched = [d for d in existing_unmatched if d["id"] not in new_dep_ids]
+
+            if old_unmatched:
+                progress.content = f"🔄 기존 미매칭 입금 **{len(old_unmatched)}건** 재매칭 중..."
+                await progress.update()
+
+                old_txs = [{
+                    "거래일시": d["거래일시"], "입금": d["입금"],
+                    "의뢰인": d["의뢰인"], "적요": d["적요"],
+                    "_deposit_id": d["id"],
+                } for d in old_unmatched]
+
+                old_results, old_needs_llm = run_code_matching(
+                    old_txs, students,
+                    all_student_names=all_names, all_applicants=applications,
+                )
+                if old_needs_llm:
+                    await run_llm_matching(old_needs_llm, students)
+
+                old_newly_matched = apply_matching_results(applications, old_results)
+
+                for r in old_results:
+                    dep_id = r.get("_deposit_id")
+                    if dep_id and r.get("_matched"):
+                        await _db2.update_deposit_match(
+                            dep_id, "matched", r.get("_matched_name_ids", []),
+                        )
+
+                re_matched = sum(1 for r in old_results if r.get("_matched"))
+                if re_matched:
+                    logger.info("Re-matched %d previously unmatched deposits", re_matched)
+        except Exception as e:
+            logger.warning("Old unmatched deposit re-matching failed (non-critical): %s", e)
+
     # processed_at 설정
     now = datetime.now(timezone.utc)
     for app in applications:
@@ -407,19 +449,36 @@ async def _do_cascade_only_step(term: dict) -> str:
     except Exception as e:
         logger.warning("application processing_status reverse-sync failed: %s", e)
 
-    # 2) 미확인입금 처리상태 Sheets → DB 역동기화
+    # 2) 미확인입금 처리상태 Sheets → DB 역동기화 + 수동 매칭 정보 수집
+    # 컬럼: A입금일시, B회차, C입금액, D의뢰인, E적요, F입금자명, G처리상태, H확인한이름, I확인한강좌
+    manual_matches: list[dict] = []
     try:
-        dep_rows = read_sheet(MEMBERS_SHEET_ID, f"{UNMATCHED_DEPOSITS_TAB}!A2:H")
+        dep_rows = read_sheet(MEMBERS_SHEET_ID, f"{UNMATCHED_DEPOSITS_TAB}!A2:I")
         if dep_rows:
             dep_sync = []
             for row in dep_rows:
-                if len(row) >= 8 and (row[7] or "").strip():
+                ps = row[6] if len(row) > 6 else ""
+                if (ps or "").strip():
                     dep_sync.append({
                         "거래일시": row[0] if len(row) > 0 else "",
                         "입금액": row[2] if len(row) > 2 else "",
                         "의뢰인": row[3] if len(row) > 3 else "",
-                        "처리상태": row[7],
+                        "처리상태": ps,
                     })
+                    # 수동 매칭: 수강비/가입비/정회원비 + 확인한이름
+                    ps_clean = ps.strip()
+                    confirmed_name = (row[7] if len(row) > 7 else "").strip()
+                    confirmed_course = (row[8] if len(row) > 8 else "").strip()
+                    if ps_clean in ("수강비", "가입비", "정회원비") and confirmed_name:
+                        manual_matches.append({
+                            "거래일시": row[0] if len(row) > 0 else "",
+                            "입금액": row[2] if len(row) > 2 else "",
+                            "의뢰인": row[3] if len(row) > 3 else "",
+                            "적요": row[4] if len(row) > 4 else "",
+                            "처리상태": ps_clean,
+                            "확인한이름": confirmed_name,
+                            "확인한강좌": confirmed_course,
+                        })
             if dep_sync:
                 await db.sync_deposit_processing_status(term_id, dep_sync)
     except Exception as e:
@@ -450,6 +509,60 @@ async def _do_cascade_only_step(term: dict) -> str:
     if inferred:
         logger.info("Inferred %d applications as confirmed from processing_status", inferred)
 
+    # 4-1) 수동 매칭 처리: 미확인입금에서 관리자가 확인한이름/확인한강좌를 입력한 건
+    if manual_matches:
+        type_map = {"수강비": "수강", "가입비": "신규가입", "정회원비": "정회원"}
+        manual_applied = 0
+        for mm in manual_matches:
+            app_type = type_map.get(mm["처리상태"], "")
+            name_hint = mm["확인한이름"]
+            course_hint = mm.get("확인한강좌", "")
+
+            # 이름 또는 이름ID로 application 찾기
+            for app in applications:
+                if app.get("유형") != app_type:
+                    continue
+                if app.get("입금현황") not in ("❌미입금", "🔶확인필요"):
+                    continue
+                # 이름ID 일치 또는 이름 일치
+                if name_hint not in (app.get("이름ID", ""), app.get("이름", "")):
+                    continue
+                # 수강비인 경우 강좌명도 확인
+                if app_type == "수강" and course_hint and course_hint != app.get("과목명", ""):
+                    continue
+
+                # 매칭 성공 — application 업데이트
+                app["입금현황"] = "✅정상"
+                app["입금시간"] = mm.get("거래일시", "")
+                app["입금액"] = mm.get("입금액", "")
+                app["의뢰인"] = mm.get("의뢰인", "")
+                app["적요"] = mm.get("적요", "")
+                app["확인사유"] = f"관리자 수동 매칭 ({mm['처리상태']})"
+
+                # deposit match_status 업데이트
+                try:
+                    amount = int(mm.get("입금액", 0) or 0)
+                except (ValueError, TypeError):
+                    amount = 0
+                try:
+                    all_deps = await db.load_deposits(term_id)
+                    for dep in all_deps:
+                        if (dep.get("거래일시") == mm.get("거래일시") and
+                                dep.get("입금") == amount and
+                                dep.get("의뢰인") == mm.get("의뢰인")):
+                            await db.update_deposit_match(
+                                dep["id"], "matched", [app["이름ID"]],
+                            )
+                            break
+                except Exception:
+                    pass
+
+                manual_applied += 1
+                break  # 하나의 application에만 매칭
+
+        if manual_applied:
+            logger.info("Applied %d manual matches from 미확인입금 sheet", manual_applied)
+
     # 5) 회원 로드 + 면제 처리
     progress.content = "👥 회원 정보를 로드하고 있습니다..."
     await progress.update()
@@ -457,6 +570,46 @@ async def _do_cascade_only_step(term: dict) -> str:
     members = await load_members_from_sheet()
     exception_ids = get_exception_ids(term_id) if term_id else set()
     exempted = apply_exemptions(applications, members, exception_ids)
+
+    # 5-1) 기존 미매칭 deposit 재매칭
+    try:
+        existing_unmatched = await db.load_deposits(term_id, unmatched_only=True)
+        if existing_unmatched:
+            progress.content = f"🔄 미매칭 입금 **{len(existing_unmatched)}건** 재매칭 중..."
+            await progress.update()
+
+            from app.chains.payment import _is_preserved
+            pending_apps = [a for a in applications if not _is_preserved(a)]
+            students = applications_to_students(pending_apps)
+            all_names = all_application_names(applications)
+
+            old_txs = [{
+                "거래일시": d["거래일시"], "입금": d["입금"],
+                "의뢰인": d["의뢰인"], "적요": d["적요"],
+                "_deposit_id": d["id"],
+            } for d in existing_unmatched]
+
+            old_results, old_needs_llm = run_code_matching(
+                old_txs, students,
+                all_student_names=all_names, all_applicants=applications,
+            )
+            if old_needs_llm:
+                await run_llm_matching(old_needs_llm, students)
+
+            apply_matching_results(applications, old_results)
+
+            for r in old_results:
+                dep_id = r.get("_deposit_id")
+                if dep_id and r.get("_matched"):
+                    await db.update_deposit_match(
+                        dep_id, "matched", r.get("_matched_name_ids", []),
+                    )
+
+            re_matched = sum(1 for r in old_results if r.get("_matched"))
+            if re_matched:
+                logger.info("Re-matched %d previously unmatched deposits (cascade path)", re_matched)
+    except Exception as e:
+        logger.warning("Old deposit re-matching failed (non-critical): %s", e)
 
     # 6) processed_at 설정
     now = datetime.now(timezone.utc)
@@ -472,10 +625,18 @@ async def _do_cascade_only_step(term: dict) -> str:
         applications, members, term_id, exception_ids,
     )
 
-    # 8) 결과 저장
+    # 8) 기존 미확인입금 카운트
+    unmatched_deposits = 0
+    try:
+        remaining = await db.load_deposits(term_id, unmatched_only=True)
+        unmatched_deposits = len(remaining)
+    except Exception:
+        pass
+
+    # 9) 결과 저장
     return await _write_payment_results(
         applications, members, [], exempted,
-        grade_changes, 0, term, progress,
+        grade_changes, unmatched_deposits, term, progress,
     )
 
 
