@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 APPLICATION_HEADER = [
     "회차", "이름ID", "이름", "유형", "과목명",
     "예상금액", "입금액", "입금시간", "의뢰인", "적요",
-    "입금현황", "확인사유", "처리상태",
+    "입금현황", "확인사유", "처리상태", "메모장",
 ]
 
 def _app_to_row(app: dict) -> list[str]:
@@ -724,7 +724,7 @@ async def run_llm_matching(needs_llm: list[dict], students: list[dict]) -> list[
         model=LLM_MODEL,
         api_key=ANTHROPIC_API_KEY,
         max_tokens=1024,
-    )
+    ).with_config({"run_name": "payment_matching_llm"})
     structured_llm = llm.with_structured_output(TransactionMatch)
 
     system_prompt = """당신은 입금 적요에서 과목 정보를 추출하는 AI입니다.

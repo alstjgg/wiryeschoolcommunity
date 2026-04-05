@@ -319,11 +319,11 @@ DB SoT 모드에서 DB 쓰기 후 Sheets를 백그라운드로 동기화. `sheet
 
 | sync_type | 대상 탭 | 패턴 | 호출 시점 |
 |-----------|---------|------|----------|
-| `applications` | 신청기록 | clear A2:M + write | 입금 대조 시 신청서 upsert 후 |
+| `applications` | 신청기록 | clear A2:N + write | 입금 대조 시 신청서 upsert 후 |
 | `members` | 회원목록 | clear A2:I + write | 등급 cascade 후 |
 | `member_records` | 회원기록 | append | 등급 변경 이력 추가 시 |
 | `course_records` | 수강기록 | append | 종강 처리 시 |
-| `deposits` | 미확인입금 | clear A2:H + write | 입금 매칭 후 unmatched 건만 |
+| `deposits` | 미확인입금 | clear A2:I + write | 입금 매칭 후 unmatched 건만 |
 
 **시트 보호**: 회원관리 5탭 전체 보호 + SA 이메일만 쓰기 허용. 처리상태 컬럼만 관리자 편집 가능 (신청기록 L열, 미확인입금 G열). `values.clear`는 data validation/서식/보호 설정을 유지하므로 드롭다운은 1회 설정 후 영속.
 
@@ -336,7 +336,7 @@ DB SoT 모드에서 DB 쓰기 후 Sheets를 백그라운드로 동기화. `sheet
 | **수강기록** | History (영속) | `course_records` | 회원관리 → 수강기록 | 전체 수강 이력 |
 | **신청기록** | Working (전 회차 누적) | `applications` | 회원관리 → 신청기록 | 통합 신청서 — 수강+신규가입+정회원, 회차 필터로 열람 |
 | **미확인입금** | Working (전 회차 누적) | `deposits` (unmatched) | 회원관리 → 미확인입금 | 자동 매칭 안 된 입금 건 (9컬럼: A~F자동, G처리상태/H확인한이름/I확인한강좌 관리자편집) |
-| **출석부** | Working (회차별) | `attendance` | 회차폴더 → 출석부 | 단일 "출석부" 탭 (이름ID/이름/과목명/1~12회차/출석률) |
+| **출석부** | Working (회차별) | `attendance` | 회차폴더 → 출석부 | 단일 "출석부" 탭 (이름ID/이름/전화번호/과목명/1~12회차/출석률) |
 
 회원관리 시트(`MEMBERS_SHEET_ID`)는 5탭 구조: `회원목록`, `회원기록`, `수강기록`, `신청기록`, `미확인입금`.
 탭명 상수: `MEMBERS_TAB`, `MEMBER_RECORDS_TAB`, `COURSE_RECORDS_TAB` (`config.py`).
@@ -364,15 +364,16 @@ DB SoT 모드에서 DB 쓰기 후 Sheets를 백그라운드로 동기화. `sheet
 
 종강 시: 출석부 → 출석률 확정 → 수강기록에 행 추가 → 회원목록 재집계
 
-### 신청기록 (Working, 전 회차 누적) — 수강+가입+정회원 통합 (12컬럼)
+### 신청기록 (Working, 전 회차 누적) — 수강+가입+정회원 통합 (14컬럼, A~N)
 
-| 신청일 | 회차 | 이름ID | 이름 | 유형 | 과목명 | 예상금액 | 입금시간 | 입금자명(적요) | 입금현황 | 확인사유 | 처리상태 |
-|--------|------|--------|------|------|--------|---------|---------|-------------|---------|---------|---------|
+| 회차 | 이름ID | 이름 | 유형 | 과목명 | 예상금액 | 입금액 | 입금시간 | 의뢰인 | 적요 | 입금현황 | 확인사유 | 처리상태 | 메모장 |
+|------|--------|------|------|--------|---------|--------|---------|--------|------|---------|---------|---------|--------|
 
 - **유형**: `수강`(수강료 2만), `신규가입`(가입비 1만), `정회원`(정회원비 12만)
 - **과목명**: 수강 유형만 값 있음. 신규가입/정회원은 빈칸.
 - **입금현황**: Agent가 자동 채움 (✅정상 / 🔶확인필요 / ⚠️이름불일치 / ❌미입금 / 🔄중복 / 💎면제). DB에는 코드(confirmed 등) 저장, `db.py` 경계에서 이모지로 변환.
-- **처리상태**: 드롭다운 (등록완료/환불완료/취소완료/보류). 관리자가 Sheets에서 직접 편집. 출석부 생성 시 필터 기준 (`등록완료`만 포함).
+- **처리상태** (M열): 드롭다운 (등록완료/환불완료/취소완료/보류). 관리자가 Sheets에서 직접 편집. 출석부 생성 시 필터 기준 (`등록완료`만 포함).
+- **메모장** (N열): 관리자 자유 메모. Agent는 읽기/쓰기 안 함. 재실행 시 COALESCE로 보존.
 - **DB 전용 컬럼** (Sheets 비노출): `phone`, `address`, `processed_at`
 - **데이터 소스**:
   - 수강: 배움숲 다운로드 엑셀 (관리자가 챗봇에 업로드)
@@ -407,10 +408,10 @@ Google Sheets 파일 1개. 단일 "출석부" 탭 + 과목별 인쇄용 PDF.
 
 ```
 출석부 시트
-└── 탭: 출석부  → 이름ID(A) | 이름(B) | 과목명(C) | 1회차(D) | ... | 12회차(O) | 출석률(P)
+└── 탭: 출석부  → 이름ID(A) | 이름(B) | 전화번호(C) | 과목명(D) | 1회차(E) | ... | 12회차(P) | 출석률(Q)
 ```
 
-- **출석부 탭**: 전 과목 수강생 통합. OCR 기록 범위: D열(1회차)~O열(12회차). 출석="O", 결석="". 출석률(P열)은 종강 처리 시 `graduation.py`가 채움 (생성 시 빈칸).
+- **출석부 탭**: 전 과목 수강생 통합. OCR 기록 범위: E열(1회차)~P열(12회차). 출석="O", 결석="". 출석률(Q열)은 종강 처리 시 `graduation.py`가 채움 (생성 시 빈칸). 전화번호는 members 테이블에서 이름ID 기준 조인.
 - **PDF**: 과목별 A4 가로 PDF. NanumGothic 12pt, 페이지 분할. Drive 출석부 폴더에 업로드. 페이지번호는 `onPage` 캔버스 콜백으로 렌더링 (빈 페이지 방지).
 - 신청기록의 `처리상태`가 `등록완료`인 수강자만 포함
 
@@ -846,10 +847,38 @@ MEMBERS_FOLDER_ID=1grbIQBkufaD5zo-5RodC08uZsPHMvijx
 - 입금내역 건너뛰기 — DB에 기존 입금 데이터 있으면 `⏭ 건너뛰기` Action 버튼 제공. 3곳에서 표시: `_skip_applicants_step`, `_do_applicants_step` 완료 후, `awaiting_payment` 진입 시
 - Cascade-only 플로우 (`_do_cascade_only_step`) — 신청자+입금내역 양쪽 모두 건너뛰기 시 실행. Sheets 처리상태 역동기화 (신청기록 + 미확인입금) → 처리상태=등록완료 건의 입금현황을 ✅정상으로 추론 → `apply_grade_cascade()` 실행 → DB/Sheets 반영. 관리자가 수동으로 처리상태 입력 후 등급 전환만 재실행하는 용도. 기존 미확인입금 카운트를 DB에서 로드하여 결과 요약 + 시트 링크에 반영.
 
-**📋 백로그:**
-- **비즈니스 컨텍스트 최적화**: selective context injection (tool별 관련 컨텍스트만 주입), 컨텍스트 ~100K 토큰 초과 시 RAG 도입
+**✅ 관리자 긴급 요청 3건:**
+- 신청기록 메모장 컬럼 — N열 추가 (14컬럼). DB `admin_memo TEXT` 컬럼. COALESCE 보존 (재실행 시 기존 메모 유지). Sheets 역동기화 시 메모장도 함께 보존.
+- 출석부 전화번호 컬럼 — 이름(B) 옆에 전화번호(C) 추가. members 테이블에서 이름ID 기준 조인. 과목명 C→D, 회차 D:O→E:P, 출석률 P→Q 인덱스 시프트. `ocr.py`, `graduation.py` 3개 함수 동시 수정.
+- 출석부 중복 파일 삭제 — `delete_files_by_name()` 추가 (`google_drive.py`). 출석부 시트 생성 전 + PDF 업로드 전 동명 파일 삭제. 관리자 별도 파일은 보존.
+- 회원기록 관련회차 serial 변환 수정 — "2026-2"가 날짜로 해석되는 문제. apostrophe prefix 추가 (`sheets_sync.py`).
+
+### Phase C — LangChain 생태계 심화 (계획)
+
+Phase A/B 완료 후, LangChain 생태계를 활용한 관측성·프롬프트·확장성 개선. 다조직 확장 사업 대비.
+
+**C-1. LangSmith 도입** (우선순위 1 — 즉시 착수)
+- Agent의 tool selection, reasoning 과정 시각적 추적
+- Q&A 등 느린 구간 병목 측정 (체감 → 데이터 기반)
+- E2E 테스트를 dataset + evaluation으로 체계화
+- 개인정보 마스킹 방안 확인 필요 (학생 이름, 입금 내역)
+
+**C-2. System Prompt 고도화 + Prompt Caching** (우선순위 2)
+- 정적/동적 system prompt 분리: 공통 비즈니스 컨텍스트(정적, cached) + 파이프라인별 특화(동적)
+- Anthropic prompt caching으로 비용/지연 절감
+- Structured output 확대 적용
+
+**C-3~5. 백로그** (다조직 확장 확정 시 착수)
+- Dynamic Tools: Starter 버튼 기반 tool 필터링, 다조직 tool set 관리
+- Middleware: Sheets sync + logging을 cross-cutting concern으로 일반화
+- 다조직 추상화: 조직별 config/tool/prompt 프로필 기반 관리
+
+상세 리서치: `docs/LANGCHAIN_MIGRATION_PROPOSAL.md`
+
+**📋 기능 백로그:**
 - 보고서 생성: DB SQL 집계 → PDF (placeholder 버튼 배치 완료)
 - 계획서 검토: PDF 파싱 → 오탈자/말투 수정 → 배움숲 멘트 생성 (placeholder 배치 완료)
+- 비즈니스 컨텍스트 최적화: selective context injection (tool별 관련 컨텍스트만 주입), 컨텍스트 ~100K 토큰 초과 시 RAG 도입
 - 첫 화면 로고+타이틀 PNG 이미지 제작 (`public/logo_light.png` → CSS 워크어라운드 제거)
 - Accent 색상(#2B7A6E 틸) 적용 위치 결정 (현재 미사용)
 

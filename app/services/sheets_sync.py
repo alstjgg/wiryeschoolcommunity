@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 _APP_HEADER = [
     "회차", "이름ID", "이름", "유형", "과목명",
     "예상금액", "입금액", "입금시간", "의뢰인", "적요",
-    "입금현황", "확인사유", "처리상태",
+    "입금현황", "확인사유", "처리상태", "메모장",
 ]
 
 _MEMBERS_HEADER = [
@@ -42,7 +42,7 @@ _DEPOSITS_HEADER = [
 
 
 def _sync_applications(applications: list[dict]) -> None:
-    """신청기록 탭 전체 덮어쓰기 (clear A2:M + write A2)."""
+    """신청기록 탭 전체 덮어쓰기 (clear A2:N + write A2)."""
     rows = [
         [str(a.get(col, "") or "") for col in _APP_HEADER]
         for a in applications
@@ -50,7 +50,7 @@ def _sync_applications(applications: list[dict]) -> None:
     if not rows:
         logger.warning("_sync_applications: no rows to write, skipping clear+write")
         return
-    clear_range(MEMBERS_SHEET_ID, f"{APPLICATIONS_TAB}!A2:M")
+    clear_range(MEMBERS_SHEET_ID, f"{APPLICATIONS_TAB}!A2:N")
     write_sheet(MEMBERS_SHEET_ID, f"{APPLICATIONS_TAB}!A2", rows)
 
 
@@ -93,6 +93,9 @@ def _sync_member_records(records: list[dict]) -> None:
                 if len(val_str) > 10:
                     val_str = val_str[:10]
                 row.append(f"'{val_str}")
+            elif col == "관련회차" and val:
+                # "2026-2" → "'2026-2" — Sheets가 날짜로 해석하는 것 방지
+                row.append(f"'{val}")
             else:
                 row.append(str(val))
         rows.append(row)

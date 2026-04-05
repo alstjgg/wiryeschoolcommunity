@@ -102,20 +102,26 @@ async def _do_applicants_step(file_path: str, term: dict) -> str | None:
     if USE_DB_SOT:
         try:
             from app.services.google_sheets import read_sheet
-            sheet_rows = read_sheet(MEMBERS_SHEET_ID, f"{APPLICATIONS_TAB}!A2:M")
+            sheet_rows = read_sheet(MEMBERS_SHEET_ID, f"{APPLICATIONS_TAB}!A2:N")
             if sheet_rows:
                 sheets_ps_map: dict[tuple, str] = {}
+                sheets_memo_map: dict[tuple, str] = {}
                 for row in sheet_rows:
                     if len(row) < 5 or row[0] != term_id:
                         continue
+                    key = (row[1], row[3], row[4] if len(row) > 4 else "")
                     ps = row[12] if len(row) > 12 else ""
                     if (ps or "").strip():
-                        key = (row[1], row[3], row[4] if len(row) > 4 else "")
                         sheets_ps_map[key] = ps.strip()
+                    memo = row[13] if len(row) > 13 else ""
+                    if (memo or "").strip():
+                        sheets_memo_map[key] = memo.strip()
                 for app in applications:
                     key = (app["이름ID"], app["유형"], app.get("과목명", ""))
                     if key in sheets_ps_map and not app.get("처리상태"):
                         app["처리상태"] = sheets_ps_map[key]
+                    if key in sheets_memo_map and not app.get("메모장"):
+                        app["메모장"] = sheets_memo_map[key]
         except Exception as e:
             logger.warning("Sheets 처리상태 read failed (non-critical): %s", e)
 
@@ -426,7 +432,7 @@ async def _do_cascade_only_step(term: dict) -> str:
 
     # 1) 신청기록 처리상태 Sheets → DB 역동기화
     try:
-        sheet_rows = read_sheet(MEMBERS_SHEET_ID, f"{APPLICATIONS_TAB}!A2:M")
+        sheet_rows = read_sheet(MEMBERS_SHEET_ID, f"{APPLICATIONS_TAB}!A2:N")
         if sheet_rows:
             sync_rows = []
             for row in sheet_rows:

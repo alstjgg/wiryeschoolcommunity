@@ -75,7 +75,7 @@ def _load_registered_from_sheets(
         sheet_id = applications_sheet_id
         tab = "신청서"
 
-    rows = read_sheet(sheet_id, f"{tab}!A1:M5000")
+    rows = read_sheet(sheet_id, f"{tab}!A1:N5000")
     if not rows or len(rows) < 2:
         return []
     header = rows[0]
@@ -113,7 +113,7 @@ async def _load_registered_from_db(
         sheet_id = applications_sheet_id
         tab = "신청서"
 
-    rows = read_sheet(sheet_id, f"{tab}!A1:M5000")
+    rows = read_sheet(sheet_id, f"{tab}!A1:N5000")
     status_map: dict[tuple, str] = {}
     if rows and len(rows) >= 2:
         header = rows[0]
@@ -143,14 +143,29 @@ async def load_registered_students(
 
     DB 모드: DB에서 applications 읽기 + Sheets에서 처리상태 머지.
     Sheets 모드: Sheets에서 전체 읽기.
+    전화번호는 members 테이블에서 이름ID 기준으로 조인.
     """
     if USE_DB_SOT and term_id:
         try:
-            return await _load_registered_from_db(term_id, applications_sheet_id)
+            result = await _load_registered_from_db(term_id, applications_sheet_id)
         except Exception as e:
             logger.error("DB read failed, falling back to Sheets: %s", e)
+            result = _load_registered_from_sheets(applications_sheet_id, term_id=term_id)
+    else:
+        result = _load_registered_from_sheets(applications_sheet_id, term_id=term_id)
 
-    return _load_registered_from_sheets(applications_sheet_id, term_id=term_id)
+    # members에서 전화번호 조인
+    try:
+        from app.services import db
+        members = await db.load_members()
+        phone_map = {m["이름ID"]: m["전화번호"] for m in members}
+        for student in result:
+            if not student.get("전화번호"):
+                student["전화번호"] = phone_map.get(student.get("이름ID", ""), "")
+    except Exception as e:
+        logger.warning("전화번호 조인 실패 (non-critical): %s", e)
+
+    return result
 
 
 # ============================================= 출석부 시트 생성 =====
@@ -196,6 +211,10 @@ def create_attendance_spreadsheet(
         f"https://drive.google.com/drive/folders/{attendance_folder_id}"
     )
 
+    # 기존 동명 파일 삭제
+    from app.services.google_drive import delete_files_by_name
+    delete_files_by_name(attendance_folder_id, "출석부")
+
     # 출석부 Sheets 생성
     drive = get_drive_service()
     sheets_svc = get_sheets_service()
@@ -231,9 +250,9 @@ def create_attendance_spreadsheet(
             ).execute()
             break
 
-    # 데이터 입력: 이름ID | 이름 | 과목명 | 1회차~12회차 | 출석률
+    # 데이터 입력: 이름ID | 이름 | 전화번호 | 과목명 | 1회차~12회차 | 출석률
     header = (
-        ["이름ID", "이름", "과목명"]
+        ["이름ID", "이름", "전화번호", "과목명"]
         + [f"{i}회차" for i in range(1, MAX_SESSIONS + 1)]
         + ["출석률"]
     )
@@ -243,6 +262,7 @@ def create_attendance_spreadsheet(
             row = [
                 s.get("이름ID", ""),
                 s.get("이름", ""),
+                s.get("전화번호", ""),
                 course_name,
             ] + [""] * MAX_SESSIONS + [""]
             all_rows.append(row)
@@ -370,11 +390,16 @@ def upload_pdf_to_drive(
     """
     from googleapiclient.http import MediaIoBaseUpload
 
+    from app.services.google_drive import delete_files_by_name
+
     drive = get_drive_service()
     safe_course = (
         course_name.replace("/", "_").replace("(", "").replace(")", "")
     )
     filename = f"{term_id}_{safe_course}_출석부.pdf"
+
+    # 기존 동명 PDF 삭제
+    delete_files_by_name(folder_id, filename)
 
     file_metadata = {
         "name": filename,
