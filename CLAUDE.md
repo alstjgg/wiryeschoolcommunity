@@ -373,7 +373,7 @@ DB SoT 모드에서 DB 쓰기 후 Sheets를 백그라운드로 동기화. `sheet
 - **과목명**: 수강 유형만 값 있음. 신규가입/정회원은 빈칸.
 - **입금현황**: Agent가 자동 채움 (✅정상 / 🔶확인필요 / ⚠️이름불일치 / ❌미입금 / 🔄중복 / 💎면제). DB에는 코드(confirmed 등) 저장, `db.py` 경계에서 이모지로 변환.
 - **처리상태** (M열): 드롭다운 (등록완료/환불완료/취소완료/보류). 관리자가 Sheets에서 직접 편집. 출석부 생성 시 필터 기준 (`등록완료`만 포함).
-- **메모장** (N열): 관리자 자유 메모. Agent는 읽기/쓰기 안 함. 재실행 시 COALESCE로 보존.
+- **메모장** (N열): 관리자 자유 메모. Agent는 읽기/쓰기 안 함. 재실행 시 처리상태와 동일한 패턴으로 보존: `merge_with_existing_applications()`에서 무조건 복사 + DB COALESCE + Sheets→DB 역동기화(`sync_application_processing_status`).
 - **DB 전용 컬럼** (Sheets 비노출): `phone`, `address`, `processed_at`
 - **데이터 소스**:
   - 수강: 배움숲 다운로드 엑셀 (관리자가 챗봇에 업로드)
@@ -856,6 +856,7 @@ MEMBERS_FOLDER_ID=1grbIQBkufaD5zo-5RodC08uZsPHMvijx
 **✅ 출석부 생성 안정화:**
 - 출석부 전화번호 앞자리 0 보존 — C열 plain text 서식(`repeatCell`) + apostrophe prefix. `setBasicFilter`로 헤더 필터 자동 설정.
 - 출석부 생성 스트리밍 끊김 수정 — `create_attendance_spreadsheet`, `generate_attendance_pdf`, `upload_pdf_to_drive`가 동기 함수여서 이벤트 루프 차단 → WebSocket 끊김 + "계속" 버튼 현상. `asyncio.to_thread()`로 전환하여 이벤트 루프 해방. PDF 진행 표시를 매 과목마다 업데이트.
+- 메모장 재실행 시 삭제 수정 — `merge_with_existing_applications()`에서 메모장을 처리상태와 동일하게 무조건 보존. Sheets→DB 역동기화(`sync_application_processing_status`)에도 메모장 포함.
 
 ### Phase C — LangChain 생태계 심화 (계획)
 

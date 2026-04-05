@@ -379,7 +379,7 @@ async def merge_with_existing_applications(
     - 처리상태가 확정/보류(등록완료/환불완료/취소완료/보류) → 결제 필드 보존
     - 입금현황이 ✅정상 또는 💎면제 → 결제 필드 보존
     - 그 외 → 결제 필드 리셋(❌미입금)하여 재매칭 대상으로 전환
-    - 처리상태는 위 조건과 무관하게 항상 보존 (관리자 직접 편집 값)
+    - 처리상태/메모장은 위 조건과 무관하게 항상 보존 (관리자 직접 편집 값)
     """
     from app.services import db
 
@@ -406,9 +406,12 @@ async def merge_with_existing_applications(
 
         prev_ps = (prev.get("처리상태") or "").strip()
 
-        # 처리상태는 항상 보존
+        # 처리상태/메모장은 항상 보존 (관리자 직접 편집 값)
         if prev_ps:
             app["처리상태"] = prev_ps
+        prev_memo = (prev.get("메모장") or "").strip()
+        if prev_memo:
+            app["메모장"] = prev_memo
 
         # 보존 대상 → 결제 필드 전체 보존
         if _is_preserved(prev):

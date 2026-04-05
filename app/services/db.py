@@ -492,10 +492,10 @@ async def sync_deposit_processing_status(term_id: str, rows: list[dict]) -> int:
 
 
 async def sync_application_processing_status(term_id: str, rows: list[dict]) -> int:
-    """Sheets 신청기록의 처리상태를 DB에 역동기화.
+    """Sheets 신청기록의 처리상태+메모장을 DB에 역동기화.
 
-    각 row는 {"이름ID": ..., "유형": ..., "과목명": ..., "처리상태": ...} 형태.
-    (term_id, name_id, type, course_name) 복합키로 매칭하여 processing_status 업데이트.
+    각 row는 {"이름ID": ..., "유형": ..., "과목명": ..., "처리상태": ..., "메모장": ...} 형태.
+    (term_id, name_id, type, course_name) 복합키로 매칭하여 processing_status, admin_memo 업데이트.
     Returns: 업데이트된 행 수.
     """
     if not rows:
@@ -505,25 +505,42 @@ async def sync_application_processing_status(term_id: str, rows: list[dict]) -> 
     async with pool.acquire() as conn:
         for r in rows:
             ps = (r.get("처리상태") or "").strip()
-            if not ps:
+            memo = (r.get("메모장") or "").strip()
+            if not ps and not memo:
                 continue
-            result = await conn.execute(
-                """
-                UPDATE applications SET processing_status = $1
-                WHERE term_id = $2
-                  AND name_id = $3
-                  AND type = $4
-                  AND COALESCE(course_name, '') = $5
-                  AND (processing_status IS NULL OR processing_status = '' OR processing_status != $1)
-                """,
-                ps,
-                term_id,
-                r.get("이름ID", ""),
-                r.get("유형", ""),
-                r.get("과목명", "") or "",
-            )
-            if result and result.split()[-1] != "0":
-                updated += 1
+            name_id = r.get("이름ID", "")
+            app_type = r.get("유형", "")
+            course = r.get("과목명", "") or ""
+
+            # 처리상태 업데이트
+            if ps:
+                result = await conn.execute(
+                    """
+                    UPDATE applications SET processing_status = $1
+                    WHERE term_id = $2
+                      AND name_id = $3
+                      AND type = $4
+                      AND COALESCE(course_name, '') = $5
+                      AND (processing_status IS NULL OR processing_status = '' OR processing_status != $1)
+                    """,
+                    ps, term_id, name_id, app_type, course,
+                )
+                if result and result.split()[-1] != "0":
+                    updated += 1
+
+            # 메모장 업데이트
+            if memo:
+                await conn.execute(
+                    """
+                    UPDATE applications SET admin_memo = $1
+                    WHERE term_id = $2
+                      AND name_id = $3
+                      AND type = $4
+                      AND COALESCE(course_name, '') = $5
+                      AND (admin_memo IS NULL OR admin_memo = '' OR admin_memo != $1)
+                    """,
+                    memo, term_id, name_id, app_type, course,
+                )
     return updated
 
 

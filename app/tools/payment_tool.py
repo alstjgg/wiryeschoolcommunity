@@ -442,12 +442,14 @@ async def _do_cascade_only_step(term: dict) -> str:
                 if row[0] != term_id:
                     continue
                 ps = row[12] if len(row) > 12 else ""
-                if (ps or "").strip():
+                memo = row[13] if len(row) > 13 else ""
+                if (ps or "").strip() or (memo or "").strip():
                     sync_rows.append({
                         "이름ID": row[1],
                         "유형": row[3],
                         "과목명": row[4] if len(row) > 4 else "",
-                        "처리상태": ps.strip(),
+                        "처리상태": (ps or "").strip(),
+                        "메모장": (memo or "").strip(),
                     })
             if sync_rows:
                 updated = await db.sync_application_processing_status(term_id, sync_rows)
