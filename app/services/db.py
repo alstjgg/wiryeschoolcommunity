@@ -468,7 +468,8 @@ async def sync_deposit_processing_status(term_id: str, rows: list[dict]) -> int:
                 continue
             amount = 0
             try:
-                amount = int(r.get("입금액", 0) or 0)
+                raw = r.get("입금액")
+                amount = int(float(raw)) if raw is not None and raw != "" else 0
             except (ValueError, TypeError):
                 pass
             result = await conn.execute(

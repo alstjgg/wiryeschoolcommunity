@@ -64,8 +64,10 @@ def _sync_applications(applications: list[dict]) -> None:
             memo = str(row[13]) if len(row) > 13 else ""
             if (ps or "").strip() or (memo or "").strip():
                 sheets_admin[key] = (ps.strip(), memo.strip())
-    except Exception:
-        pass
+        if sheets_admin:
+            logger.info("_sync_applications: preserved %d admin-edited rows", len(sheets_admin))
+    except Exception as e:
+        logger.warning("_sync_applications: failed to read existing admin data: %s", e)
 
     # in-memory 데이터에 Sheets 편집값이 없으면 복원
     for app in applications:
@@ -144,51 +146,80 @@ def _sync_course_records(records: list[dict]) -> None:
     append_sheet(MEMBERS_SHEET_ID, f"{COURSE_RECORDS_TAB}!A1", rows)
 
 
+def _deposit_key(tx_time, amount, payer) -> tuple:
+    """미확인입금 행 매칭용 정규화 키.
+
+    Sheets API는 숫자를 int/float, 날짜를 serial로 반환할 수 있으므로
+    양쪽 모두 동일한 정규화를 거쳐 비교해야 한다.
+    - 입금액: int로 변환 (float→int 포함)
+    - 거래일시/의뢰인: 문자열 strip
+    """
+    try:
+        norm_amount = int(float(amount))
+    except (ValueError, TypeError):
+        norm_amount = str(amount).strip()
+    return (str(tx_time).strip(), norm_amount, str(payer).strip())
+
+
 def _sync_deposits(deposits: list[dict]) -> None:
     """미확인입금 탭 전체 덮어쓰기 (clear A2:I + write A2).
 
     9컬럼: 입금일시, 회차, 입금액, 의뢰인, 적요, 입금자명, 처리상태, 확인한이름, 확인한강좌
     관리자가 편집하는 G/H/I열은 clear 전에 읽어서 보존.
+    거래일시는 apostrophe prefix로 Sheets의 날짜 자동변환을 방지.
     """
     if not deposits:
         logger.warning("_sync_deposits: no rows to write, skipping clear+write")
         return
 
     # 관리자가 편집한 G/H/I열(처리상태, 확인한이름, 확인한강좌) 보존
-    # deposit 키 = (입금일시, 입금액, 의뢰인) — 전부 str() 변환 (Sheets API가
-    # 숫자를 int/float로 반환하므로 타입 불일치로 key lookup 실패 방지)
+    # primary key = (거래일시, 입금액, 의뢰인), fallback key = (입금액, 의뢰인)
+    # fallback은 거래일시가 Sheets에서 date serial로 변환된 경우를 위한 전환기 대책
     from app.services.google_sheets import read_sheet
     admin_data: dict[tuple, tuple] = {}
+    admin_fallback: dict[tuple, tuple] = {}
     try:
         existing = read_sheet(MEMBERS_SHEET_ID, f"{UNMATCHED_DEPOSITS_TAB}!A2:I")
         for row in (existing or []):
             if len(row) >= 3:
-                key = (str(row[0]), str(row[2]), str(row[3]) if len(row) > 3 else "")
-                ps = str(row[6]) if len(row) > 6 else ""
-                cn = str(row[7]) if len(row) > 7 else ""
-                cc = str(row[8]) if len(row) > 8 else ""
-                if (ps or "").strip() or (cn or "").strip() or (cc or "").strip():
-                    admin_data[key] = (ps.strip(), cn.strip(), cc.strip())
-    except Exception:
-        pass
+                row_amount = row[2] if len(row) > 2 else ""
+                row_payer = row[3] if len(row) > 3 else ""
+                key = _deposit_key(row[0], row_amount, row_payer)
+                ps = str(row[6]).strip() if len(row) > 6 else ""
+                cn = str(row[7]).strip() if len(row) > 7 else ""
+                cc = str(row[8]).strip() if len(row) > 8 else ""
+                if ps or cn or cc:
+                    admin_vals = (ps, cn, cc)
+                    admin_data[key] = admin_vals
+                    # fallback: (입금액, 의뢰인) — 거래일시가 serial로 변환된 경우 대비
+                    fb_key = _deposit_key("", row_amount, row_payer)
+                    admin_fallback[fb_key] = admin_vals
+        if admin_data:
+            logger.info("_sync_deposits: preserved %d admin-edited rows", len(admin_data))
+    except Exception as e:
+        logger.warning("_sync_deposits: failed to read existing admin data: %s", e)
 
     rows = []
     for d in deposits:
         tx_time = str(d.get("거래일시") if d.get("거래일시") is not None else "")
-        # 입금액은 0이 유효값이므로 falsy 체크하지 않음
         raw_amount = d.get("입금") if d.get("입금") is not None else d.get("amount", "")
         amount = str(raw_amount) if raw_amount is not None else ""
         payer = str(d.get("의뢰인") or d.get("입금자명") or "")
 
-        # 관리자 편집값 복원
-        key = (tx_time, amount, payer)
-        saved = admin_data.get(key, ("", "", ""))
+        # 관리자 편집값 복원 (정규화된 키로 매칭, fallback 포함)
+        key = _deposit_key(tx_time, raw_amount, payer)
+        saved = admin_data.get(key)
+        if not saved:
+            # fallback: 거래일시가 date serial로 변환된 기존 데이터와 매칭
+            fb_key = _deposit_key("", raw_amount, payer)
+            saved = admin_fallback.get(fb_key, ("", "", ""))
         ps = saved[0] or str(d.get("처리상태", "") or "")
         cn = saved[1]  # 확인한이름
         cc = saved[2]  # 확인한강좌
 
         rows.append([
-            tx_time,
+            # apostrophe prefix로 Sheets 날짜 자동변환 방지
+            f"'{tx_time}" if tx_time else "",
             str(d.get("term_id", "") or d.get("회차", "") or ""),
             amount,
             payer,
