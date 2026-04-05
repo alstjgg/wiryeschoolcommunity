@@ -231,12 +231,13 @@ def create_attendance_spreadsheet(
     spreadsheet_url = file.get("webViewLink", "")
 
     # "출석부" 탭 생성
-    sheets_svc.spreadsheets().batchUpdate(
+    add_resp = sheets_svc.spreadsheets().batchUpdate(
         spreadsheetId=spreadsheet_id,
         body={"requests": [
             {"addSheet": {"properties": {"title": "출석부", "index": 0}}}
         ]},
     ).execute()
+    att_sheet_id = add_resp["replies"][0]["addSheet"]["properties"]["sheetId"]
 
     # 기본 Sheet1 삭제
     meta = sheets_svc.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
@@ -259,14 +260,65 @@ def create_attendance_spreadsheet(
     all_rows = [header]
     for course_name in course_names:
         for s in courses[course_name]:
+            phone = s.get("전화번호", "")
+            # apostrophe prefix로 Sheets의 숫자 자동변환 방지 (앞자리 0 보존)
+            if phone:
+                phone = f"'{phone}"
             row = [
                 s.get("이름ID", ""),
                 s.get("이름", ""),
-                s.get("전화번호", ""),
+                phone,
                 course_name,
             ] + [""] * MAX_SESSIONS + [""]
             all_rows.append(row)
+
+    # C열 plain text 서식 설정 (데이터 쓰기 전) + 헤더 필터
+    total_cols = len(header)  # 17 (A~Q)
+    fmt_requests = [
+        # C열 전체를 plain text로 설정 (전화번호 앞자리 0 보존)
+        {
+            "repeatCell": {
+                "range": {
+                    "sheetId": att_sheet_id,
+                    "startColumnIndex": 2,
+                    "endColumnIndex": 3,
+                },
+                "cell": {
+                    "userEnteredFormat": {
+                        "numberFormat": {"type": "TEXT"},
+                    }
+                },
+                "fields": "userEnteredFormat.numberFormat",
+            }
+        },
+    ]
+    sheets_svc.spreadsheets().batchUpdate(
+        spreadsheetId=spreadsheet_id,
+        body={"requests": fmt_requests},
+    ).execute()
+
+    # 데이터 쓰기 (C열 format 설정 후)
     write_sheet(spreadsheet_id, "출석부!A1", all_rows)
+
+    # 헤더 필터 설정
+    sheets_svc.spreadsheets().batchUpdate(
+        spreadsheetId=spreadsheet_id,
+        body={"requests": [
+            {
+                "setBasicFilter": {
+                    "filter": {
+                        "range": {
+                            "sheetId": att_sheet_id,
+                            "startRowIndex": 0,
+                            "endRowIndex": len(all_rows),
+                            "startColumnIndex": 0,
+                            "endColumnIndex": total_cols,
+                        }
+                    }
+                }
+            },
+        ]},
+    ).execute()
 
     return {
         "spreadsheet_id": spreadsheet_id,
