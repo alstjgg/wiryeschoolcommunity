@@ -857,6 +857,7 @@ MEMBERS_FOLDER_ID=1grbIQBkufaD5zo-5RodC08uZsPHMvijx
 - 출석부 전화번호 앞자리 0 보존 — C열 plain text 서식(`repeatCell`) + apostrophe prefix. `setBasicFilter`로 헤더 필터 자동 설정.
 - 출석부 생성 스트리밍 끊김 수정 — `create_attendance_spreadsheet`, `generate_attendance_pdf`, `upload_pdf_to_drive`가 동기 함수여서 이벤트 루프 차단 → WebSocket 끊김 + "계속" 버튼 현상. `asyncio.to_thread()`로 전환하여 이벤트 루프 해방. PDF 진행 표시를 매 과목마다 업데이트.
 - 메모장 재실행 시 삭제 수정 — `merge_with_existing_applications()`에서 메모장을 처리상태와 동일하게 무조건 보존. Sheets→DB 역동기화(`sync_application_processing_status`)에도 메모장 포함.
+- Sheets 관리자 편집 컬럼 보존 수정 — `_sync_deposits`/`_sync_applications`의 clear+write 시 관리자 편집값(처리상태/메모장/확인한이름/확인한강좌)이 삭제되던 근본 원인: Sheets API가 숫자를 int로 반환하여 str 키와 불일치 → key lookup 항상 실패. 모든 Sheets 읽기에 `str()` 변환 적용. `_sync_applications`에도 처리상태/메모장 Sheets 읽기+복원 안전망 추가.
 
 ### Phase C — LangChain 생태계 심화 (계획)
 

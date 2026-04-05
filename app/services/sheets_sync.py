@@ -42,14 +42,45 @@ _DEPOSITS_HEADER = [
 
 
 def _sync_applications(applications: list[dict]) -> None:
-    """신청기록 탭 전체 덮어쓰기 (clear A2:N + write A2)."""
+    """신청기록 탭 전체 덮어쓰기 (clear A2:N + write A2).
+
+    관리자가 Sheets에서 직접 편집하는 처리상태(M열)/메모장(N열)은
+    clear 전에 읽어서 in-memory 데이터에 없는 경우 복원.
+    """
+    if not applications:
+        logger.warning("_sync_applications: no rows to write, skipping clear+write")
+        return
+
+    # 처리상태/메모장을 Sheets에서 먼저 읽어 보존 (key = 이름ID, 유형, 과목명)
+    from app.services.google_sheets import read_sheet
+    sheets_admin: dict[tuple, tuple] = {}  # key → (처리상태, 메모장)
+    try:
+        existing = read_sheet(MEMBERS_SHEET_ID, f"{APPLICATIONS_TAB}!A2:N")
+        for row in (existing or []):
+            if len(row) < 5:
+                continue
+            key = (str(row[1]), str(row[3]), str(row[4]) if len(row) > 4 else "")
+            ps = str(row[12]) if len(row) > 12 else ""
+            memo = str(row[13]) if len(row) > 13 else ""
+            if (ps or "").strip() or (memo or "").strip():
+                sheets_admin[key] = (ps.strip(), memo.strip())
+    except Exception:
+        pass
+
+    # in-memory 데이터에 Sheets 편집값이 없으면 복원
+    for app in applications:
+        key = (app.get("이름ID", ""), app.get("유형", ""), app.get("과목명", ""))
+        saved = sheets_admin.get(key)
+        if saved:
+            if not (app.get("처리상태") or "").strip() and saved[0]:
+                app["처리상태"] = saved[0]
+            if not (app.get("메모장") or "").strip() and saved[1]:
+                app["메모장"] = saved[1]
+
     rows = [
         [str(a.get(col, "") or "") for col in _APP_HEADER]
         for a in applications
     ]
-    if not rows:
-        logger.warning("_sync_applications: no rows to write, skipping clear+write")
-        return
     clear_range(MEMBERS_SHEET_ID, f"{APPLICATIONS_TAB}!A2:N")
     write_sheet(MEMBERS_SHEET_ID, f"{APPLICATIONS_TAB}!A2", rows)
 
@@ -124,17 +155,18 @@ def _sync_deposits(deposits: list[dict]) -> None:
         return
 
     # 관리자가 편집한 G/H/I열(처리상태, 확인한이름, 확인한강좌) 보존
-    # deposit 키 = (입금일시, 입금액, 의뢰인)
+    # deposit 키 = (입금일시, 입금액, 의뢰인) — 전부 str() 변환 (Sheets API가
+    # 숫자를 int/float로 반환하므로 타입 불일치로 key lookup 실패 방지)
     from app.services.google_sheets import read_sheet
     admin_data: dict[tuple, tuple] = {}
     try:
         existing = read_sheet(MEMBERS_SHEET_ID, f"{UNMATCHED_DEPOSITS_TAB}!A2:I")
         for row in (existing or []):
             if len(row) >= 3:
-                key = (row[0], row[2], row[3] if len(row) > 3 else "")
-                ps = row[6] if len(row) > 6 else ""
-                cn = row[7] if len(row) > 7 else ""
-                cc = row[8] if len(row) > 8 else ""
+                key = (str(row[0]), str(row[2]), str(row[3]) if len(row) > 3 else "")
+                ps = str(row[6]) if len(row) > 6 else ""
+                cn = str(row[7]) if len(row) > 7 else ""
+                cc = str(row[8]) if len(row) > 8 else ""
                 if (ps or "").strip() or (cn or "").strip() or (cc or "").strip():
                     admin_data[key] = (ps.strip(), cn.strip(), cc.strip())
     except Exception:
@@ -142,9 +174,11 @@ def _sync_deposits(deposits: list[dict]) -> None:
 
     rows = []
     for d in deposits:
-        tx_time = str(d.get("거래일시", "") or "")
-        amount = str(d.get("입금", "") or d.get("amount", "") or "")
-        payer = str(d.get("의뢰인", "") or d.get("입금자명", "") or "")
+        tx_time = str(d.get("거래일시") if d.get("거래일시") is not None else "")
+        # 입금액은 0이 유효값이므로 falsy 체크하지 않음
+        raw_amount = d.get("입금") if d.get("입금") is not None else d.get("amount", "")
+        amount = str(raw_amount) if raw_amount is not None else ""
+        payer = str(d.get("의뢰인") or d.get("입금자명") or "")
 
         # 관리자 편집값 복원
         key = (tx_time, amount, payer)

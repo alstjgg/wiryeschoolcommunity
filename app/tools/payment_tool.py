@@ -201,13 +201,13 @@ async def _do_payment_step(file_path: str, term: dict) -> str:
             if sheet_rows:
                 sync_rows = []
                 for row in sheet_rows:
-                    ps = row[6] if len(row) > 6 else ""
+                    ps = str(row[6]) if len(row) > 6 else ""
                     if (ps or "").strip():
                         sync_rows.append({
-                            "거래일시": row[0] if len(row) > 0 else "",
-                            "입금액": row[2] if len(row) > 2 else "",
-                            "의뢰인": row[3] if len(row) > 3 else "",
-                            "처리상태": ps,
+                            "거래일시": str(row[0]) if len(row) > 0 else "",
+                            "입금액": str(row[2]) if len(row) > 2 else "",
+                            "의뢰인": str(row[3]) if len(row) > 3 else "",
+                            "처리상태": ps.strip(),
                         })
                 if sync_rows:
                     await db.sync_deposit_processing_status(term_id, sync_rows)
@@ -465,24 +465,24 @@ async def _do_cascade_only_step(term: dict) -> str:
         if dep_rows:
             dep_sync = []
             for row in dep_rows:
-                ps = row[6] if len(row) > 6 else ""
+                ps = str(row[6]) if len(row) > 6 else ""
                 if (ps or "").strip():
                     dep_sync.append({
-                        "거래일시": row[0] if len(row) > 0 else "",
-                        "입금액": row[2] if len(row) > 2 else "",
-                        "의뢰인": row[3] if len(row) > 3 else "",
-                        "처리상태": ps,
+                        "거래일시": str(row[0]) if len(row) > 0 else "",
+                        "입금액": str(row[2]) if len(row) > 2 else "",
+                        "의뢰인": str(row[3]) if len(row) > 3 else "",
+                        "처리상태": ps.strip(),
                     })
                     # 수동 매칭: 수강비/가입비/정회원비 + 확인한이름
                     ps_clean = ps.strip()
-                    confirmed_name = (row[7] if len(row) > 7 else "").strip()
-                    confirmed_course = (row[8] if len(row) > 8 else "").strip()
+                    confirmed_name = str(row[7]).strip() if len(row) > 7 else ""
+                    confirmed_course = str(row[8]).strip() if len(row) > 8 else ""
                     if ps_clean in ("수강비", "가입비", "정회원비") and confirmed_name:
                         manual_matches.append({
-                            "거래일시": row[0] if len(row) > 0 else "",
-                            "입금액": row[2] if len(row) > 2 else "",
-                            "의뢰인": row[3] if len(row) > 3 else "",
-                            "적요": row[4] if len(row) > 4 else "",
+                            "거래일시": str(row[0]) if len(row) > 0 else "",
+                            "입금액": str(row[2]) if len(row) > 2 else "",
+                            "의뢰인": str(row[3]) if len(row) > 3 else "",
+                            "적요": str(row[4]) if len(row) > 4 else "",
                             "처리상태": ps_clean,
                             "확인한이름": confirmed_name,
                             "확인한강좌": confirmed_course,

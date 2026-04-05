@@ -482,9 +482,9 @@ async def sync_deposit_processing_status(term_id: str, rows: list[dict]) -> int:
                 """,
                 ps,
                 term_id,
-                r.get("거래일시", "") or "",
+                str(r.get("거래일시", "") or ""),
                 amount,
-                r.get("의뢰인", "") or "",
+                str(r.get("의뢰인", "") or ""),
             )
             if result and result.split()[-1] != "0":
                 updated += 1
