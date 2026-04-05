@@ -841,11 +841,13 @@ MEMBERS_FOLDER_ID=1grbIQBkufaD5zo-5RodC08uZsPHMvijx
 - 파일 업로드 직접 tool 호출 — Agent 경유 없이 `_handle_file_upload()`에서 상태별 tool 직접 invoke.
 - 3단계 버튼 세트 — `send_starter_actions()`(7개), `send_completion_actions()`(처음으로), `send_midwork_actions()`(처음으로+질문).
 
-**✅ UX 버튼화 + Cascade-only 플로우:**
+**✅ UX 버튼화 + 입금 대조 통합 플로우:**
 - 회차 확인 Action 버튼 — 4개 tool(payment, attendance, ocr, graduation)에 ✅ 맞습니다 / 📅 다른 회차 버튼 추가. `term_confirm_tool` 세션 변수로 tool 구분, 공용 callback (`term_confirm`, `term_other`)
 - 신청자 목록 건너뛰기 버튼화 — 텍스트 안내("건너뛰기라고 입력하세요") → `⏭ 건너뛰기 (이전 데이터 N건 사용)` Action 버튼으로 전환. 텍스트 입력도 여전히 동작 (fallback)
 - 입금내역 건너뛰기 — DB에 기존 입금 데이터 있으면 `⏭ 건너뛰기` Action 버튼 제공. 3곳에서 표시: `_skip_applicants_step`, `_do_applicants_step` 완료 후, `awaiting_payment` 진입 시
-- Cascade-only 플로우 (`_do_cascade_only_step`) — 신청자+입금내역 양쪽 모두 건너뛰기 시 실행. Sheets 처리상태 역동기화 (신청기록 + 미확인입금) → 처리상태=등록완료 건의 입금현황을 ✅정상으로 추론 → `apply_grade_cascade()` 실행 → DB/Sheets 반영. 관리자가 수동으로 처리상태 입력 후 등급 전환만 재실행하는 용도. 기존 미확인입금 카운트를 DB에서 로드하여 결과 요약 + 시트 링크에 반영.
+- `_do_payment_step(file_path, term)` 통합 — 파일 업로드와 건너뛰기를 단일 함수로 통합. `file_path=""` 시 신청기록 처리상태 Sheets→DB 역동기화 + DB 리로드 + 등록완료→✅정상 추론. 공통 경로: 수동 매칭 + 미매칭 재매칭 + cascade + 결과 저장. `_do_cascade_only_step` 제거.
+- 수동 매칭 공용화 — `_sync_deposit_status_and_collect_manual()` + `_apply_manual_matches()` 추출. 파일 업로드/건너뛰기 양쪽 모두에서 실행.
+- 미확인입금 무시/환불완료 건 재매칭 제외 — `_SKIP_DEPOSIT_PS = {"무시", "환불완료"}` 필터. 관리자가 처리한 건이 재매칭되어 시트에서 사라지는 버그 수정.
 
 **✅ 관리자 긴급 요청 3건:**
 - 신청기록 메모장 컬럼 — N열 추가 (14컬럼). DB `admin_memo TEXT` 컬럼. COALESCE 보존 (재실행 시 기존 메모 유지). Sheets 역동기화 시 메모장도 함께 보존.

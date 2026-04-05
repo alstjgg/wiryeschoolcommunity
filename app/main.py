@@ -172,6 +172,8 @@ async def _invoke_agent(content: str, file_paths: list[str] | None = None):
     config = {
         "configurable": {"thread_id": thread_id},
         "recursion_limit": 15,
+        "run_name": "wirye_agent",
+        "metadata": {"thread_id": thread_id},
     }
 
     msg = cl.Message(content="")
@@ -373,8 +375,8 @@ async def _skip_deposits_step():
         return
 
     try:
-        from app.tools.payment_tool import _do_cascade_only_step
-        await _do_cascade_only_step(term)
+        from app.tools.payment_tool import _do_payment_step
+        await _do_payment_step("", term)
     except Exception as e:
         logger.error("skip deposits / cascade failed: %s", e)
         cl.user_session.set("state", "idle")
