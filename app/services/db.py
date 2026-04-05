@@ -273,8 +273,8 @@ async def upsert_applications(term_id: str, applications: list[dict]) -> None:
                         term_id, name_id, name, type, course_name,
                         expected_amount, paid_amount, payment_status, review_reason,
                         processing_status, payment_time, payer_name, memo,
-                        phone, address, processed_at
-                    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+                        phone, address, admin_memo, processed_at
+                    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
                     ON CONFLICT (term_id, name_id, type, COALESCE(course_name, ''))
                     DO UPDATE SET
                         name = EXCLUDED.name,
@@ -312,6 +312,7 @@ async def upsert_applications(term_id: str, applications: list[dict]) -> None:
                             ELSE EXCLUDED.memo END,
                         phone = EXCLUDED.phone,
                         address = EXCLUDED.address,
+                        admin_memo = COALESCE(NULLIF(EXCLUDED.admin_memo, ''), applications.admin_memo),
                         processed_at = COALESCE(EXCLUDED.processed_at, applications.processed_at),
                         updated_at = NOW()
                     """,
@@ -330,6 +331,7 @@ async def upsert_applications(term_id: str, applications: list[dict]) -> None:
                     a.get("적요", "") or None,
                     a.get("전화번호", "") or None,
                     a.get("주소", "") or None,
+                    a.get("메모장", "") or None,
                     _to_datetime(a.get("processed_at")),
                 )
 
@@ -359,6 +361,7 @@ async def load_applications(term_id: str) -> list[dict]:
             "적요": r["memo"] or "",
             "전화번호": r["phone"] or "",
             "주소": r["address"] or "",
+            "메모장": r["admin_memo"] or "",
         }
         for r in rows
     ]

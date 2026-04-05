@@ -29,8 +29,8 @@ def _load_course_students_from_sheets(
     course_name: str,
 ) -> list[dict]:
     """Sheets 출석부 탭에서 특정 과목의 수강생 목록과 출석 데이터 로드."""
-    # 컬럼: 이름ID(A) | 이름(B) | 과목명(C) | 1회차(D) | ... | 12회차(O) | 출석률(P)
-    col_end = chr(ord("A") + 3 + MAX_SESSIONS)  # "P"
+    # 컬럼: 이름ID(A) | 이름(B) | 전화번호(C) | 과목명(D) | 1회차(E) | ... | 12회차(P) | 출석률(Q)
+    col_end = chr(ord("A") + 4 + MAX_SESSIONS)  # "Q"
     rows = read_sheet(spreadsheet_id, f"출석부!A1:{col_end}5000")
     if not rows or len(rows) < 2:
         return []
@@ -39,13 +39,13 @@ def _load_course_students_from_sheets(
     students = []
     for i, row in enumerate(rows[1:], start=2):
         padded = row + [""] * (len(header) - len(row))
-        if padded[2] != course_name:  # C열: 과목명 필터
+        if padded[3] != course_name:  # D열: 과목명 필터
             continue
         name = padded[1]  # B열: 이름
         if not name:
             continue
         attendance = {
-            str(j + 1): padded[3 + j]  # D열부터 시작
+            str(j + 1): padded[4 + j]  # E열부터 시작
             for j in range(MAX_SESSIONS)
         }
         students.append({
@@ -138,7 +138,7 @@ async def process_attendance_image(
         model=LLM_MODEL,
         api_key=ANTHROPIC_API_KEY,
         max_tokens=2048,
-    )
+    ).with_config({"run_name": "ocr_vision_llm"})
 
     image_b64 = base64.standard_b64encode(image_bytes).decode("utf-8")
     student_list = "\n".join(f"- {s['이름']}" for s in students)
@@ -218,14 +218,14 @@ async def write_attendance_to_sheet(
     DB 모드: DB attendance 테이블에 upsert + Sheets에도 반영.
     Sheets 모드: Sheets에만 반영.
 
-    쓰기 범위: D{row}:O{row} (1회차~12회차, D열부터 시작)
+    쓰기 범위: E{row}:P{row} (1회차~12회차, E열부터 시작)
     Returns: 업데이트된 수강생 수
     """
     name_to_row = {s["이름"]: s["row_index"] for s in students}
 
-    # D열(1회차) ~ O열(12회차)
-    col_start = "D"
-    col_end = chr(ord("D") + MAX_SESSIONS - 1)  # "O"
+    # E열(1회차) ~ P열(12회차)
+    col_start = "E"
+    col_end = chr(ord("E") + MAX_SESSIONS - 1)  # "P"
     updated = 0
 
     for result in ocr_results:

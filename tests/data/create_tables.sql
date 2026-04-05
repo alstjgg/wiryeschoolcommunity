@@ -111,6 +111,7 @@ CREATE TABLE IF NOT EXISTS applications (
     memo                TEXT,
     phone               TEXT,
     address             TEXT,
+    admin_memo          TEXT,
     processed_at        TIMESTAMPTZ,
     created_at          TIMESTAMPTZ DEFAULT NOW(),
     updated_at          TIMESTAMPTZ DEFAULT NOW()

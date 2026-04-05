@@ -29,25 +29,25 @@ logger = logging.getLogger(__name__)
 
 def _load_attendance_from_sheets(spreadsheet_id: str) -> list[dict]:
     """출석부 Sheets에서 수강생 출석률을 집계."""
-    col_end = chr(ord("A") + 3 + MAX_SESSIONS)  # "P"
+    col_end = chr(ord("A") + 4 + MAX_SESSIONS)  # "Q"
     rows = read_sheet(spreadsheet_id, f"출석부!A1:{col_end}5000")
     if not rows or len(rows) < 2:
         return []
 
     results = []
     for row in rows[1:]:
-        padded = row + [""] * (3 + MAX_SESSIONS + 1 - len(row))
+        padded = row + [""] * (4 + MAX_SESSIONS + 1 - len(row))
         name = padded[1]  # B열: 이름
-        course_name = padded[2]  # C열: 과목명
+        course_name = padded[3]  # D열: 과목명
         if not name or not course_name:
             continue
 
-        # D열(index 3)부터 12개가 1회차~12회차
+        # E열(index 4)부터 12개가 1회차~12회차
         attended = sum(
-            1 for j in range(MAX_SESSIONS) if padded[3 + j] == "O"
+            1 for j in range(MAX_SESSIONS) if padded[4 + j] == "O"
         )
         total = sum(
-            1 for j in range(MAX_SESSIONS) if padded[3 + j] != ""
+            1 for j in range(MAX_SESSIONS) if padded[4 + j] != ""
         )
         rate = round(attended / total * 100, 1) if total > 0 else 0.0
 
@@ -105,8 +105,8 @@ def _update_attendance_rates_in_sheets(
     spreadsheet_id: str,
     attendance_results: list[dict],
 ) -> None:
-    """Sheets 출석부 탭의 출석률(P열) 업데이트."""
-    col_end = chr(ord("A") + 3 + MAX_SESSIONS)  # "P"
+    """Sheets 출석부 탭의 출석률(Q열) 업데이트."""
+    col_end = chr(ord("A") + 4 + MAX_SESSIONS)  # "Q"
     rows = read_sheet(spreadsheet_id, f"출석부!A1:{col_end}5000")
     if not rows or len(rows) < 2:
         return
@@ -114,10 +114,10 @@ def _update_attendance_rates_in_sheets(
     # (이름, 과목명) → 행번호 매핑
     key_to_row: dict[tuple, int] = {}
     for i, row in enumerate(rows[1:], start=2):
-        padded = row + [""] * (3 + MAX_SESSIONS + 1 - len(row))
-        key_to_row[(padded[1], padded[2])] = i  # (이름, 과목명)
+        padded = row + [""] * (4 + MAX_SESSIONS + 1 - len(row))
+        key_to_row[(padded[1], padded[3])] = i  # (이름, 과목명) — D열
 
-    rate_col = chr(ord("A") + 3 + MAX_SESSIONS)  # "P"
+    rate_col = chr(ord("A") + 4 + MAX_SESSIONS)  # "Q"
     for r in attendance_results:
         key = (r["이름"], r["과목명"])
         if key in key_to_row:
@@ -258,14 +258,14 @@ def load_student_name_id_map(
     spreadsheet_id: str,
 ) -> dict[tuple[str, str], str]:
     """출석부 탭에서 (이름, 과목명) → 이름ID 매핑 읽기."""
-    rows = read_sheet(spreadsheet_id, "출석부!A1:C5000")
+    rows = read_sheet(spreadsheet_id, "출석부!A1:D5000")
     name_to_id: dict[tuple[str, str], str] = {}
     if rows and len(rows) >= 2:
         for row in rows[1:]:
-            padded = row + [""] * (3 - len(row))
+            padded = row + [""] * (4 - len(row))
             name_id = padded[0]   # A열: 이름ID
             name = padded[1]      # B열: 이름
-            course = padded[2]    # C열: 과목명
+            course = padded[3]    # D열: 과목명
             if name and course:
                 name_to_id[(name, course)] = name_id
     return name_to_id

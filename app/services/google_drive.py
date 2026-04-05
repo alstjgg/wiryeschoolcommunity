@@ -114,3 +114,23 @@ def find_or_create_folder(parent_id: str, name: str) -> dict:
         body=file_metadata, fields="id, name, mimeType", supportsAllDrives=True
     ).execute()
     return folder
+
+
+def delete_files_by_name(parent_id: str, name: str) -> int:
+    """폴더 내에서 이름이 정확히 일치하는 파일을 모두 삭제. 삭제 건수 반환."""
+    import logging
+    _logger = logging.getLogger(__name__)
+
+    items = list_files(parent_id)
+    count = 0
+    service = get_drive_service()
+    for item in items:
+        if item["name"] == name:
+            try:
+                service.files().delete(
+                    fileId=item["id"], supportsAllDrives=True,
+                ).execute()
+                count += 1
+            except Exception as e:
+                _logger.warning("Failed to delete file %s (%s): %s", item["name"], item["id"], e)
+    return count
