@@ -853,6 +853,10 @@ MEMBERS_FOLDER_ID=1grbIQBkufaD5zo-5RodC08uZsPHMvijx
 - 출석부 중복 파일 삭제 — `delete_files_by_name()` 추가 (`google_drive.py`). 출석부 시트 생성 전 + PDF 업로드 전 동명 파일 삭제. 관리자 별도 파일은 보존.
 - 회원기록 관련회차 serial 변환 수정 — "2026-2"가 날짜로 해석되는 문제. apostrophe prefix 추가 (`sheets_sync.py`).
 
+**✅ 출석부 생성 안정화:**
+- 출석부 전화번호 앞자리 0 보존 — C열 plain text 서식(`repeatCell`) + apostrophe prefix. `setBasicFilter`로 헤더 필터 자동 설정.
+- 출석부 생성 스트리밍 끊김 수정 — `create_attendance_spreadsheet`, `generate_attendance_pdf`, `upload_pdf_to_drive`가 동기 함수여서 이벤트 루프 차단 → WebSocket 끊김 + "계속" 버튼 현상. `asyncio.to_thread()`로 전환하여 이벤트 루프 해방. PDF 진행 표시를 매 과목마다 업데이트.
+
 ### Phase C — LangChain 생태계 심화 (계획)
 
 Phase A/B 완료 후, LangChain 생태계를 활용한 관측성·프롬프트·확장성 개선. 다조직 확장 사업 대비.

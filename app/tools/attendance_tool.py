@@ -1,5 +1,6 @@
 """출석부 생성 tool — 처리상태 gate check → 출석부 시트 + PDF 생성"""
 
+import asyncio
 import logging
 
 import chainlit as cl
@@ -191,24 +192,28 @@ async def create_attendance(term_id: str = "") -> str:
         progress.content = f"📋 수강생 **{total_students}명** ({len(course_names)}개 과목) 확인. 출석부 시트 생성 중..."
         await progress.update()
 
-        sheet_result = create_attendance_spreadsheet(att_term_id, term_folder_id, courses)
+        sheet_result = await asyncio.to_thread(
+            create_attendance_spreadsheet, att_term_id, term_folder_id, courses
+        )
         cl.user_session.set("attendance_sheet_id", sheet_result["spreadsheet_id"])
 
         # 3. 과목별 PDF 생성 + 업로드
         pdf_urls: dict[str, str | None] = {}
         for idx, course_name in enumerate(course_names):
             try:
-                pdf_bytes = generate_attendance_pdf(att_term_id, course_name, courses[course_name])
-                pdf_url = upload_pdf_to_drive(
+                pdf_bytes = await asyncio.to_thread(
+                    generate_attendance_pdf, att_term_id, course_name, courses[course_name]
+                )
+                pdf_url = await asyncio.to_thread(
+                    upload_pdf_to_drive,
                     pdf_bytes, att_term_id, course_name, sheet_result["attendance_folder_id"],
                 )
                 pdf_urls[course_name] = pdf_url
             except Exception:
                 pdf_urls[course_name] = None
 
-            if (idx + 1) % 4 == 0 or idx + 1 == len(course_names):
-                progress.content = f"PDF 생성 중... ({idx + 1}/{len(course_names)})"
-                await progress.update()
+            progress.content = f"PDF 생성 중... ({idx + 1}/{len(course_names)})"
+            await progress.update()
 
         pdf_count = sum(1 for v in pdf_urls.values() if v)
 
