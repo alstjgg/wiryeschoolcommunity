@@ -30,6 +30,7 @@ Thumbs.db
 
 # Claude Code local data (not part of the app)
 holyclaude/
+.claude-personal/
 
 # # Fonts (downloaded at build time)
 # assets/fonts/
