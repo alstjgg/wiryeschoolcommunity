@@ -199,10 +199,11 @@ wiryeschoolcommunity/
 ├── docs/
 │   ├── DEV_DOCUMENT.md          # 상세 기획서 (비즈니스 컨텍스트, 데이터 구조, 입금 패턴 등)
 │   ├── BUSINESS_CONTEXT.md      # Context Injection 소스 텍스트
-│   ├── PLANNED_DRIVE_STRUCTURE.md  # Google Drive 확정 구조 + 폴더 ID 참조
-│   └── LANGCHAIN_MIGRATION_PROPOSAL.md  # LangChain Agent 전환 제안서 (Phase A: 라우터 전환)
+│   ├── LANGCHAIN_MIGRATION_PROPOSAL.md  # LangChain Agent 전환 제안서 + Phase C 리서치
+│   ├── data_architecture_layers_and_lineage.svg  # 데이터 계층/계보 다이어그램
+│   └── database_erd.html        # DB ERD
 ├── app/
-│   ├── main.py                  # Chainlit 엔트리포인트 — Agent invoke + 파일 태깅 + Starter/Action 버튼 (~285줄)
+│   ├── main.py                  # Chainlit 엔트리포인트 — Agent invoke + 파일 태깅 + Starter/Action 버튼 (~510줄)
 │   ├── agent.py                 # [신규] LangChain create_agent — 시스템 프롬프트 + 7개 tool 바인딩
 │   ├── config.py                # 환경 변수, 상수, 영속 Google IDs, COURSE_KEYWORDS, USE_DB_SOT, INSTRUCTOR/STAFF_SHEET_ID
 │   ├── tools/                   # @tool 함수 모듈 — Agent가 호출하는 8개 tool
@@ -698,172 +699,29 @@ MEMBERS_FOLDER_ID=1grbIQBkufaD5zo-5RodC08uZsPHMvijx
 
 ## 현재 상태 및 로드맵
 
-### Phase 0 — 프로토타입 ✅ 완료
+### 완료된 기능 (Phase 0–B) — 운영 중
 
-기획서, 데이터 구조 설계, Python 프로젝트 초기 셋업, Chainlit 기본 앱 (채팅 UI + Starter 버튼 + Q&A), Google API 인증 (Domain-wide Delegation).
+핵심 업무 파이프라인이 모두 구현·배포되어 운영 중. 상세 변경 이력은 `git log` 참조.
 
-### Phase 1 — 핵심 기능 (Sheets 기반) ✅ 완료
-
-- 입금 대조 파이프라인: 신청자 목록 SoT, 적요+의뢰인 기반 매칭, 6가지 상태 코드
-- Excel 파싱 (`app/services/excel.py`): 입금내역 + 신청자 목록(HTML .xls, BeautifulSoup)
-- 규칙 기반 매칭 (`app/utils/matching.py`)
-- 출석부 생성 (`app/chains/attendance.py`): 단계별 함수 분리 — `group_by_course`, `create_attendance_spreadsheet`, `generate_attendance_pdf`, `upload_pdf_to_drive`. `main.py`에서 cl.Step으로 직렬 호출 + PDF 루프 progress 표시.
-- 출석 체크 OCR (`app/chains/ocr.py`): Claude Vision, 출석부 탭 D:O 쓰기
-- 종강 처리 (`app/chains/graduation.py`): 단계별 함수 분리 — `load_student_name_id_map`, `build_course_records`, `apply_demotion`. `main.py`에서 6-Step 직렬 호출.
-- 회원관리 3탭 구조 (회원목록/회원기록/수강기록), 동적 Drive 폴더 탐색
-- 신청서 upsert (기존 행 보존, 새 key만 추가), 입금 시 회원기록 자동 기록
-- Non-blocking Action 패턴 (`cl.Message(actions=...) + @cl.action_callback`), 세션 상태 머신
-- `@cl.on_stop` 훅으로 사용자 멈춤 시 state 리셋
-- cl.Step 진행 상황 표시 (각 파이프라인 단계별 expandable indicator)
-- 입금 대조 결과 즉시 자동 반영 (확인 단계 제거, 숫자 요약 한 줄)
-- 회차 불일치 시 자유 텍스트 재입력 루프 (`parse_term_input`)
-- 자유 텍스트 → LLM 의도 분류 (`classify_intent_llm`) → 관리자 확인 후 워크플로우 진입
-- 워크플로우 중 인터럽트 처리 (`handle_mid_flow_text`): 취소 감지, Q&A 답변 후 상태 유지
-- 모든 작업 종료 후 공통 기본 Action 버튼 (`send_default_actions`)
-- 신청서 시트: 필터 + 처리상태 드롭다운 자동 설정
-- 출석부 시트: 단일 "출석부" 탭 구조
-- Railway 배포, 단위 테스트 121개 통과
-- 커스텀 테마 (Palette C 마을회관): `public/theme.json` + `public/stylesheet.css`
-- Noto Sans KR 폰트, 본문 18px, WCAG AA 접근성
-- `config.toml`: `cot = "tool_call"` (Step 진행 표시), `description` 추가
-- **남은 작업**: E2E 기능 테스트, Context Injection 고도화
-
-### Phase 2 — 데이터 파이프라인 ✅ 완료
-
-인프라 셋업 + 통합 신청서 설계 + Sheets SoT 확정.
-
-**2-1. PostgreSQL 비즈니스 스키마** ✅ 완료
-- `app/services/db.py`: 7 테이블 (members, member_records, course_records, applications, deposits, attendance, feedbacks)
-- DB가 SoT, Sheets는 `sheets_sync.py`로 동기화
-- 스키마 DDL은 `tests/data/create_tables.sql`에 정의, 배포 전 psql로 수동 생성 (앱 시작 시 미존재 에러)
-
-**2-2. DB SoT + Sheets 동기화** ✅ 완료
-- `payment.py`: 5개 write 함수 DB+Sheets sync 패턴 (DB 쓰기 → `sync_to_sheets()`)
-- `payment.py`: `apply_matching_results()` deposit 매칭 추적 (match_status/matched_name_ids), unmatched count 반환
-- `payment.py`: `format_results()` 미확인입금 카운트 표시 (`| 미확인입금: N건`)
-- `payment.py`: `apply_grade_cascade()` 등급 전환 cascade (idempotent 3-pass)
-- `db.py`: `upsert_applications()`에 `processed_at` 컬럼 추가
-- `main.py`: deposit ID 추적 (insert 전후 load), `db.update_deposit_match()` 호출, `processed_at` 설정
-- `main.py`: `_check_processing_gate()` DB 모드에서 `MEMBERS_SHEET_ID`/`신청기록` 탭 + term_id 필터
-- `main.py`: `write_payment_results()` DB 모드에서 `MEMBERS_SHEET_ID`로 관리자 링크
-- `attendance.py`: DB 모드에서 `MEMBERS_SHEET_ID`/`신청기록` 탭에서 처리상태 읽기 + term_id 필터
-- `graduation.py`: 3개 함수 async dual-write
-- `ocr.py`: `load_course_students` + `write_attendance_to_sheet` dual-write
-- `app/services/sheets_sync.py`: Sheets 동기화 (asyncio.to_thread, await 직렬)
-- `registration_status` → `processing_status` 전환 완료
-
-### Phase 3 — 기능 확장 + UX 개선
-
-**✅ 완료:**
-- 종강 처리 — 출석률 집계, 수강기록 추가, 등급 강등, 회원목록 재집계, 회원기록 기록
-- 출석 체크 (OCR) — Claude Vision으로 종이 출석부 디지털화 → 출석부 탭 D~O열 O/빈칸
-- 과목별 출석부 PDF 생성 — A4 가로, NanumGothic 12pt, Drive 업로드
-- Theme/CSS 커스터마이징 — Palette C 마을회관 + Noto Sans KR 타이포그래피
-- 신청서 upsert — 기존 행 보존, 새 key만 추가
-- 등급 전환 cascade (`apply_grade_cascade`) — 입금 대조 시 자동 실행, idempotent
-- 입금내역 원본 저장 + 매칭 추적 (`deposits` 테이블) — `match_status`/`matched_name_ids` 업데이트, 미확인입금 시트 연동
-- 출석부 생성 처리상태 gate — 신청기록 + 미확인입금 양쪽 미처리 건 차단 + 상세 안내 (DB 모드: `MEMBERS_SHEET_ID`의 `신청기록`·`미확인입금` 탭)
-- 신청기록 통합 — DB 모드에서 회차별 "신청서" 파일 제거, 회원관리 파일 `신청기록` 탭에 전 회차 통합
-- 피드백 수집 — Chainlit thumbs up/down → PostgreSQL feedbacks 테이블
-- Starter 버튼 정비 — 작업 순서 정렬 (7개), CSS min-width/flex 레이아웃
-- 신청서 폴더 통합 — ASIS(개인 드라이브) → TOBE(공유 드라이브) 전환 완료
-- FAQ/Context Injection 보강 — 18개 토픽 (`BUSINESS_CONTEXT` dict): 회차구조, 회원제도, 수강료, 입금패턴, 입금대조절차, 처리상태, 등급전환, 시트구조, 주요링크, 업무일정, 환불규정, 강사사무처면제, 외부시스템, 출석관리, 종강처리, 강의계획서, 드라이브구조, 용어정리
-- 합산 입금 분류 — 12만(정회원비), 13만(가입비+정회원비)
-- 강사/사무처 면제 자동 판별 — 강사관리/사무처관리 시트에서 면제 대상 자동 추출, 가입비+정회원비+수강비 전부 면제, 등급 자동 승급, 종강 시 활동 중 사무처 직원만 강등 제외
-- AskActionMessage → non-blocking 전환 — 전체 12개 blocking AskActionMessage를 `cl.Message(actions=...) + @cl.action_callback` 패턴으로 전환. 26개 새 action callback 추가 (총 33개). `@cl.on_stop` 훅 추가. 회차 입력 상태 통합 (`term_input_next`). 신청서 위치 확인 단계 제거 (Drive 자동 탐색). 처리상태 gate의 `while True` 루프를 recheck callback으로 전환.
-- 출석부 생성 + 종강 처리 리팩토링 — 모놀리식 함수를 단계별 함수로 분리. `main.py`에서 cl.Step으로 직렬 호출하여 중간 진행 상태 표시. `creating_attendance`/`running_graduation` state로 작업 중 race condition 방지. PDF 생성 루프에 `progress_msg.update()` 적용.
-
-**✅ Phase A 완료 — LangChain Agent 전환:**
-- LangChain 1.0 + LangGraph 1.0 + langchain-anthropic 1.0 업그레이드
-- `main.py` 1719줄 → 285줄 (상태 머신 + 33개 callback → Agent invoke + 7개 action callback)
-- `app/agent.py` 신규 — `create_agent()` + MemorySaver + 비즈니스 컨텍스트 시스템 프롬프트
-- `app/tools/` 신규 — 7개 @tool (qa, payment, attendance, ocr, graduation, plan, report)
-- 파일 업로드: `[FILE:path]` 태깅 → Agent가 tool에 전달
-- Starter/Action 버튼 동일 유지 (버튼 클릭 → Agent invoke)
-- `classify_intent_llm` 제거 — Agent의 tool selection이 의도 분류를 대체
-
-**✅ Phase B 완료 — Agent 기능 확장:**
-- PostgresSaver checkpointer (MemorySaver → AsyncPostgresSaver, 대화 state 영속화)
-- on_chat_resume 개선 (메시지 replay 루프 제거 → checkpointer 기반 복원)
-- 데이터 조회 tool (`query_data`) — 자연어 → LLM 의도 파싱 → 미리 정의된 DB 조회 함수 (NL-to-SQL 아님)
-- Q&A 품질 개선 — prompt caching (`cache_control: ephemeral`), 간결한 답변 스타일, max_tokens 1024
-- cl.Step → cl.Message 전환 — 모든 tool에서 진행 상태를 일반 메시지로 직접 표시
-
-**✅ 데이터 무결성 + UX 수정 (테스트 중 발견):**
-- 미확인입금 처리상태 보호 — 입금 대조 재실행 전 Sheets→DB 역동기화 (`sync_deposit_processing_status`)
-- 미확인입금 시트 입금자명 빈값 수정 — `_sync_deposits`에서 `matched_name_ids` 또는 `의뢰인` 표시
-- 회원기록 변경일시 YYYY-MM-DD 포맷 — `_sync_member_records`에서 날짜 잘라내기
-- "새 채팅" 다이얼로그 문구 수정 — "기록이 지워진다" → "사이드바에서 다시 열 수 있다" (ko.json)
-- 파일 대기 중 자연어 질문 대응 — 취소 아닌 텍스트는 Agent에게 전달 후 재안내
-- 신청자 목록 건너뛰기 — DB에 기존 데이터 있으면 `⏭ 건너뛰기` Action 버튼으로 스킵 가능
-
-**✅ Agent E2E 테스트 이슈 일괄 수정:**
-- AIMessage.content list 파싱 — tool use 후 text 블록 추출, tool_use 블록 필터링
-- 에러 메시지 사용자 친화적 변경 — 기술적 세부사항 제거, 한국어 안내
-- 회차 확인 Action 버튼 — 4개 tool(payment, attendance, ocr, graduation)의 회차 확인 단계에 ✅ 맞습니다 / 📅 다른 회차 버튼 추가
-- 상대적 시간 표현 — `parse_term_input()`에 지난학기/이번학기/작년 등 파싱 추가
-- Agent 시스템 프롬프트에 현재/직전 회차 컨텍스트 동적 주입
-- LLM rate limit 완화 — concurrency 1, sleep 1.5s (Tier 1 RPM 50 대응)
-- 처리완료 건 건너뛰기 — 재실행 시 ✅정상/💎면제 건은 매칭 대상에서 제외
-- 집계 쿼리 3종 추가 — course_summary, payment_summary, grade_distribution
-
-**✅ 입금 대조 재실행 시 기존 매칭 결과 보존:**
-- 보존 기준 (`_is_preserved()`): **처리상태 in (등록완료/환불완료/취소완료/보류)** OR **입금현황 in (✅정상/💎면제)** → 결제 필드 보존 + 매칭 제외. 그 외 → ❌미입금으로 리셋하여 재매칭 대상.
-- `FINALIZED_PROCESSING`, `PRESERVED_PAYMENT` — 보존/스킵 기준 상수 (`payment.py`)
-- `merge_with_existing_applications()` — 신청서 재생성 시 기존 DB 데이터와 병합. 보존 대상 결제 필드 유지, 처리상태는 항상 보존.
-- `_do_payment_step` 스킵 로직 — `_is_preserved()` 기반. 관리자가 확정하지 않은 건만 재매칭.
-- `upsert_applications()` DB 안전망 — 기존 `processing_status`가 확정/보류이거나 `payment_status`가 confirmed/exempted이면 결제 필드 보존 (CASE WHEN 가드)
-
-**✅ 입금 대조 반복 실행 E2E 버그 수정 (5건):**
-- 신청기록 처리상태 Sheets→DB 역동기화 추가 — `sync_application_processing_status()`, 입금대조 시작 시 신청기록 탭의 처리상태를 DB에 먼저 반영. 기존에는 미확인입금 탭만 역동기화.
-- 매칭 시 전체 이름 목록 사용 — `run_code_matching(all_students=)` 파라미터 추가. 보존된 수강생 이름도 인식하여 "이름을 찾지 못함" 오탐 방지. 슬롯 배정은 pending만.
-- 이미 매칭된 deposit 필터링 — 동일 입금내역 재업로드 시 DB에서 `match_status='matched'`인 거래 키를 수집, 매칭 대상에서 제외. 미확인입금 누적 방지.
-- deposit_id 추적 복합키 전환 — 순서 의존(`transactions[i]↔new_deposits[i]`) 대신 (거래일시, 금액, 의뢰인, 적요) 복합키로 매핑. DB ORDER BY와 엑셀 순서 불일치 문제 해결.
-- 회원기록 변경일시 텍스트 강제 — apostrophe prefix(`'2026-04-01`)로 Sheets의 날짜→serial 자동변환 방지.
-
-**✅ Tool 결과 직접 전달 (시트 링크 누락 수정):**
-- 4개 tool(payment, attendance, graduation, ocr) 결과를 `cl.Message.update()`로 직접 전송 + `__SILENT__` 반환 — Agent가 시트 URL을 재해석하며 누락하는 문제 해결
-- `_invoke_agent()`에서 빈 응답도 `__SILENT__`과 동일하게 처리 — Agent가 빈 텍스트로 응답하는 경우 대비
-- `__SILENT__` 반환 시에도 idle 상태면 기본 Action 버튼 표시
-
-**✅ 입금 매칭 E2E 수정 (dev 브랜치):**
-- 처리상태 덮어쓰기 수정 — `_do_applicants_step()`에서 Sheets 처리상태를 clear+write 전에 읽어 in-memory 보존
-- 신규가입/정회원 이름 인식 — `all_application_names()` + `all_applicants` 파라미터로 수강 외 이름도 `extract_name()` 대상에 포함. 수강 목록에 없어도 가입비/정회원비 금액 패턴으로 매칭.
-- 동명이인 오탐 수정 — `len(matched_students)` 대신 `len(unique 이름IDs)` 체크. 다과목 수강자의 가입비/정회원비가 false 동명이인으로 처리되던 문제.
-- 신규가입/정회원 자동 확정 — 이름ID 유일 + 금액 일치 시 ✅정상 (기존: 무조건 🔶확인필요). cascade 자동 발동 (비회원→회원→정회원→수강 💎면제).
-- 합산 입금(13만) 양쪽 슬롯 동시 배정 — `_amount_type=membership_plus_fullmember` 태그로 신규가입+정회원 슬롯 동시 fill.
-- 미매칭 deposit 자동 재매칭 — 매 실행 시 DB의 `match_status='unmatched'` deposit을 현재 신청 목록 대비 재매칭. `_do_payment_step()` + `_do_cascade_only_step()` 양쪽에서 실행.
-- 미확인입금 시트 구조 변경 — 확인사유 제거, 9컬럼 (A~F자동 + G처리상태/H확인한이름/I확인한강좌 관리자편집). 처리상태 dropdown: 수강비/가입비/정회원비/환불완료/무시/보류.
-- 관리자 수동 매칭 — 미확인입금에 처리상태(수강비/가입비/정회원비) + 확인한이름 + 확인한강좌 입력 → cascade 실행 시 해당 ❌미입금 application에 자동 매칭. `_do_cascade_only_step()`에서 처리.
-- 미확인입금 sync 시 관리자 편집 컬럼(G/H/I) 보존 — clear 전에 읽어서 merge 후 write.
-- dev/prod 환경 분리 — `MEMBERS_SHEET_ID`/`OPERATIONS_FOLDER_ID`/`MEMBERS_FOLDER_ID`를 `os.environ.get()` + prod 기본값. `tests/reset_dev_env.py` 초기화 스크립트.
-- 회차 확인 Action 버튼 + `build_term_from_id()` — 전체 term dict 재구성으로 stale term_name 방지.
-- 파일 업로드 직접 tool 호출 — Agent 경유 없이 `_handle_file_upload()`에서 상태별 tool 직접 invoke.
-- 3단계 버튼 세트 — `send_starter_actions()`(7개), `send_completion_actions()`(처음으로), `send_midwork_actions()`(처음으로+질문).
-
-**✅ UX 버튼화 + 입금 대조 통합 플로우:**
-- 회차 확인 Action 버튼 — 4개 tool(payment, attendance, ocr, graduation)에 ✅ 맞습니다 / 📅 다른 회차 버튼 추가. `term_confirm_tool` 세션 변수로 tool 구분, 공용 callback (`term_confirm`, `term_other`)
-- 신청자 목록 건너뛰기 버튼화 — 텍스트 안내("건너뛰기라고 입력하세요") → `⏭ 건너뛰기 (이전 데이터 N건 사용)` Action 버튼으로 전환. 텍스트 입력도 여전히 동작 (fallback)
-- 입금내역 건너뛰기 — DB에 기존 입금 데이터 있으면 `⏭ 건너뛰기` Action 버튼 제공. 3곳에서 표시: `_skip_applicants_step`, `_do_applicants_step` 완료 후, `awaiting_payment` 진입 시
-- `_do_payment_step(file_path, term)` 통합 — 파일 업로드와 건너뛰기를 단일 함수로 통합. `file_path=""` 시 신청기록 처리상태 Sheets→DB 역동기화 + DB 리로드 + 등록완료→✅정상 추론. 공통 경로: 수동 매칭 + 미매칭 재매칭 + cascade + 결과 저장. `_do_cascade_only_step` 제거.
-- 수동 매칭 공용화 — `_sync_deposit_status_and_collect_manual()` + `_apply_manual_matches()` 추출. 파일 업로드/건너뛰기 양쪽 모두에서 실행.
-- 미확인입금 무시/환불완료 건 재매칭 제외 — `_SKIP_DEPOSIT_PS = {"무시", "환불완료"}` 필터. 관리자가 처리한 건이 재매칭되어 시트에서 사라지는 버그 수정.
-
-**✅ 관리자 긴급 요청 3건:**
-- 신청기록 메모장 컬럼 — N열 추가 (14컬럼). DB `admin_memo TEXT` 컬럼. COALESCE 보존 (재실행 시 기존 메모 유지). Sheets 역동기화 시 메모장도 함께 보존.
-- 출석부 전화번호 컬럼 — 이름(B) 옆에 전화번호(C) 추가. members 테이블에서 이름ID 기준 조인. 과목명 C→D, 회차 D:O→E:P, 출석률 P→Q 인덱스 시프트. `ocr.py`, `graduation.py` 3개 함수 동시 수정.
-- 출석부 중복 파일 삭제 — `delete_files_by_name()` 추가 (`google_drive.py`). 출석부 시트 생성 전 + PDF 업로드 전 동명 파일 삭제. 관리자 별도 파일은 보존.
-- 회원기록 관련회차 serial 변환 수정 — "2026-2"가 날짜로 해석되는 문제. apostrophe prefix 추가 (`sheets_sync.py`).
+- **입금 대조** (`payment.py`, `matching.py`) — 통합 신청서(수강+신규가입+정회원) 생성, 적요+의뢰인 룰베이스 매칭 → LLM 과목 추출 fallback, 6가지 입금현황 코드, 등급 cascade(idempotent 3-pass), 강사/사무처 자동 면제, 합산 입금 분류(12만/13만), 재실행 시 확정 건 보존, 미확인입금 수동 매칭.
+- **출석부 생성** (`attendance.py`) — 처리상태='등록완료' 필터 → 단일 "출석부" 탭(전화번호 포함) + 과목별 A4 PDF, 동명 파일 정리. 처리상태 gate.
+- **출석 체크 OCR** (`ocr.py`) — Claude Vision으로 종이 출석부 → 출석부 탭 E~P열.
+- **종강 처리** (`graduation.py`) — 출석률 집계 → 수강기록 append → 회원목록 재집계 → 등급 강등.
+- **Q&A / 데이터 조회** (`qa.py`, `query_tool.py`) — Context Injection(18토픽) + prompt caching, 자연어 → 구조화 DB 쿼리(NL-to-SQL 아님).
+- **데이터 레이어** — PostgreSQL SoT(7테이블) + 백그라운드 Sheets 동기화(`sheets_sync.py`). 관리자 편집 컬럼(처리상태/메모장/확인한이름·강좌) 보존, dev/prod 환경 분리.
+- **LangChain Agent (Phase A/B)** — `create_agent` + 8 @tool 라우터, AsyncPostgresSaver checkpointer, `[FILE:path]` 업로드 태깅, tool 결과 `__SILENT__` 직접 전송. 상태 머신은 파일 대기/busy만 관리.
+- **UX** — Starter/Action 버튼(non-blocking), 회차 확인·건너뛰기 버튼, cl.Message 진행 표시, Palette C 테마 + Noto Sans KR 18px(WCAG AA).
+- **인프라** — Railway 배포, 단위 테스트, `reset_dev_env.py` 초기화 스크립트.
 
 ### Phase C — LangChain 생태계 심화 (계획)
 
 Phase A/B 완료 후, LangChain 생태계를 활용한 관측성·프롬프트·확장성 개선. 다조직 확장 사업 대비.
 
-**C-1. LangSmith 도입** (우선순위 1 — 즉시 착수)
-- Agent의 tool selection, reasoning 과정 시각적 추적
-- Q&A 등 느린 구간 병목 측정 (체감 → 데이터 기반)
-- E2E 테스트를 dataset + evaluation으로 체계화
-- 개인정보 마스킹 방안 확인 필요 (학생 이름, 입금 내역)
+**C-1. LangSmith 도입** (진행 중 — groundwork은 `dev` 브랜치 커밋됨)
+- ✅ 의존성(`langsmith`) + env 템플릿(`LANGSMITH_*`) + LLM 호출부 `run_name` 라벨. 환경변수 설정 시 자동 추적 활성화 (코드 변경 불필요).
+- 남은 작업: LangSmith 프로젝트 생성 + Railway env 설정 + 트레이스 검증.
+- 개인정보 마스킹 방안 확인 필요 (학생 이름, 입금 내역).
+- E2E 테스트를 dataset + evaluation으로 체계화.
 
 **C-2. System Prompt 고도화 + Prompt Caching** (우선순위 2)
 - 정적/동적 system prompt 분리: 공통 비즈니스 컨텍스트(정적, cached) + 파이프라인별 특화(동적)

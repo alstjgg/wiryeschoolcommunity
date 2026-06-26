@@ -53,11 +53,11 @@
 | LLM 프레임워크 | LangChain | LLM 호출 래퍼 | Python 네이티브, 모델 교체 용이 |
 | 채팅 UI | Chainlit | 대화형 웹 인터페이스, 버튼 UI | Python 통합, Conversation Starter 버튼 네이티브 지원 |
 | LLM | Claude API (Anthropic) | 텍스트 처리, OCR (Vision) | 한국어 성능 우수, Vision 지원 |
-| 데이터 SoT | `USE_DB_SOT` 플래그로 전환 | `true`: PostgreSQL SoT + n8n Sheets 동기화. `false`: Sheets SoT (폴백) | DB 우선으로 응답 속도 개선, Sheets는 관리자 뷰 |
+| 데이터 SoT | `USE_DB_SOT` 플래그로 전환 | `true`: PostgreSQL SoT + 백그라운드 Sheets 동기화. `false`: Sheets SoT (폴백) | DB 우선으로 응답 속도 개선, Sheets는 관리자 뷰 |
 | 데이터베이스 | PostgreSQL (Railway) | 채팅 기록 (chat_data_layer.py) + 비즈니스 데이터 (db.py, 7 테이블) | 단일 DB로 통합 관리 |
-| 배치 파이프라인 | n8n (Railway, 별도 프로젝트) | DB→Sheets 동기화 (Sync-1 일일 전체, Sync-2 웹훅 즉시) | 챗봇 DB 쓰기 → n8n이 Sheets push |
+| Sheets 동기화 | 백그라운드 Sheets 동기화 (`app/services/sheets_sync.py`, asyncio.to_thread) | DB→Sheets 동기화 (DB 쓰기 후 백그라운드 스레드로 push) | 챗봇 DB 쓰기 → sheets_sync.py가 백그라운드로 Sheets push |
 | Google API 인증 | Service Account + Domain-wide Delegation | Drive/Sheets 읽기/쓰기 | SA가 Workspace 사용자 대리로 파일 생성 가능 |
-| 배포 | Railway | 운영 환경 (Chainlit + PostgreSQL + n8n) | Git push 자동 배포, HTTPS/도메인 자동 |
+| 배포 | Railway | 운영 환경 (Chainlit + PostgreSQL) | Git push 자동 배포, HTTPS/도메인 자동 |
 | 프로그래밍 언어 | Python 3.12 (`.python-version`으로 고정) | 전체 앱 | LangChain/Chainlit 네이티브 |
 
 ### 2.2 아키텍처 방침
@@ -75,16 +75,13 @@ LangChain Skills(`.agents/skills/`)는 Claude Code가 코드 작성 시 참조�
 │  Railway                                              │
 │                                                       │
 │  ┌──────────────┐        ┌──────────────────────┐    │
-│  │  Chainlit     │        │  PostgreSQL           │    │
-│  │  + LangChain  │───────→│  (채팅 기록 +         │    │
+│  │  Chainlit     │───────→│  PostgreSQL           │    │
+│  │  + LangChain  │        │  (채팅 기록 +         │    │
 │  │  (챗봇)       │        │   비즈니스 데이터)     │    │
-│  └──────┬───────┘        └──────────┬───────────┘    │
-│         │                           │                 │
-│  ┌──────┴───────┐          ┌────────┴──────────┐     │
-│  │  n8n          │←─webhook─│  DB→Sheets Sync   │     │
-│  │  (동기화)     │          └──────────────────-┘     │
-│  └──────────────┘                                     │
-└───────────────────────────────────────────────────────┘
+│  └──────┬───────┘        └──────────────────────┘    │
+│         │                                             │
+│         │  sheets_sync.py (백그라운드 스레드)          │
+└─────────┼─────────────────────────────────────────────┘
           │
           ▼
    ┌──────────────────────────────────────────────────────────┐
@@ -99,7 +96,7 @@ LangChain Skills(`.agents/skills/`)는 Claude Code가 코드 작성 시 참조�
    └─────────────┘
 ```
 
-핵심 특징: PostgreSQL이 SoT(비즈니스 데이터), n8n이 DB→Sheets 동기화, Sheets는 관리자 열람/처리상태 편집용, Git push 자동 배포.
+핵심 특징: PostgreSQL이 SoT(비즈니스 데이터), `sheets_sync.py`가 백그라운드 스레드로 DB→Sheets 동기화, Sheets는 관리자 열람/처리상태 편집용, Git push 자동 배포.
 
 ---
 
@@ -240,7 +237,7 @@ LangChain Skills(`.agents/skills/`)는 Claude Code가 코드 작성 시 참조�
 [member_records]  ← 등급 변경 이력 (append-only)
 ```
 
-DB 모드: 모든 테이블은 PostgreSQL. n8n이 회원관리 파일(5탭)로 동기화.
+DB 모드: 모든 테이블은 PostgreSQL. sheets_sync.py가 백그라운드로 회원관리 파일(5탭)로 동기화.
 Sheets 모드: 회원관리 Sheets가 SoT (폴백).
 
 ### 4.3 회원목록 — Master (`members`)
@@ -285,7 +282,7 @@ Sheets 모드: 회원관리 Sheets가 SoT (폴백).
 
 ### 4.5 신청기록 — Working (`applications`, 전 회차 누적)
 
-수강+신규가입+정회원 신청을 통합 관리. DB 모드에서는 회원관리 파일의 `신청기록` 탭에 전 회차 통합 저장 (n8n이 push). Sheets 모드에서는 회차별 `신청서` 파일을 생성.
+수강+신규가입+정회원 신청을 통합 관리. DB 모드에서는 회원관리 파일의 `신청기록` 탭에 전 회차 통합 저장 (sheets_sync.py가 백그라운드로 push). Sheets 모드에서는 회차별 `신청서` 파일을 생성.
 
 | 순서 | Sheets 헤더 | DB 컬럼 | 입력 주체 | 비고 |
 |:---:|---|---|----------|------|
@@ -337,7 +334,7 @@ DB 전용 컬럼 (Sheets 비노출): `phone`, `address`, `processed_at`
 | F | 확인사유 | `review_reason` | |
 | G | 처리상태 | `processing_status` | 드롭다운: 환불완료/취소완료/보류 |
 
-DB에는 전건 저장 (`match_status`: matched/unmatched/partial). Sheets에는 `match_status='unmatched'`인 건만 n8n이 push.
+DB에는 전건 저장 (`match_status`: matched/unmatched/partial). Sheets에는 `match_status='unmatched'`인 건만 sheets_sync.py가 백그라운드로 push.
 
 ### 4.8 출석부 (회차/출석부/ 폴더)
 
@@ -429,7 +426,7 @@ AI 효율화의 핵심 작업. 신청자 목록 + Drive 신청서 → 통합 신
 5. **Agent**: 신청자 목록 파싱 (수강 유형)
 6. **Agent**: (자동) Drive에서 신규가입 신청서 로드 → 파싱 (cl.Step 진행 표시)
 7. **Agent**: (자동) Drive에서 정회원가입 신청서 로드 → 파싱 (cl.Step 진행 표시)
-8. **Agent**: 5+6+7을 합쳐 통합 신청서 생성 → DB upsert + n8n webhook (DB 모드) 또는 Sheets 직접 저장 (Sheets 모드)
+8. **Agent**: 5+6+7을 합쳐 통합 신청서 생성 → DB upsert + sheets_sync.py 백그라운드 push (DB 모드) 또는 Sheets 직접 저장 (Sheets 모드)
 9. **Agent**: "입금 내역을 업로드해주세요"
 10. **관리자**: 입금 내역 엑셀을 챗봇에 직접 업로드
 11. **Agent**: 입금내역 전건 → DB deposits INSERT → 자동 매칭 (코드 80~90% → LLM 10~20%) → 등급 전환 cascade 실행 → 신청기록에 자동 반영
@@ -551,10 +548,10 @@ PaaS 배포 시: `GOOGLE_SA_KEY_JSON` 환경변수 → `from_service_account_inf
 ### 7.1 Phase 개요
 
 ```
-Phase 0: 프로토타입 (✅)     Phase 1: 핵심 기능 (✅)     Phase 2: DB SoT + n8n (✅)       Phase 3: 기능 확장 (일부 ✅)
+Phase 0: 프로토타입 (✅)     Phase 1: 핵심 기능 (✅)     Phase 2: DB SoT + 백그라운드 Sheets 동기화 (✅)   Phase 3: 기능 확장 (일부 ✅)
 ┌──────────────────────┐   ┌──────────────────────┐   ┌──────────────────────┐          ┌──────────────────────┐
 │ Chainlit 채팅 UI      │   │ 입금 대조 파이프라인   │   │ PostgreSQL SoT 전환  │          │ 종강 처리 ✅         │
-│ + 단순 Q&A 챗봇       │ → │ 출석부 생성           │ → │ n8n DB→Sheets 동기화 │ →        │ 출석 체크(OCR) ✅    │
+│ + 단순 Q&A 챗봇       │ → │ 출석부 생성           │ → │ 백그라운드 Sheets 동기화│ →       │ 출석 체크(OCR) ✅    │
 │ + Google API 연동     │   │ 회원관리/수강기록 연동 │   │ 7 테이블 + deposits  │          │ 출석부 PDF ✅        │
 │ + 기본 입금대조 구현   │   │ Railway 배포          │   │ Grade cascade        │          │ Theme/CSS ✅         │
 └──────────────────────┘   └──────────────────────┘   └──────────────────────┘          └──────────────────────┘
@@ -594,10 +591,7 @@ wiryeschoolcommunity/
 ├── docs/
 │   ├── DEV_DOCUMENT.md          # 이 문서
 │   ├── BUSINESS_CONTEXT.md      # Context Injection 소스 텍스트
-│   └── PLANNED_DRIVE_STRUCTURE.md  # Google Drive 확정 구조 + 폴더 ID 참조
-├── n8n/                         # n8n 워크플로우 JSON (n8n UI에서 import 용)
-│   ├── sync_daily.json          # Sync-1: DB → Sheets 일일 전체 push (매일 06:00)
-│   └── sync_webhook.json        # Sync-2: DB → Sheets 웹훅 즉시 push
+│   └── LANGCHAIN_MIGRATION_PROPOSAL.md  # LangChain Agent 전환 제안서 + Phase C 리서치
 ├── app/
 │   ├── main.py                  # Chainlit 엔트리포인트 + 세션 상태 라우터 + LLM 의도 분류 + mid-flow 인터럽트 처리
 │   ├── config.py                # 환경 변수, 상수, 영속 Google IDs, COURSE_KEYWORDS, USE_DB_SOT
@@ -606,7 +600,7 @@ wiryeschoolcommunity/
 │   │   └── term.py              # 현재 회차 자동 판별 + 자유 텍스트 회차 파싱 (parse_term_input)
 │   ├── chains/
 │   │   ├── qa.py                # 질의 응답 체인
-│   │   ├── payment.py           # 입금 대조 파이프라인 (DB+n8n, 매칭, deposits 추적, 등급 cascade)
+│   │   ├── payment.py           # 입금 대조 파이프라인 (DB + 백그라운드 Sheets 동기화, 매칭, deposits 추적, 등급 cascade)
 │   │   ├── attendance.py        # 출석부 생성 (처리상태는 Sheets에서 읽기, DB모드: 신청기록 탭)
 │   │   ├── ocr.py               # 출석 체크 OCR (dual-write: DB+Sheets, Claude Vision)
 │   │   └── graduation.py        # 종강 처리 (dual-write, 출석률 집계, 등급 강등)
@@ -618,7 +612,7 @@ wiryeschoolcommunity/
 │   │   ├── signup_loader.py     # Drive에서 신규가입/정회원가입 신청서 로드 → 파싱 결과 반환
 │   │   ├── chat_data_layer.py   # Chainlit 채팅 기록 PostgreSQL 영속성 (BaseDataLayer 구현)
 │   │   ├── db.py                # 비즈니스 데이터 PostgreSQL CRUD (asyncpg, 7 테이블)
-│   │   └── n8n.py               # n8n 웹훅 트리거 (DB→Sheets 동기화 fire-and-forget)
+│   │   └── sheets_sync.py       # DB→Sheets 백그라운드 동기화 (asyncio.to_thread, await 직렬)
 │   └── utils/
 │       ├── __init__.py
 │       └── matching.py          # 이름/강좌 추출, 규칙 기반 입금 매칭
