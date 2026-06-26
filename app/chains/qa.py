@@ -20,7 +20,7 @@ def get_llm():
         model=LLM_MODEL,
         api_key=ANTHROPIC_API_KEY,
         max_tokens=1024,
-    )
+    ).with_config({"run_name": "qa_llm"})
 
 
 async def answer_question(question: str) -> str:

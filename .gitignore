@@ -28,6 +28,9 @@ sa-key.json
 .DS_Store
 Thumbs.db
 
+# Claude Code local data (not part of the app)
+holyclaude/
+
 # # Fonts (downloaded at build time)
 # assets/fonts/
 

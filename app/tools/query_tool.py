@@ -322,7 +322,7 @@ async def query_data(query_description: str) -> str:
     try:
         llm = ChatAnthropic(
             model=LLM_MODEL, api_key=ANTHROPIC_API_KEY, max_tokens=256,
-        )
+        ).with_config({"run_name": "query_intent_llm"})
         structured_llm = llm.with_structured_output(QueryIntent)
         intent: QueryIntent = await structured_llm.ainvoke(
             f"{PARSE_SYSTEM_PROMPT}\n\n사용자 요청: {query_description}"

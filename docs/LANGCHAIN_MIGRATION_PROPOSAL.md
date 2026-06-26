@@ -109,26 +109,71 @@
 
 ---
 
-## 3. Phase B 상세
+## 3. Phase B 상세 ✅ 완료
 
-### B-1. 데이터 조회 tool
-자연어로 수강생/강사/강좌 조회. 예: "지난 학기 수강생 누구야?"
+### B-1. 데이터 조회 tool ✅
+자연어로 수강생/강사/강좌 조회. `query_data` tool — NL → 미리 정의된 DB 조회 함수.
 
-### B-2. Q&A tool 고도화
-응답 스타일 개선 (간결하게 핵심만), Prompt caching 적용, 정관/규정 Q&A
+### B-2. Q&A tool 고도화 ✅
+응답 스타일 개선 (간결하게 핵심만), Prompt caching 적용, max_tokens 1024.
 
-### B-3. 중간 과정 공유 전환
-cl.Step → cl.Message로 직접 진행 상태 메시지 표시 (55+ 사용자에게 더 직관적)
+### B-3. 중간 과정 공유 전환 ✅
+cl.Step → cl.Message로 직접 진행 상태 메시지 표시 (55+ 사용자에게 더 직관적).
 
-### B-4. 세션 영속성
-MemorySaver → AsyncPostgresSaver (PostgreSQL), 서버 재시작 후 대화 유지
+### B-4. 세션 영속성 ✅
+MemorySaver → AsyncPostgresSaver (PostgreSQL), 서버 재시작 후 대화 유지.
 
 ### B-5. 추가 tool 후보
-카카오톡 연동, 강사 실적 보고서, 월간 활동 보고서
+카카오톡 연동, 강사 실적 보고서, 월간 활동 보고서 → 기능 백로그로 이동.
 
 ---
 
-## 4. Claude Code LangChain Skills 활용
+## 4. Phase C — LangChain 생태계 심화 (계획, 2026-04 ~)
+
+Phase A/B 완료 후 리서치를 통해 확정한 다음 단계. 다조직 확장 사업 대비.
+
+### 우선순위 결정 기준
+
+- **즉시 착수**: 현재 운영에서 체감되는 문제 해결 (관측성 부재, Q&A 느림)
+- **백로그**: 다조직 확장 확정 시 착수 (아직 두 번째 고객 없음)
+
+### C-1. LangSmith 도입 (우선순위 1 — 즉시 착수)
+
+**동기**: Agent의 tool selection 근거, 느린 Q&A의 병목 구간, 실패 원인을 체계적으로 볼 수 없음. 체감이지 측정이 아닌 상태.
+
+- 환경변수 설정으로 기본 tracing 활성화
+- Agent reasoning, tool call, LLM latency 시각적 추적
+- E2E 테스트를 dataset + evaluation으로 체계화
+- 확인 필요: Railway 환경 제약, 무료 tier 사용량 커버, 개인정보(학생 이름/입금 내역) 마스킹
+
+### C-2. System Prompt 고도화 + Prompt Caching (우선순위 2)
+
+**동기**: Q&A 응답 느림 체감. 현재 system prompt가 단일 텍스트로 모든 파이프라인 컨텍스트 포함.
+
+- 정적/동적 분리: 공통 비즈니스 컨텍스트(정적, cached) + 파이프라인별 특화(동적)
+- Anthropic prompt caching 활용 — 정적 구간 cache, 동적 구간만 매번 전송
+- 트레이드오프: 동적 system prompt + dynamic tools → cache hit 구간 축소. LangSmith로 실측 후 최적점 결정.
+- Structured output 확대 적용 (현재 `TransactionMatch`만 사용 중)
+
+### C-3~5. 백로그 (다조직 확장 확정 시 착수)
+
+| # | 항목 | 설명 | 착수 조건 |
+|---|------|------|----------|
+| C-3 | Dynamic Tools | Starter 버튼 기반 tool 필터링. 다조직 tool set 관리. | tool 15개+ 또는 다조직 |
+| C-4 | Middleware | Sheets sync + logging cross-cutting concern 일반화 | 파이프라인 10개+ |
+| C-5 | 다조직 추상화 | 조직별 config/tool/prompt 프로필 기반 관리 | 두 번째 고객 확정 |
+
+### 보류 항목 (현 단계 불필요)
+
+| 항목 | 보류 이유 |
+|------|----------|
+| Streaming 고도화 | 타겟 유저(55+)에게 token streaming 불필요. `cl.Message.update()` 진행 표시로 충분. |
+| Multi-Agent | 8개 tool + 단일 concurrent 사용자. Single agent + dynamic tools로 커버. |
+| Frontend 전환 | Chainlit UX 최적화 완료 (마을회관 테마, 대형 폰트). 교체 시 잃는 것 > 얻는 것. |
+
+---
+
+## 5. Claude Code LangChain Skills 활용
 
 | Skill | 내용 | 사용 시점 |
 |---|---|---|
@@ -136,18 +181,20 @@ MemorySaver → AsyncPostgresSaver (PostgreSQL), 서버 재시작 후 대화 유
 | `langchain-fundamentals` | `create_agent`, `@tool`, middleware | ✅ Phase A |
 | `langchain-dependencies` | 패키지 버전, 호환성 | ✅ Phase A |
 | `langgraph-fundamentals` | StateGraph, streaming, 에러 처리 | 커스텀 그래프 필요 시 |
-| `langchain-middleware` | HITL, 커스텀 미들웨어 | Phase B |
-| `langgraph-persistence` | 체크포인터, PostgreSQL | Phase B |
+| `langchain-middleware` | HITL, 커스텀 미들웨어 | Phase C-4 |
+| `langgraph-persistence` | 체크포인터, PostgreSQL | ✅ Phase B |
 | `langchain-rag` | RAG 파이프라인 | 컨텍스트 100K 초과 시 |
 
 ---
 
-## 5. 장단점 요약
+## 6. 장단점 요약
 
-| 관점 | 현재 (고정 파이프라인) | 전환 후 (Agent 라우터) |
-|------|----------------------|----------------------|
-| **자연어 이해** | 키워드 매칭 + LLM 의도 분류 | LLM이 모든 입력에서 tool 선택 |
-| **확장성** | 새 작업 = 4-5곳 수정 | 새 작업 = `@tool` 함수 1개 |
-| **비용** | LLM 호출 최소 | 3-5배 증가 (prompt caching 완화) |
-| **코드량** | main.py ~70KB | main.py ~200줄 + agent.py + tools/ |
-| **UX** | 버튼 가이드 (제한적 자유 입력) | 버튼 가이드 + 완전한 자유 입력 |
+| 관점 | Phase 0 (고정 파이프라인) | Phase A/B (현재) | Phase C (목표) |
+|------|----------------------|----------------------|----------------|
+| **자연어 이해** | 키워드 매칭 + LLM 의도 분류 | LLM이 모든 입력에서 tool 선택 | 동일 + 동적 prompt |
+| **확장성** | 새 작업 = 4-5곳 수정 | 새 작업 = `@tool` 함수 1개 | dynamic tools로 더 유연 |
+| **비용** | LLM 호출 최소 | 3-5배 증가 | prompt caching으로 완화 |
+| **코드량** | main.py ~70KB | main.py ~285줄 + agent.py + tools/ | 동일 |
+| **UX** | 버튼 가이드 (제한적 자유 입력) | 버튼 가이드 + 완전한 자유 입력 | 동일 |
+| **관측성** | 수동 로깅 | 수동 로깅 | LangSmith 통합 |
+| **다조직** | 불가 | 하드코딩 | 프로필 기반 관리 |

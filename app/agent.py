@@ -92,7 +92,7 @@ async def create_wirye_agent():
         model=LLM_MODEL,
         api_key=ANTHROPIC_API_KEY,
         max_tokens=4096,
-    )
+    ).with_config({"run_name": "claude_llm"})
 
     # 현재/직전 회차 컨텍스트
     current_term = get_current_term()
