@@ -5,6 +5,8 @@ import sys
 import uuid
 from pathlib import Path
 
+import anthropic
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 # 데이터 레이어 등록 (DATABASE_URL 있을 때만 활성화 — 다른 import보다 먼저)
@@ -13,6 +15,7 @@ import app.services.chat_data_layer  # noqa: F401
 import chainlit as cl
 
 from app.agent import create_wirye_agent
+from app.config import LLM_MODEL
 from app.context.term import get_current_term
 
 logger = logging.getLogger(__name__)
@@ -211,6 +214,18 @@ async def _invoke_agent(content: str, file_paths: list[str] | None = None):
         msg.content = response_text
         await msg.update()
 
+    except anthropic.NotFoundError as e:
+        # 모델 ID 미인식(404). 영구 실패이므로 재시도 금지. API 키 문제로 오인 금지.
+        logger.error("LLM model not found (check ANTHROPIC_MODEL=%s): %s", LLM_MODEL, e)
+        msg.content = "AI 모델 설정에 문제가 있습니다(모델 ID 미인식). 관리자에게 문의해주세요."
+        await msg.update()
+    except anthropic.AuthenticationError as e:
+        logger.error("LLM auth failed: %s", e)
+        msg.content = (
+            "AI 인증에 실패했습니다.\n\n"
+            "환경 변수(ANTHROPIC_API_KEY)가 올바르게 설정되어 있는지 확인해주세요."
+        )
+        await msg.update()
     except Exception as e:
         logger.error("Agent invoke failed: %s", e, exc_info=True)
         msg.content = "처리 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.\n문제가 계속되면 관리자에게 문의해주세요."

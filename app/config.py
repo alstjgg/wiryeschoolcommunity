@@ -73,5 +73,7 @@ MEMBER_RECORD_HEADER = ["이름ID", "이름", "변경일시", "변경전등급",
 COURSE_RECORD_HEADER = ["이름ID", "회차", "과목명", "출석률"]
 
 # LLM 설정
-LLM_MODEL = "claude-sonnet-4-20250514"
+# 모델 ID는 환경변수로 주입(없으면 기본값). 모델 은퇴 시 Railway 변수만 교체하면 됨.
+# claude-sonnet-4-6 = 현재 Sonnet 핀 스냅샷(에버그린 별칭 아님). 비전·structured output 지원.
+LLM_MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-6")
 
